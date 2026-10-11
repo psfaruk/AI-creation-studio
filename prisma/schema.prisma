@@ -1,6 +1,10 @@
-// Agentic AI Chat System — Prisma schema (SQLite)
-// Entities: conversations, messages, agent_runs, agent_steps,
-// tool_calls, artifacts (user's master plan §৮, adapted)
+// ============================================================
+// Agentic AI Creative Studio — Prisma schema (SQLite)
+// পার্ট ১: Agentic Chat (Conversation, Message, AgentRun,
+//          AgentStep, ToolCall, Artifact)
+// পার্ট ২: Creative Studio (Production, ProductionStep,
+//          ModelEntry — মাস্টার প্ল্যান §৭,৮,৯ অনুযায়ী)
+// ============================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -12,13 +16,14 @@ datasource db {
 }
 
 model Conversation {
-  id        String       @id @default(cuid())
-  title     String       @default("নতুন কথোপকথন")
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
-  messages  Message[]
-  runs      AgentRun[]
-  artifacts Artifact[]
+  id          String        @id @default(cuid())
+  title       String        @default("নতুন কথোপকথন")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  messages    Message[]
+  runs        AgentRun[]
+  artifacts   Artifact[]
+  productions Production[]
 }
 
 model Message {
@@ -28,6 +33,7 @@ model Message {
   role            String // 'user' | 'assistant'
   content         String
   runId           String?      @unique // assistant message ↔ agent run (1:1)
+  productionId    String? // এই বার্তায় দেখানো production কার্ড
   attachmentsJson String? // JSON array of AttachmentView (user uploads)
   createdAt       DateTime     @default(now())
 
@@ -48,6 +54,8 @@ model AgentRun {
   steps          AgentStep[]
   toolCalls      ToolCall[]
   artifacts      Artifact[]
+
+  @@index([conversationId])
 }
 
 model AgentStep {
@@ -86,16 +94,87 @@ model Artifact {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   runId          String?
   run            AgentRun?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+  productionId   String? // কোন production-এর ফলাফল
+  production     Production?  @relation(fields: [productionId], references: [id], onDelete: SetNull)
   messageId      String? // set for user uploads; tool artifacts map via runId
-  origin         String       @default("tool") // 'tool' | 'user_upload'
-  kind           String // 'image' | 'audio' | 'text'
+  origin         String       @default("tool") // 'tool' | 'user_upload' | 'production'
+  kind           String // 'image' | 'audio' | 'video' | 'text'
   mimeType       String
   fileName       String
   size           Int          @default(0)
   storagePath    String? // local file path (tool/user generated)
   sourceUrl      String? // external URL (image-search results)
+  metaJson       String? // মিডিয়া মেটাডেটা (দৈর্ঘ্য/মাত্রা/কোডেক ইত্যাদি)
   createdAt      DateTime     @default(now())
 
   @@index([conversationId, createdAt])
   @@index([runId])
+  @@index([productionId])
+}
+
+// ------------------------------------------------------------
+// Creative Studio — Production (Creative Job) system
+// ------------------------------------------------------------
+
+model Production {
+  id                  String          @id @default(cuid())
+  conversationId      String
+  conversation        Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  type                String // 'image' | 'audio' | 'motion_video' | 'music_video' | 'short_film'
+  title               String
+  status              String          @default("awaiting_confirmation") // awaiting_confirmation | queued | running | validating | completed | failed | partial | cancelled | cancelling
+  specJson            String // CreativeJobSpec (typed, §১৫)
+  progress            Int             @default(0) // 0-100
+  currentStepKey      String?
+  error               String?
+  resultJson          String? // quality report, shot summaries, notes
+  parentProductionId  String? // সংশোধন চেইন (revision)
+  parent              Production?     @relation("Revisions", fields: [parentProductionId], references: [id], onDelete: SetNull)
+  revisions           Production[]    @relation("Revisions")
+  createdAt           DateTime        @default(now())
+  startedAt           DateTime?
+  finishedAt          DateTime?
+  steps               ProductionStep[]
+  artifacts           Artifact[]
+
+  @@index([conversationId, createdAt])
+  @@index([status])
+}
+
+model ProductionStep {
+  id           String     @id @default(cuid())
+  productionId String
+  production   Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  seq          Int
+  key          String // pipeline ধাপের নাম (script_writer ইত্যাদি)
+  title        String // বাংলা শিরোনাম
+  status       String     @default("pending") // pending | running | done | failed | skipped
+  detail       String? // মাঝপথের বার্তা ("৩/৬ শট তৈরি")
+  error        String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  @@index([productionId, seq])
+}
+
+// ------------------------------------------------------------
+// Model & License Registry (মাস্টার প্ল্যান §৮)
+// ------------------------------------------------------------
+
+model ModelEntry {
+  id               String   @id @default(cuid())
+  key              String   @unique
+  name             String
+  category         String // llm | image | audio | video | utility | infrastructure
+  provider         String
+  license          String
+  licenseUrl       String?
+  commercialUse    String // allowed | restricted | unknown | not_applicable
+  status           String // enabled | experimental | blocked | planned
+  capabilitiesJson String // সমর্থিত মাত্রা/সময়/ফরম্যাট ইত্যাদি
+  hardwareNotes    String?
+  notes            String?
+  verifiedAt       DateTime?
+  sortOrder        Int      @default(100)
+  createdAt        DateTime @default(now())
 }

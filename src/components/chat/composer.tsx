@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, type ChangeEvent, type KeyboardEvent } from 'react';
 import { motion } from 'framer-motion';
-import { FileAudio, FileImage, Paperclip, SendHorizontal, X } from 'lucide-react';
+import { FileAudio, FileImage, FileVideo, Paperclip, SendHorizontal, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -20,6 +20,7 @@ import { toast } from '@/hooks/use-toast';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // ৫MB
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // ১০MB
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024; // ২৫MB
 const TEXTAREA_MAX_HEIGHT_PX = 160; // ≈ ৫ সারি
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -63,6 +64,7 @@ export function Composer() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   // অটো-রিসাইজ (সর্বোচ্চ ~৫ সারি)
   useEffect(() => {
@@ -92,10 +94,10 @@ export function Composer() {
     }
   };
 
-  const handleFiles = (kind: 'image' | 'audio') => async (e: ChangeEvent<HTMLInputElement>) => {
+  const handleFiles = (kind: 'image' | 'audio' | 'video') => async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = ''; // একই ফাইল দুবার বাছাই করা যায় সেজন্য রিসেট
-    const maxBytes = kind === 'image' ? MAX_IMAGE_BYTES : MAX_AUDIO_BYTES;
+    const maxBytes = kind === 'image' ? MAX_IMAGE_BYTES : kind === 'video' ? MAX_VIDEO_BYTES : MAX_AUDIO_BYTES;
     const accepted: PendingAttachment[] = [];
 
     for (const file of files) {
@@ -104,7 +106,9 @@ export function Composer() {
           title:
             kind === 'image'
               ? 'ছবিটি খুব বড় — সর্বোচ্চ ৫MB আকারের হতে পারে'
-              : 'অডিওটি খুব বড় — সর্বোচ্চ ১০MB আকারের হতে পারে',
+              : kind === 'video'
+                ? 'ভিডিওটি খুব বড় — সর্বোচ্চ ২৫MB আকারের হতে পারে'
+                : 'অডিওটি খুব বড় — সর্বোচ্চ ১০MB আকারের হতে পারে',
           variant: 'destructive',
         });
         continue;
@@ -142,6 +146,8 @@ export function Composer() {
               >
                 {a.kind === 'image' ? (
                   <FileImage className="size-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+                ) : a.kind === 'video' ? (
+                  <FileVideo className="size-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 ) : (
                   <FileAudio className="size-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 )}
@@ -180,7 +186,11 @@ export function Composer() {
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => audioInputRef.current?.click()}>
                 <FileAudio aria-hidden="true" />
-                অডিও আপলোড
+                অডিও আপলোড (গান/ভয়েস)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => videoInputRef.current?.click()}>
+                <FileVideo aria-hidden="true" />
+                ভিডিও আপলোড
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -229,6 +239,18 @@ export function Composer() {
             tabIndex={-1}
             onChange={(e) => {
               void handleFiles('audio')(e);
+            }}
+          />
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept="video/mp4,video/webm,video/quicktime,video/x-matroska,video/*"
+            multiple
+            hidden
+            aria-hidden="true"
+            tabIndex={-1}
+            onChange={(e) => {
+              void handleFiles('video')(e);
             }}
           />
         </div>

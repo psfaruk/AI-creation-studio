@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { AudioLines, Download, FileText } from 'lucide-react';
+import { AudioLines, Download, FileText, Film } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -98,6 +98,22 @@ function AudioArtifact({ artifact }: { artifact: ArtifactMeta }) {
   );
 }
 
+function VideoArtifact({ artifact }: { artifact: ArtifactMeta }) {
+  return (
+    <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+      <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
+        <Film className="size-4 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate">{artifact.fileName}</span>
+        {formatSizeBn(artifact.size) && <span className="shrink-0">{formatSizeBn(artifact.size)}</span>}
+        <DownloadLink url={artifact.url} className="inline-flex shrink-0 items-center gap-1 text-emerald-700 hover:underline dark:text-emerald-400" />
+      </div>
+      <div className="p-2.5 pt-2">
+        <video controls preload="metadata" src={artifact.url} className="max-h-[60vh] w-full rounded-md bg-black" aria-label={artifact.fileName} />
+      </div>
+    </div>
+  );
+}
+
 function TextArtifact({ artifact }: { artifact: ArtifactMeta }) {
   return (
     <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs shadow-sm">
@@ -108,10 +124,11 @@ function TextArtifact({ artifact }: { artifact: ArtifactMeta }) {
   );
 }
 
-/** আর্টিফ্যাক্ট তালিকা: ছবি-গ্রিড (প্রিভিউ ডায়ালগসহ) + অডিও প্লেয়ার + টেক্সট */
+/** আর্টিফ্যাক্ট তালিকা: ছবি-গ্রিড (প্রিভিউ ডায়ালগসহ) + অডিও প্লেয়ার + ভিডিও + টেক্সট */
 export function ArtifactList({ artifacts }: { artifacts: ArtifactMeta[] }) {
   const images = artifacts.filter((a) => a.kind === 'image');
   const audios = artifacts.filter((a) => a.kind === 'audio');
+  const videos = artifacts.filter((a) => a.kind === 'video');
   const texts = artifacts.filter((a) => a.kind === 'text');
 
   if (artifacts.length === 0) return null;
@@ -119,6 +136,9 @@ export function ArtifactList({ artifacts }: { artifacts: ArtifactMeta[] }) {
   return (
     <div className="space-y-2">
       {images.length > 0 && <ImageGrid artifacts={images} />}
+      {videos.map((a) => (
+        <VideoArtifact key={a.id} artifact={a} />
+      ))}
       {audios.map((a) => (
         <AudioArtifact key={a.id} artifact={a} />
       ))}

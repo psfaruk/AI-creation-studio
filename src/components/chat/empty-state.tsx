@@ -1,22 +1,55 @@
 'use client';
 
-import { Sparkles } from 'lucide-react';
+// ============================================================
+// EmptyState — নতুন চ্যাটের খালি অবস্থা (ক্রিয়েটিভ স্টুডিও)।
+// হিরো + ৪টি স্টুডিও-ফিচার কার্ড + কুইক-স্টার্ট চিপ
+// (চিপ চাপলে টেক্সট ড্রাফটে বসে ও কম্পোজারে ফোকাস যায়)।
+// ============================================================
+
+import {
+  AudioLines,
+  Clapperboard,
+  Film,
+  ImagePlus,
+  Sparkles,
+  type LucideIcon,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
 
 import { useChatStore } from '@/hooks/use-chat-store';
 
-const FEATURES = [
-  '🧠 পরিকল্পনা করে কাজ করে',
-  '🛠️ ৮টি টুল বাস্তবে চালায়',
-  '📦 আউটপুট সরাসরি চ্যাটে',
-] as const;
+const FEATURES: { icon: LucideIcon; title: string; description: string }[] = [
+  {
+    icon: ImagePlus,
+    title: 'ছবি স্টুডিও',
+    description: 'তৈরি ও এডিট, রং-সংশোধন, পটভূমি বদল, পোস্টার-টাইপোগ্রাফি',
+  },
+  {
+    icon: AudioLines,
+    title: 'অডিও স্টুডিও',
+    description: 'ভয়েসওভার, গানের কাঠামো-পরিকল্পনা, অডিও সম্পাদনা ও মিক্সিং',
+  },
+  {
+    icon: Film,
+    title: 'ভিডিও স্টুডিও',
+    description: 'মোশন ভিডিও, ছবি থেকে চলমান ভিডিও, সাবটাইটেল ও এডিটিং',
+  },
+  {
+    icon: Clapperboard,
+    title: 'ফিল্ম ডিরেক্টর',
+    description: 'মিউজিক ভিডিও ও শর্টফিল্ম — স্টোরিবোর্ড থেকে চূড়ান্ত কাট',
+  },
+];
 
+// চিপের লেবেলগুলো কনটেন্ট — ইমোজি রাখা হয়েছে (নির্দেশনা অনুযায়ী)
 const QUICK_STARTS = [
-  'একটি সুন্দর পাহাড়ি দৃশ্যের ছবি বানাও',
-  'বাংলাদেশের প্রযুক্তি খাতের সর্বশেষ খবর খুঁজে আনো',
-  'ছোট একটি শুভেচ্ছা বার্তা লিখে তার অডিও বানাও',
-  'AI নিয়ে সর্বশেষ ৩টি খবর খুঁজে সারসংক্ষেপ দাও',
+  '🎬 ৩০ সেকেন্ডের রোমান্টিক শর্টফিল্ম বানাও',
+  '🖼️ একটা সিনেম্যাটিক পাহাড়ি ছবি বানাও',
+  '🎙️ এই লেখাটা বাংলা কণ্ঠে পড়ে শোনাও: শুভ বিজয়া! নতুন বছর সুখ, সমৃদ্ধি আর সুস্থ দিন নিয়ে আসুক।',
+  '🎵 একটা ভালোবাসার গানের কথা ও কাঠামো পরিকল্পনা করো',
+  '🎞️ এই ছবিটাকে চলমান ভিডিও বানাও',
 ] as const;
 
 /** নতুন চ্যাটের খালি অবস্থা — হিরো + ফিচার কার্ড + কুইক-স্টার্ট চিপ */
@@ -37,36 +70,61 @@ export function EmptyState() {
         </span>
 
         <h1 className="max-w-xl text-balance text-xl font-semibold leading-snug sm:text-2xl">
-          কী করতে চান, বলুন — বাকিটা এজেন্ট সামলে নেবে
+          অ্যাজেন্টিক AI ক্রিয়েটিভ স্টুডিও
         </h1>
         <p className="mt-2.5 max-w-lg text-balance text-sm leading-relaxed text-muted-foreground sm:text-base">
-          প্ল্যান করে টুল চালিয়ে ছবি, অডিও, তথ্য — সবকিছু বাস্তবে তৈরি করে দেখাবে
+          বাংলায় বলুন বা লিখুন — এজেন্ট নিজে পরিকল্পনা করে টুল চালিয়ে বানিয়ে
+          দেয়: ছবি তৈরি ও এডিট, গানের পরিকল্পনা ও ভয়েসওভার, মোশন ভিডিও,
+          মিউজিক ভিডিও ও শর্টফিল্ম।
         </p>
 
-        <div className="mt-8 grid w-full gap-3 sm:grid-cols-3">
+        {/* স্টুডিও-ফিচার কার্ড */}
+        <div className="mt-8 grid w-full grid-cols-2 gap-3 lg:grid-cols-4">
           {FEATURES.map((feature) => (
-            <div
-              key={feature}
-              className="rounded-xl border bg-card px-4 py-3.5 text-sm shadow-sm"
+            <Card
+              key={feature.title}
+              className="gap-0 rounded-xl py-4 shadow-sm"
             >
-              {feature}
-            </div>
+              <CardContent className="flex h-full flex-col items-center gap-2 px-3 text-center">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600/10 text-emerald-700 dark:text-emerald-400">
+                  <feature.icon className="size-5" aria-hidden="true" />
+                </span>
+                <CardTitle className="text-sm font-medium leading-snug">
+                  {feature.title}
+                </CardTitle>
+                <CardDescription className="text-xs leading-relaxed">
+                  {feature.description}
+                </CardDescription>
+              </CardContent>
+            </Card>
           ))}
         </div>
 
-        <div className="mt-7 flex max-w-2xl flex-wrap justify-center gap-2">
-          {QUICK_STARTS.map((text) => (
-            <Button
-              key={text}
-              type="button"
-              variant="outline"
-              onClick={() => pickQuickStart(text)}
-              className="h-11 max-w-full rounded-full px-4 text-xs font-normal text-muted-foreground transition-colors hover:border-emerald-600/40 hover:bg-emerald-600/5 hover:text-foreground"
-            >
-              {text}
-            </Button>
-          ))}
+        {/* কুইক-স্টার্ট চিপ — চাপলে ড্রাফটে বসে */}
+        <div
+          className="mt-8 w-full"
+          role="group"
+          aria-label="দ্রুত শুরুর নমুনা — চাপলে লেখাটি ইনপুটে বসবে"
+        >
+          <div className="mx-auto flex max-w-2xl flex-wrap items-center justify-center gap-2">
+            {QUICK_STARTS.map((text) => (
+              <Button
+                key={text}
+                type="button"
+                variant="outline"
+                onClick={() => pickQuickStart(text)}
+                className="h-auto min-h-11 max-w-full rounded-full px-4 py-2 text-xs font-normal leading-snug text-muted-foreground transition-colors hover:border-emerald-600/40 hover:bg-emerald-600/5 hover:text-foreground"
+              >
+                {text}
+              </Button>
+            ))}
+          </div>
         </div>
+
+        <p className="mt-6 max-w-md text-xs leading-relaxed text-muted-foreground/80">
+          ছবি, অডিও বা ভিডিও আপলোড করে এডিট, ভয়েসওভার বা ছবি-থেকে-ভিডিও
+          চাইতে পারেন — কম্পোজারের অ্যাটাচ বোতামে ফাইল যোগ করুন।
+        </p>
       </div>
     </div>
   );

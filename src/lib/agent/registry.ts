@@ -1,6 +1,8 @@
 // ============================================================
-// Tool Registry — ৮টি টুল, প্রতিটিতে zod validation + timeout +
-// execute() → { summary, resultJson, artifacts? }।
+// Tool Registry — সব টুলের কেন্দ্রীয় তালিকা।
+// - মূল ৮টি এজেন্ট টুল (নিচেই সংজ্ঞায়িত)
+// - স্টুডিও টুলগুলো tools/{image,audio,video,production}.ts থেকে
+// প্রতিটি টুলে zod validation + timeout + usage (LLM-নির্দেশিকা)।
 // যেকোনো ব্যর্থতা throw হিসেবে ওঠে — orchestrator ধরে structured
 // error বানিয়ে LLM-কে ফেরত দেয় (কখনো uncaught নয়)।
 // ============================================================
@@ -9,96 +11,25 @@ import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import { z } from 'zod';
-import type { ArtifactMeta } from '@/lib/types';
 import { db } from '@/lib/db';
 import { getZAI } from './llm';
 import { readArtifactFile, saveArtifactFile } from './storage';
 import { toArtifactMeta } from './serialize';
+import { createToolArtifact } from './registry-helpers';
+import type { ToolContext, ToolOutput, ToolSpec, ToolValidation } from './registry-helpers';
+import { IMAGE_TOOLS } from './tools/image';
+import { AUDIO_TOOLS } from './tools/audio';
+import { VIDEO_TOOLS } from './tools/video';
+import { PRODUCTION_TOOLS } from './tools/production';
+
+export type { ToolContext, ToolOutput, ToolSpec, ToolValidation } from './registry-helpers';
+export { createToolArtifact, artifactToDataUrl, artifactFilePath } from './registry-helpers';
 
 const execFileAsync = promisify(execFileCb);
-
-export interface ToolContext {
-  conversationId: string;
-  runId: string;
-  toolCallId: string;
-}
-
-export interface ToolOutput {
-  /** মানুষ-পাঠযোগ্য ফলাফল-সারাংশ (Bengali, UI-তে দেখানো হয়) */
-  summary: string;
-  /** compact JSON — LLM-এর কাছে ফিরিয়ে দেওয়া হয় */
-  resultJson: string;
-  /** এই টুল কলে তৈরি হওয়া artifacts */
-  artifacts?: ArtifactMeta[];
-}
-
-export interface ToolSpec<T = any> {
-  name: string;
-  parameters: z.ZodType<T>;
-  timeoutMs: number;
-  /** আর্গুমেন্টের মানুষ-পাঠযোগ্য (Bengali) সারাংশ */
-  inputSummary: (input: T) => string | Promise<string>;
-  execute: (input: T, ctx: ToolContext) => Promise<ToolOutput>;
-}
-
-export type ToolValidation =
-  | { ok: true; tool: ToolSpec; input: any }
-  | { ok: false; error: string; hint: string };
-
-/** অজানা টুল / zod validation ব্যর্থ → structured error (কখনো throw নয়) */
-export function validateToolCall(toolName: string, args: unknown): ToolValidation {
-  const spec = TOOLS.find(t => t.name === toolName);
-  if (!spec) {
-    return {
-      ok: false,
-      error: `অজানা টুল: "${toolName}"`,
-      hint: `উপলব্ধ টুলসমূহ: ${TOOLS.map(t => t.name).join(', ')}`,
-    };
-  }
-  const parsed = spec.parameters.safeParse(args);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .slice(0, 5)
-      .map(i => `${i.path.map(String).join('.') || '(root)'}: ${i.message}`)
-      .join('; ');
-    return {
-      ok: false,
-      error: `টুল "${toolName}"-এর আর্গুমেন্ট যাচাই ব্যর্থ হয়েছে`,
-      hint: issues || 'আর্গুমেন্টগুলো সঠিক ফরম্যাটে দাও',
-    };
-  }
-  return { ok: true, tool: spec, input: parsed.data };
-}
 
 // ------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------
-
-async function createToolArtifact(params: {
-  conversationId: string;
-  runId: string;
-  kind: 'image' | 'audio' | 'text';
-  mimeType: string;
-  fileName: string;
-  size: number;
-  storagePath?: string | null;
-  sourceUrl?: string | null;
-}): Promise<ArtifactMeta> {
-  const row = await db.artifact.create({
-    data: {
-      conversationId: params.conversationId,
-      runId: params.runId,
-      origin: 'tool',
-      kind: params.kind,
-      mimeType: params.mimeType,
-      fileName: params.fileName,
-      size: params.size,
-      storagePath: params.storagePath ?? null,
-      sourceUrl: params.sourceUrl ?? null,
-    },
-  });
-  return toArtifactMeta(row);
-}
 
 /** HTML → পরিষ্কার টেক্সট (script/style বাদ, entities ডিকোড, whitespace সংকোচন) */
 function stripHtml(html: string): string {
@@ -148,11 +79,11 @@ const webSearchSpec: ToolSpec<{ query: string; num?: number }> = {
     num: z.number().int().min(3).max(8).optional().default(6),
   }),
   timeoutMs: 60_000,
+  usage: 'web_search — ইন্টারনেটে সর্বশেষ তথ্য খুঁজে আনে। arguments: {"query": string (১–৪০০ অক্ষর), "num"?: number (৩–৮, ডিফল্ট ৬)}',
   inputSummary: i => `খোঁজ: ${i.query}`,
   execute: async input => {
     const zai = await getZAI();
     const raw = await zai.functions.invoke('web_search', { query: input.query, num: input.num ?? 6 });
-    // SDK-রিটার্ন array; তবে defensive চেক
     const list: any[] = Array.isArray(raw)
       ? raw
       : Array.isArray((raw as any)?.results)
@@ -178,6 +109,7 @@ const readWebPageSpec: ToolSpec<{ url: string }> = {
   name: 'read_web_page',
   parameters: z.object({ url: z.string().url() }),
   timeoutMs: 90_000,
+  usage: 'read_web_page — নির্দিষ্ট ওয়েবপেজের পুরো বিষয়বস্তু পড়ে। arguments: {"url": string (সম্পূর্ণ http/https URL)}',
   inputSummary: i => i.url,
   execute: async input => {
     const zai = await getZAI();
@@ -204,6 +136,7 @@ const generateImageSpec: ToolSpec<{ prompt: string; size?: '1024x1024' | '1344x7
     size: z.enum(['1024x1024', '1344x768', '768x1344']).optional().default('1024x1024'),
   }),
   timeoutMs: 180_000,
+  usage: 'generate_image — টেক্সট বর্ণনা থেকে AI দিয়ে নতুন ছবি আঁকে (প্রম্পট ইংরেজিতে দিলে সেরা)। arguments: {"prompt": string (১–১৫০০), "size"?: "1024x1024"|"1344x768"|"768x1344"}',
   inputSummary: i => truncate(i.prompt, 120),
   execute: async (input, ctx) => {
     const zai = await getZAI();
@@ -245,6 +178,7 @@ const searchImagesSpec: ToolSpec<{ query: string }> = {
   name: 'search_images',
   parameters: z.object({ query: z.string().min(1).max(400) }),
   timeoutMs: 150_000,
+  usage: 'search_images — ওয়েব থেকে প্রাসঙ্গিক বাস্তব ছবি খুঁজে আনে। arguments: {"query": string}',
   inputSummary: i => `খোঁজ: ${i.query}`,
   execute: async (input, ctx) => {
     const cliPath = path.join(process.cwd(), 'node_modules', '.bin', 'z-ai');
@@ -260,7 +194,6 @@ const searchImagesSpec: ToolSpec<{ query: string }> = {
       const detail = String(err?.stderr || err?.stdout || err?.message || '').slice(0, 300);
       throw new Error(`ছবি সার্চ CLI ব্যর্থ: ${detail}`);
     }
-    // stdout-এ অতিরিক্ত লাইন থাকতে পারে — প্রথম { থেকে শেষ } পর্যন্ত নাও
     const first = stdout.indexOf('{');
     const last = stdout.lastIndexOf('}');
     if (first === -1 || last <= first) throw new Error('ছবি সার্চের ফলাফল পার্স করা যায়নি');
@@ -273,7 +206,7 @@ const searchImagesSpec: ToolSpec<{ query: string }> = {
     if (!parsed?.success || !Array.isArray(parsed.results) || parsed.results.length === 0) {
       throw new Error(`কোনো ছবি পাওয়া যায়নি${parsed?.error ? ` (${String(parsed.error).slice(0, 200)})` : ''}`);
     }
-    const metas: ArtifactMeta[] = [];
+    const metas: any[] = [];
     const resultItems: { url: string; caption: string; source: string }[] = [];
     for (const r of parsed.results) {
       if (!r?.original_url) continue;
@@ -311,12 +244,12 @@ const analyzeImageSpec: ToolSpec<{ image: string; question: string }> = {
     question: z.string().min(1).max(2000),
   }),
   timeoutMs: 120_000,
+  usage: 'analyze_image — ছবি দেখে প্রশ্নের উত্তর দেয় (গুণমান পরীক্ষা/বর্ণনা/ধারাবাহিকতা যাচাইসহ)। arguments: {"image": string (artifact আইডি বা পাবলিক URL), "question": string}',
   inputSummary: i => i.question,
   execute: async input => {
     let url = input.image.trim();
     const isHttp = /^https?:\/\//i.test(url);
     if (!isHttp && !url.startsWith('data:')) {
-      // artifact আইডি → লোকাল ফাইল → base64 data URL (VLM localhost ফেচ করতে পারে না)
       const artifact = await db.artifact.findUnique({ where: { id: url } });
       if (!artifact || !artifact.storagePath) {
         throw new Error(`চিহ্নিত ছবি (artifact) খুঁজে পাওয়া যায়নি: ${url.slice(0, 60)}`);
@@ -357,11 +290,10 @@ const textToSpeechSpec: ToolSpec<{ text: string; voice?: 'tongtong' | 'jam' | 'k
     voice: z.enum(['tongtong', 'jam', 'kazi']).optional().default('tongtong'),
   }),
   timeoutMs: 120_000,
+  usage: 'text_to_speech — লেখাকে স্বাভাবিক কণ্ঠের অডিওতে রূপ দেয়। কণ্ঠ: tongtong (স্বাভাবিক), jam, kazi। arguments: {"text": string (১–১০০০ অক্ষর), "voice"?: "tongtong"|"jam"|"kazi"}',
   inputSummary: i => truncate(i.text, 80),
   execute: async (input, ctx) => {
     const zai = await getZAI();
-    // চুক্তি অনুযায়ী mp3 চেষ্টা; সার্ভার বর্তমানে mp3 সমর্থন না করলে (400/1214)
-    // স্বয়ংক্রিয়ভাবে wav-এ fallback করে প্রকৃত ফরম্যাট অনুযায়ী artifact সেভ হয়।
     const attempt = async (format: 'mp3' | 'wav') => {
       const res = await zai.audio.tts.create({
         input: input.text,
@@ -388,7 +320,6 @@ const textToSpeechSpec: ToolSpec<{ text: string; voice?: 'tongtong' | 'jam' | 'k
       mimeType = 'audio/wav';
     }
     if (buf.length === 0) throw new Error('অডিও ডেটা খালি এসেছে');
-    // ফরম্যাট যাচাই: RIFF হেডার পেলে সঠিক wav হিসেবে সেভ করো
     if (ext === 'mp3' && buf.length > 12 && buf.slice(0, 4).toString('ascii') === 'RIFF') {
       ext = 'wav';
       mimeType = 'audio/wav';
@@ -423,6 +354,7 @@ const transcribeAudioSpec: ToolSpec<{ audio: string }> = {
   name: 'transcribe_audio',
   parameters: z.object({ audio: z.string().min(1) }),
   timeoutMs: 180_000,
+  usage: 'transcribe_audio — অডিও শুনে লেখায় রূপ দেয় (বাংলা অডিওতে দুর্বল হতে পারে)। arguments: {"audio": string (artifact আইডি)}',
   inputSummary: async i => {
     const a = await db.artifact.findUnique({ where: { id: i.audio } });
     return a?.fileName ?? i.audio;
@@ -451,6 +383,7 @@ const searchConversationsSpec: ToolSpec<{ query: string }> = {
   name: 'search_conversations',
   parameters: z.object({ query: z.string().min(1).max(400) }),
   timeoutMs: 15_000,
+  usage: 'search_conversations — পুরনো কথোপকথনের স্মৃতি থেকে প্রাসঙ্গিক তথ্য খুঁজে আনে। arguments: {"query": string}',
   inputSummary: i => `খোঁজ: ${i.query}`,
   execute: async (input, ctx) => {
     const [messages, convs] = await Promise.all([
@@ -491,7 +424,10 @@ const searchConversationsSpec: ToolSpec<{ query: string }> = {
 };
 
 // ------------------------------------------------------------
-export const TOOLS: ToolSpec[] = [
+// কেন্দ্রীয় তালিকা — মূল ৮টি + স্টুডিও ডোমেইন
+// ------------------------------------------------------------
+
+export const CORE_TOOLS: ToolSpec[] = [
   webSearchSpec,
   readWebPageSpec,
   generateImageSpec,
@@ -501,6 +437,39 @@ export const TOOLS: ToolSpec[] = [
   transcribeAudioSpec,
   searchConversationsSpec,
 ];
+
+export const TOOLS: ToolSpec[] = [
+  ...CORE_TOOLS,
+  ...IMAGE_TOOLS,
+  ...AUDIO_TOOLS,
+  ...VIDEO_TOOLS,
+  ...PRODUCTION_TOOLS,
+];
+
+/** অজানা টুল / zod validation ব্যর্থ → structured error (কখনো throw নয়) */
+export function validateToolCall(toolName: string, args: unknown): ToolValidation {
+  const spec = TOOLS.find(t => t.name === toolName);
+  if (!spec) {
+    return {
+      ok: false,
+      error: `অজানা টুল: "${toolName}"`,
+      hint: `উপলব্ধ টুলসমূহ: ${TOOLS.map(t => t.name).join(', ')}`,
+    };
+  }
+  const parsed = spec.parameters.safeParse(args);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .slice(0, 5)
+      .map(i => `${i.path.map(String).join('.') || '(root)'}: ${i.message}`)
+      .join('; ');
+    return {
+      ok: false,
+      error: `টুল "${toolName}"-এর আর্গুমেন্ট যাচাই ব্যর্থ হয়েছে`,
+      hint: issues || 'আর্গুমেন্টগুলো সঠিক ফরম্যাটে দাও',
+    };
+  }
+  return { ok: true, tool: spec, input: parsed.data };
+}
 
 export function getToolSpec(name: string): ToolSpec | undefined {
   return TOOLS.find(t => t.name === name);

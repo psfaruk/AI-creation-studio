@@ -16,19 +16,6 @@ import { TOOL_CATALOG } from '@/lib/types';
 import { db } from '@/lib/db';
 import type { AgentRun, Artifact, Message, ToolCall } from '@prisma/client';
 
-/** Artifact row → ArtifactMeta (url সবসময় লোকাল API endpoint) */
-export function toArtifactMeta(a: Artifact): ArtifactMeta {
-  return {
-    id: a.id,
-    kind: a.kind as ArtifactMeta['kind'],
-    mimeType: a.mimeType,
-    fileName: a.fileName,
-    size: a.size,
-    url: `/api/artifacts/${a.id}/file`,
-    external: !a.storagePath && !!a.sourceUrl,
-  };
-}
-
 /** user_upload Artifact row → AttachmentView */
 export function toAttachmentView(a: Artifact): AttachmentView {
   return {
@@ -51,6 +38,19 @@ export function toActivityView(tc: ToolCall): ActivityView {
     output: tc.outputSummary ?? undefined,
     error: tc.error ?? undefined,
     durationMs: tc.durationMs ?? undefined,
+  };
+}
+
+/** Artifact row → ArtifactMeta (url সবসময় লোকাল API endpoint) */
+export function toArtifactMeta(a: Artifact): ArtifactMeta {
+  return {
+    id: a.id,
+    kind: a.kind as ArtifactMeta['kind'],
+    mimeType: a.mimeType,
+    fileName: a.fileName,
+    size: a.size,
+    url: `/api/artifacts/${a.id}/file`,
+    external: !a.storagePath && !!a.sourceUrl,
   };
 }
 
@@ -81,6 +81,7 @@ export async function buildMessageView(msg: Message): Promise<ChatMessage> {
     role: msg.role === 'assistant' ? 'assistant' : 'user',
     content: msg.content,
     createdAt: msg.createdAt.toISOString(),
+    productionId: msg.productionId ?? undefined,
   };
 
   if (base.role === 'user') {

@@ -8,11 +8,12 @@ import type { AgentRun } from '@prisma/client';
 import { db } from '@/lib/db';
 import { TOOL_CATALOG } from '@/lib/types';
 import { emit } from './events';
-import { chatComplete, parseToolCall, SYSTEM_PROMPT, type LLMMessage } from './llm';
+import { chatComplete, parseToolCall, type LLMMessage } from './llm';
+import { SYSTEM_PROMPT } from './prompts';
 import { validateToolCall, type ToolOutput, type ToolSpec } from './registry';
 import { buildMessageView } from './serialize';
 
-const MAX_STEPS = 8;
+const MAX_STEPS = 12;
 const HISTORY_LIMIT = 20;
 const STALE_RUN_MS = 10 * 60 * 1000; // ১০ মিনিট
 
@@ -26,6 +27,13 @@ function safeJson(value: unknown): string {
   } catch {
     return 'null';
   }
+}
+
+/** টেক্সটটি কি ভাঙা টুল-কল JSON-এর মতো দেখাচ্ছে? (কাটা আউটপুট শনাক্তকরণ) */
+function looksLikeToolCall(text: string): boolean {
+  const t = text.trim();
+  if (!t.startsWith('{')) return false;
+  return /"tool"\s*:/.test(t.slice(0, 200)) || /"arguments"\s*:/.test(t.slice(0, 300));
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -177,6 +185,7 @@ async function runAgentLoop(runId: string): Promise<void> {
   if (!run || run.status !== 'running') return;
 
   const startedAt = Date.now();
+  let proposedProductionId: string | null = null;
 
   // ---- ১. context তৈরি: system prompt + সর্বশেষ ~২০টি বার্তা ----
   const history = await db.message.findMany({
@@ -210,6 +219,14 @@ async function runAgentLoop(runId: string): Promise<void> {
       orderBy: { createdAt: 'asc' },
     });
     for (const upload of uploads) {
+      if (upload.kind === 'video') {
+        // ভিডিও প্রি-স্টেপ নেই — উপস্থিতি জানিয়ে দাও, LLM দরকার হলে inspect_media কল করবে
+        context.push({
+          role: 'user',
+          content: `ব্যবহারকারী একটি ভিডিও আপলোড করেছেন (artifact আইডি: ${upload.id}, নাম: ${upload.fileName})। দরকার হলে inspect_media টুল দিয়ে মেটাডেটা দেখো।`,
+        });
+        continue;
+      }
       const isAudio = upload.kind === 'audio';
       const toolName = isAudio ? 'transcribe_audio' : 'analyze_image';
       const validation = validateToolCall(
@@ -256,6 +273,17 @@ async function runAgentLoop(runId: string): Promise<void> {
         });
         continue;
       }
+      // টুল-কলের মতো দেখাচ্ছে কিন্তু পার্স হয়নি (প্রায়ই আউটপুট-টোকেনে কাটা) →
+      // চূড়ান্ত উত্তর হিসেবে নয়, সংশোধন-অনুরোধ হিসেবে ফেরত দাও
+      if (looksLikeToolCall(text)) {
+        logStep(runId, decisionSeq, 'llm', 'malformed-tool-call', Date.now() - t0);
+        context.push({
+          role: 'user',
+          content:
+            'তোমার শেষ উত্তরটি একটি ভাঙা/অসম্পূর্ণ JSON টুল কলের মতো। অনুগ্রহ করে ঠিক এই ফরম্যাটে পুরো, বৈধ, কমপ্যাক্ট JSON দিয়ে আবার পাঠাও: {"tool": "...", "arguments": {...}} — arguments সংক্ষিপ্ত রাখো (দীর্ঘ টেক্সট নয়)।',
+        });
+        continue;
+      }
       finalText = text;
       break;
     }
@@ -276,6 +304,15 @@ async function runAgentLoop(runId: string): Promise<void> {
 
     const outcome = await executeToolCall(run, validation.tool.name, validation.tool, validation.input, nextSeq, stats);
     if (outcome.ok) {
+      // propose_job সফল হলে চূড়ান্ত বার্তার সাথে production কার্ড লিংক হবে
+      if (validation.tool.name === 'propose_job' && outcome.resultJson) {
+        try {
+          const parsedResult = JSON.parse(outcome.resultJson) as { productionId?: string };
+          if (parsedResult.productionId) proposedProductionId = parsedResult.productionId;
+        } catch {
+          // উপেক্ষা
+        }
+      }
       context.push({
         role: 'user',
         content: `[TOOL_RESULT] name: ${validation.tool.name}\nstatus: success\n${outcome.resultJson ?? ''}`,
@@ -309,7 +346,7 @@ async function runAgentLoop(runId: string): Promise<void> {
     finalText =
       text.trim() && !stillToolCall
         ? text
-        : 'দুঃখিত, এই কাজটি সম্পূর্ণ করতে অনুমোদিত ধাপের সীমা (৮) শেষ হয়ে গেছে। অনুগ্রহ করে প্রশ্নটি ছোট ছোট অংশে ভাগ করে আবার জিজ্ঞাসা করুন।';
+        : 'দুঃখিত, এই কাজটি সম্পূর্ণ করতে অনুমোদিত ধাপের সীমা (১২) শেষ হয়ে গেছে। অনুগ্রহ করে প্রশ্নটি ছোট ছোট অংশে ভাগ করে আবার জিজ্ঞাসা করুন।';
   }
 
   await finalizeRun(runId, finalText, {
@@ -317,7 +354,7 @@ async function runAgentLoop(runId: string): Promise<void> {
     toolCalls: stats.toolCalls,
     durationMs: Date.now() - startedAt,
     seq: nextSeq(),
-  });
+  }, proposedProductionId);
 }
 
 /**
@@ -327,7 +364,8 @@ async function runAgentLoop(runId: string): Promise<void> {
 async function finalizeRun(
   runId: string,
   content: string,
-  stats: { steps: number; toolCalls: number; durationMs: number; seq: number }
+  stats: { steps: number; toolCalls: number; durationMs: number; seq: number },
+  productionId: string | null = null
 ): Promise<void> {
   const run = await db.agentRun.findUnique({ where: { id: runId } });
   if (!run || run.status !== 'running') return;
@@ -335,7 +373,13 @@ async function finalizeRun(
 
   const [message] = await db.$transaction([
     db.message.create({
-      data: { conversationId: run.conversationId, role: 'assistant', content, runId: run.id },
+      data: {
+        conversationId: run.conversationId,
+        role: 'assistant',
+        content,
+        runId: run.id,
+        productionId: productionId ?? undefined,
+      },
     }),
     db.agentRun.update({
       where: { id: runId },

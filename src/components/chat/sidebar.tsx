@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { BookOpen, Factory, Images, MessageSquare, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 
 import {
   AlertDialog,
@@ -24,6 +24,8 @@ import { relativeTimeBn, toBnDigits } from '@/components/chat/bn-format';
 import { ToolIcon } from '@/components/chat/tool-icon';
 import { useChatStore } from '@/hooks/use-chat-store';
 import { useTools } from '@/hooks/use-tools';
+import { useUiView } from '@/hooks/use-ui-view';
+import type { AppView } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 const CATEGORY_LABELS: Record<ToolCategory, string> = {
@@ -32,9 +34,31 @@ const CATEGORY_LABELS: Record<ToolCategory, string> = {
   vision: 'ভিশন',
   audio: 'অডিও',
   memory: 'স্মৃতি',
+  image_studio: 'ইমেজ স্টুডিও',
+  audio_studio: 'অডিও স্টুডিও',
+  video_studio: 'ভিডিও স্টুডিও',
+  production: 'প্রোডাকশন',
 };
 
-const CATEGORY_ORDER: ToolCategory[] = ['research', 'media', 'vision', 'audio', 'memory'];
+const CATEGORY_ORDER: ToolCategory[] = [
+  'research',
+  'media',
+  'vision',
+  'audio',
+  'memory',
+  'image_studio',
+  'audio_studio',
+  'video_studio',
+  'production',
+];
+
+const VIEWS: { key: AppView; label: string; icon: typeof MessageSquare }[] = [
+  { key: 'chat', label: 'চ্যাট', icon: MessageSquare },
+  { key: 'gallery', label: 'গ্যালারি', icon: Images },
+  { key: 'productions', label: 'প্রোডাকশন', icon: Factory },
+  { key: 'registry', label: 'রেজিস্ট্রি', icon: ShieldCheck },
+  { key: 'guide', label: 'গাইড', icon: BookOpen },
+];
 
 function ConversationItem({
   conversation,
@@ -117,7 +141,7 @@ function ToolsSection({ tools }: { tools: ToolInfo[] }) {
 
   return (
     <div
-      className="max-h-[38vh] overflow-y-auto pr-1
+      className="max-h-[30vh] overflow-y-auto pr-1
         [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent]
         [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent"
     >
@@ -151,6 +175,40 @@ function ToolsSection({ tools }: { tools: ToolInfo[] }) {
   );
 }
 
+function ViewNav({ onAfterSelect }: { onAfterSelect?: () => void }) {
+  const activeView = useUiView(s => s.activeView);
+  const setActiveView = useUiView(s => s.setActiveView);
+
+  return (
+    <nav aria-label="ভিউ নেভিগেশন" className="grid grid-cols-5 gap-1">
+      {VIEWS.map(({ key, label, icon: Icon }) => (
+        <Tooltip key={key}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveView(key);
+                onAfterSelect?.();
+              }}
+              aria-current={activeView === key ? 'page' : undefined}
+              className={cn(
+                'flex min-h-11 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600/40',
+                activeView === key
+                  ? 'bg-emerald-600/10 text-emerald-700 dark:text-emerald-400'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
+            >
+              <Icon className="size-4" aria-hidden="true" />
+              {label}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">{label}</TooltipContent>
+        </Tooltip>
+      ))}
+    </nav>
+  );
+}
+
 /**
  * সাইডবার কনটেন্ট — ডেস্কটপ aside ও মোবাইল Sheet দুই জায়গাতেই ব্যবহৃত।
  */
@@ -172,7 +230,8 @@ export function SidebarContent({ onAfterSelect }: { onAfterSelect?: () => void }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 p-3 pb-0">
+      <div className="shrink-0 space-y-3 p-3 pb-0">
+        <ViewNav onAfterSelect={onAfterSelect} />
         <Button
           type="button"
           onClick={handleNewChat}

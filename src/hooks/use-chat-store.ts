@@ -26,7 +26,7 @@ function rememberActiveConversation(id: string | null): void {
 
 /** কম্পোজারে যোগ হওয়া ফাইল (dataURL আকারে) */
 export interface PendingAttachment {
-  kind: 'image' | 'audio';
+  kind: 'image' | 'audio' | 'video';
   name: string;
   dataUrl: string;
 }

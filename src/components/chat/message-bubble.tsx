@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { AudioLines, Loader2 } from 'lucide-react';
+import { AudioLines, Film, Loader2 } from 'lucide-react';
 
 import type { ChatMessage } from '@/lib/types';
 
@@ -10,11 +10,13 @@ import { ActivityCard } from '@/components/chat/activity-card';
 import { ArtifactList } from '@/components/chat/artifact-view';
 import { Markdown } from '@/components/chat/markdown';
 import { PulsingDots } from '@/components/chat/pulsing-dots';
+import { ProductionCard } from '@/components/studio/production-card';
 import { Skeleton } from '@/components/ui/skeleton';
 
 function UserBubble({ message }: { message: ChatMessage }) {
   const images = (message.attachments ?? []).filter((a) => a.kind === 'image');
   const audios = (message.attachments ?? []).filter((a) => a.kind === 'audio');
+  const videos = (message.attachments ?? []).filter((a) => a.kind === 'video');
 
   return (
     <motion.div
@@ -60,6 +62,24 @@ function UserBubble({ message }: { message: ChatMessage }) {
             <audio controls src={a.url} className="h-8 w-40 max-w-[45vw]" aria-label={a.name} />
           </div>
         ))}
+
+        {videos.length > 0 && (
+          <div className="flex max-w-full flex-col gap-1.5">
+            {videos.map((a, i) => (
+              <div
+                key={`${a.name}-${i}`}
+                className="flex max-w-full items-center gap-2 rounded-xl border bg-card px-3 py-1.5 shadow-sm"
+              >
+                <Film
+                  className="size-4 shrink-0 text-emerald-700 dark:text-emerald-400"
+                  aria-hidden="true"
+                />
+                <span className="max-w-36 truncate text-xs text-muted-foreground">{a.name}</span>
+                <video controls preload="metadata" src={a.url} className="h-16 w-28 rounded-md bg-black" aria-label={a.name} />
+              </div>
+            ))}
+          </div>
+        )}
 
         <span className="text-[11px] text-muted-foreground">{formatTimeBn(message.createdAt)}</span>
       </div>
@@ -119,6 +139,8 @@ function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending
       )}
 
       {extraArtifacts.length > 0 && <ArtifactList artifacts={extraArtifacts} />}
+
+      {message.productionId && <ProductionCard productionId={message.productionId} />}
 
       {message.runStats && (
         <p className="text-xs text-muted-foreground">{formatRunStatsBn(message.runStats)}</p>
