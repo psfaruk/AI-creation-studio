@@ -201,6 +201,7 @@ model ModelEntry {
   providerStatus    String? // exposed_by_sdk | not_exposed_by_sdk | unknown
   integrationStatus String? // integrated | partial | not_integrated
   runtimeStatus     String? // healthy | degraded | temporarily_unavailable | unavailable_hardware | not_applicable
+  qualityStatus     String? // নতুন পরিকল্পনা §১: quality_not_verified | quality_machine_checked | quality_human_verified | quality_not_applicable
   apiEndpoint       String? // যেমন: zai.video.generations.create
   apiModelId        String? // যেমন: cogvideox-3
   lastTestedAt      DateTime? // শেষ সফল/ব্যর্থ বাস্তব API-পরীক্ষার সময়

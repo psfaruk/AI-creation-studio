@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { measureHardware, runToolHealthChecks } from '@/lib/system-info';
+import { ttsCacheStats } from '@/lib/agent/tts-cache';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
 
 export const runtime = 'nodejs';
@@ -18,6 +19,8 @@ export async function GET() {
     return NextResponse.json({
       hardware,
       tools,
+      // §১১: TTS ডিস্ক-ক্যাশ/ডিডুপ-পরিসংখ্যান (hits=ক্যাশ-থেকে, misses=প্রকৃত API-কল)
+      ttsCache: ttsCacheStats(),
       checkedAt: new Date().toISOString(),
       note: 'স্বাস্থ্য-চেক আসল মাইক্রো-কল দিয়ে (LLM/TTS) — ব্যয়বহুল মডেল (ছবি/ভিডিও) রেজিস্ট্রি-স্ট্যাটাস থেকে।',
     });

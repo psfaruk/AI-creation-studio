@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { getZAI } from './llm';
-import { imageSearchSdkFirst } from './sdk-helpers';
+import { imageSearchSdkFirst, transcribeBuffer } from './sdk-helpers';
 import { readArtifactFile, saveArtifactFile } from './storage';
 import { toArtifactMeta } from './serialize';
 import { createToolArtifact } from './registry-helpers';
@@ -330,7 +330,7 @@ const textToSpeechSpec: ToolSpec<{ text: string; voice?: 'tongtong' | 'jam' | 'k
 const transcribeAudioSpec: ToolSpec<{ audio: string }> = {
   name: 'transcribe_audio',
   parameters: z.object({ audio: z.string().min(1) }),
-  timeoutMs: 180_000,
+  timeoutMs: 300_000,
   usage: 'transcribe_audio — অডিও শুনে লেখায় রূপ দেয় (বাংলা অডিওতে দুর্বল হতে পারে)। arguments: {"audio": string (artifact আইডি)}',
   inputSummary: async i => {
     const a = await db.artifact.findUnique({ where: { id: i.audio } });
@@ -342,9 +342,11 @@ const transcribeAudioSpec: ToolSpec<{ audio: string }> = {
       throw new Error(`চিহ্নিত অডিও (artifact) খুঁজে পাওয়া যায়নি: ${input.audio.slice(0, 60)}`);
     }
     const buf = await readArtifactFile(artifact.storagePath);
-    const zai = await getZAI();
-    const r = await zai.audio.asr.create({ file_base64: buf.toString('base64') });
-    const text = String(r?.text ?? '').trim();
+    // S8-3 সংশোধন (অডিট-ফাইন্ডিং): আগে সরাসরি asr.create ডাকা হত —
+    // ৩০ সে.-এর বেশি অডিও ব্যর্থ হতো। এখন transcribeBuffer (২৮-সে. চাঙ্কিং +
+    // ৪২৯-ব্যাকঅফসহ) — দীর্ঘ অডিওও খণ্ডে খণ্ডে লিপিবদ্ধ হয়।
+    const ext = (artifact.storagePath.split('.').pop() ?? 'wav').toLowerCase();
+    const text = (await transcribeBuffer(buf, ext)).trim();
     if (!text) throw new Error('অডিও থেকে কোনো লেখা শনাক্ত করা যায়নি');
     return {
       summary: truncate(text, 160),

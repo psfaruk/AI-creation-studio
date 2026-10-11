@@ -10,22 +10,12 @@ import { promisify } from 'util';
 import { statfs } from 'fs/promises';
 import { getZAI } from './agent/llm';
 import { synthesizeSpeech } from './agent/sdk-helpers';
+import type { HardwareReport } from '@/lib/types';
+
+// চুক্তি-টাইপ এখন types.ts-এ (shared contract) — পুরনো ইমপোর্টারদের জন্য পুনঃ-রপ্তানি
+export type { HardwareReport };
 
 const execFileAsync = promisify(execFileCb);
-
-export interface HardwareReport {
-  cpuCores: number;
-  cpuModel: string;
-  totalMemGb: number;
-  freeMemGb: number;
-  diskTotalGb: number;
-  diskFreeGb: number;
-  gpu: { present: boolean; note: string };
-  ffmpeg: string | null;
-  ffprobe: string | null;
-  nodeVersion: string;
-  platform: string;
-}
 
 export interface ToolHealth {
   key: string;
@@ -212,7 +202,7 @@ export async function runToolHealthChecks(opts?: { force?: boolean }): Promise<T
       status: 'down',
       note: '৪-মাত্রিক বাধা: SDK-তে API নেই · GPU নেই · অ্যাডাপ্টার নেই · বাংলা বেঞ্চমার্ক হয়নি',
     },
-    { key: 'singing', label: 'গান-গাওয়া মডেল', status: 'down', note: 'লাইসেন্স-অযাচাইকৃত/অস্থাপিত (§৩ সৎ-অবস্থা)' },
+    { key: 'singing', label: 'গান-গাওয়া মডেল (ACE-Step/YuE)', status: 'down', note: 'প্রকৃত বাধা: GPU নেই ও SDK-তে গান-জেনারেশন API নেই — লাইসেন্স অ-বাণিজ্যিক ব্যবহারে অনুমোদিত (সৎ-অবস্থা)' },
   ];
 
   const checked = ['llm', 'tts', 'ffmpeg'].map(k => cache[k]).filter(Boolean) as ToolHealth[];

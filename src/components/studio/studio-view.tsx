@@ -101,6 +101,8 @@ interface StudioMode {
   matrixKey?: string;
   /** সতর্কতা / পরীক্ষামূলক-ব্যাখ্যা / ফলব্যাক-কারণ (ম্যাট্রিক্স-নোটের ফলব্যাক) */
   statusNote?: string;
+  /** অতিরিক্ত সৎ-স্ট্যাটাস-লাইন (S8-2d — বাংলা TTS মান-যাচাই-নির্দেশনা) */
+  extraNote?: string;
   languages: string;
   maxDuration: string;
   engine: EngineNature;
@@ -143,6 +145,7 @@ const AUDIO_MODES: StudioMode[] = [
     engine: 'ai',
     eta: `${toBnDigits(10)}–${toBnDigits(60)} সেকেন্ড`,
     gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+    extraNote: 'বাংলা মান-যাচাই: বেঞ্চমার্ক-ল্যাবে (রেজিস্ট্রি ভিউ)',
     draft:
       'এই লেখাটা স্বাভাবিক কণ্ঠে অডিও বানিয়ে দাও: “এখানে আপনার লেখা লিখুন” — ভাষা বাংলা, কণ্ঠ jam, মান standard।',
   },
@@ -541,6 +544,14 @@ function ModeCard({
             {notePrefix && <span className="font-semibold">{notePrefix}</span>}
             {noteText}
           </span>
+        </p>
+      )}
+
+      {/* অতিরিক্ত সৎ-স্ট্যাটাস-লাইন (S8-2d — কেবল নির্দিষ্ট মোডে) */}
+      {mode.extraNote && (
+        <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>{mode.extraNote}</span>
         </p>
       )}
 

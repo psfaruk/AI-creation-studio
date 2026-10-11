@@ -196,15 +196,17 @@ export const TOOL_CATALOG: ToolInfo[] = [
   },
   {
     name: 'generate_singing',
-    title: 'কণ্ঠসংগীত (পরীক্ষামূলক)',
-    description: 'গান গাওয়ার মডেল — লাইসেন্স-নীতির কারণে এখন অবরুদ্ধ',
+    title: 'কণ্ঠসংগীত (ভবিষ্যৎ)',
+    description:
+      'গান-জেনারেশন মডেল (ACE-Step/YuE) — লাইসেন্স অ-বাণিজ্যিকে অনুমোদিত, কিন্তু GPU-হীন এই পরিবেশে ও SDK-API-তে চালু নয়',
     icon: 'MicVocal',
     category: 'audio_studio',
   },
   {
     name: 'separate_stems',
-    title: 'স্টেম পৃথকীকরণ (পরীক্ষামূলক)',
-    description: 'কণ্ঠ/বাদ্য পৃথক করার মডেল — এখন অবরুদ্ধ',
+    title: 'স্টেম পৃথকীকরণ (ভবিষ্যৎ)',
+    description:
+      'কণ্ঠ/বাদ্য পৃথক করার মডেল (Demucs) — এই পরিবেশে মডেল-ইনস্টল/হার্ডওয়্যার-বাধায় চালু নয়',
     icon: 'Split',
     category: 'audio_studio',
   },
@@ -303,8 +305,9 @@ export const TOOL_CATALOG: ToolInfo[] = [
   },
   {
     name: 'lip_sync',
-    title: 'লিপ-সিঙ্ক (পরীক্ষামূলক)',
-    description: 'ঠোঁট-মিলানো মডেল — এখন অবরুদ্ধ',
+    title: 'লিপ-সিঙ্ক (ভবিষ্যৎ)',
+    description:
+      'ঠোঁট-মিলানো মডেল — ৪-মাত্রিক বাধায় চালু নয় (SDK-API নেই · GPU নেই · অ্যাডাপ্টার নেই · বেঞ্চমার্ক হয়নি)',
     icon: 'SmilePlus',
     category: 'video_studio',
   },
@@ -637,6 +640,20 @@ export type RuntimeStatus =
   | 'unavailable_hardware'
   | 'not_applicable';
 
+/**
+ * নতুন পরিকল্পনা §১ — quality_status মাত্রা (পাঁচম মাত্রা):
+ * বাস্তব আউটপুটের গুণমান-পরীক্ষায় কতদূর উত্তীর্ণ।
+ *  - quality_not_verified: কোনো বাস্তব মান-পরীক্ষা হয়নি
+ *  - quality_machine_checked: যন্ত্র-পরীক্ষা (দৈর্ঘ্য/নীরবতা/ASR/ffprobe) পাস — মানব-শ্রবণ বাকি
+ *  - quality_human_verified: মানব-শ্রবণ/দেখা পরীক্ষাতেও উত্তীর্ণ
+ *  - quality_not_applicable: মান-ধারণা প্রযোজ্য নয় (অবকাঠামো/টুলিং)
+ */
+export type QualityStatus =
+  | 'quality_not_verified'
+  | 'quality_machine_checked'
+  | 'quality_human_verified'
+  | 'quality_not_applicable';
+
 export interface ModelEntryView {
   id: string;
   key: string;
@@ -651,6 +668,8 @@ export interface ModelEntryView {
   providerStatus?: ProviderStatus;
   integrationStatus?: IntegrationStatus;
   runtimeStatus?: RuntimeStatus;
+  /** নতুন পরিকল্পনা §১ — quality_status (পাঁচম মাত্রা) */
+  qualityStatus?: QualityStatus;
   apiEndpoint?: string;
   apiModelId?: string;
   lastTestedAt?: string;
@@ -686,11 +705,13 @@ export interface AvailabilityMatrixRow {
   provider: ProviderStatus;
   integration: IntegrationStatus;
   runtime: RuntimeStatus;
+  /** নতুন পরিকল্পনা §১ — quality_status (পাঁচম মাত্রা) */
+  quality: QualityStatus;
   apiEndpoint?: string;
   apiModelId?: string;
   lastTestedAt?: string;
   lastTestNote?: string;
-  /** অনুপলব্ধ হলে প্রকৃত কারণ — লাইসেন্স/প্রোভাইডার/হার্ডওয়্যার/ইন্টিগ্রেশন আলাদা করে */
+  /** অনুপলব্ধ হলে প্রকৃত কারণ — লাইসেন্স/প্রোভাইডার/হার্ডওয়্যার/ইন্টিগ্রেশন/গুণমান আলাদা করে */
   errorReason?: string;
   overall: MatrixOverall;
   /** সৎ নোট (যেমন: প্রসিডিউরাল ≠ নিউরাল) */
@@ -709,6 +730,132 @@ export interface AvailabilityMatrixResponse {
     note: string;
   };
   legend: Record<string, string>;
+}
+
+// ------------------------------------------------------------
+// Hardware-aware Model Manager (নতুন পরিকল্পনা §১০ — দশম ধাপ)
+// ------------------------------------------------------------
+
+/** বাস্তব হার্ডওয়্যার পরিমাপ (system-info.ts থেকে পূরণ হয়) */
+export interface HardwareReport {
+  cpuCores: number;
+  cpuModel: string;
+  totalMemGb: number;
+  freeMemGb: number;
+  diskTotalGb: number;
+  diskFreeGb: number;
+  gpu: { present: boolean; note: string };
+  ffmpeg: string | null;
+  ffprobe: string | null;
+  nodeVersion: string;
+  platform: string;
+}
+
+/** §১০-এর নির্ধারিত ৯-অবস্থার রায় — প্রতি মডেলের জন্য */
+export type HardwareVerdict =
+  | 'ready'
+  | 'ready_with_limits'
+  | 'needs_model_download'
+  | 'needs_gpu'
+  | 'needs_more_ram'
+  | 'license_review_required'
+  | 'provider_rate_limited'
+  | 'integration_incomplete'
+  | 'quality_not_verified';
+
+export interface HardwareModelAssessment {
+  modelKey: string;
+  name: string;
+  verdict: HardwareVerdict;
+  /** বাংলা ব্যাখ্যা — কেন এই রায় */
+  reason: string;
+  requires: {
+    minRamGb?: number;
+    minVramGb?: number;
+    gpuRequired: boolean;
+    /** লোকাল ওয়েট লাগলে তার পরিচয় */
+    localWeights?: string;
+  };
+  /** এই পরিবেশে ব্যবহারযোগ্য বিকল্প-পথ */
+  fallback?: string;
+}
+
+export interface HardwareManagerResponse {
+  profile: HardwareReport;
+  assessments: HardwareModelAssessment[];
+  probedAt: string;
+}
+
+// ------------------------------------------------------------
+// বাংলা TTS মান-যাচাই বেঞ্চমার্ক (নতুন পরিকল্পনা §৪ — তৃতীয় ধাপ)
+// ------------------------------------------------------------
+
+/** বেঞ্চমার্ক বাক্যের শ্রেণি — ব্যবহারকারীর নির্দিষ্ট তালিকামতো */
+export type BnBenchmarkCategory =
+  | 'conversation' // সাধারণ কথোপকথন
+  | 'dramatic' // নাটকীয় সংলাপ
+  | 'emotion' // প্রশ্ন/বিস্ময়/রাগ/কান্না/আনন্দ
+  | 'mixed_bn_en' // বাংলা-ইংরেজি মিশ্র
+  | 'numbers_dates' // সংখ্যা/তারিখ/নাম/যুক্তাক্ষর
+  | 'long_reading'; // দীর্ঘ বর্ণনা ও গল্পপাঠ
+
+export interface BnBenchmarkSentence {
+  id: string;
+  category: BnBenchmarkCategory;
+  /** মূল বাক্য */
+  text: string;
+  /** নর্মালাইজেশন-পরে প্রত্যাশিত রূপ (ঐচ্ছিক — numbers_dates-এ) */
+  expected?: string;
+}
+
+export interface TtsBenchmarkAudioChecks {
+  durationSec: number;
+  expectedSec: number;
+  durationOk: boolean;
+  peakDb?: number;
+  /** মোট সময়ের যত অংশ নীরব */
+  silenceRatio: number;
+  clippingSuspected: boolean;
+  silenceRanges: { start: number; end: number }[];
+}
+
+export interface TtsBenchmarkSentenceResult {
+  sentenceId: string;
+  category: BnBenchmarkCategory;
+  text: string;
+  /** নর্মালাইজার-পরে TTS-এ পাঠানো রূপ */
+  normalizedText: string;
+  voice: string;
+  status: 'pass' | 'warn' | 'fail' | 'skipped_rate_limited' | 'error';
+  checks?: TtsBenchmarkAudioChecks;
+  /** ASR ব্যাক-চেক — কেবল উপদেশমূলক (বাংলা ASR দুর্বল) */
+  asr?: { transcript: string; bnCharRatio: number; advisoryOnly: boolean };
+  notes: string[];
+  /** প্রতি-বাক্য অডিও-প্লেয়ার URL */
+  audioUrl?: string;
+  durationMs: number;
+}
+
+export interface TtsBenchmarkReport {
+  id: string;
+  scope: 'quick' | 'full';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  startedAt: string;
+  finishedAt?: string;
+  progress: { done: number; total: number };
+  voices: string[];
+  results: TtsBenchmarkSentenceResult[];
+  summary?: {
+    pass: number;
+    warn: number;
+    fail: number;
+    skipped: number;
+    error: number;
+    machineChecked: boolean;
+    /** সবসময় true — মানব-শ্রবণ পরীক্ষা আলাদা বাধ্যতামূলক ধাপ */
+    humanListeningPending: boolean;
+  };
+  honestNote: string;
 }
 
 // ------------------------------------------------------------

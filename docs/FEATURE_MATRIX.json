@@ -1,0 +1,1600 @@
+{
+  "generatedAt": "2026-10-11T20:22:36.204Z",
+  "environment": {
+    "hardware": "2 CPU cores, ~4.1GB RAM, no GPU (Z.ai sandbox)",
+    "usage": "ব্যক্তিগত / অ-বাণিজ্যিক",
+    "stack": "Next.js 16 + TypeScript + Prisma(SQLite) + FFmpeg 7.1 + z-ai-web-dev-sdk"
+  },
+  "summary": {
+    "toolCount": 41,
+    "modelCount": 24,
+    "matrixRowCount": 23,
+    "overallVerdicts": {
+      "available_with_limits": 4,
+      "experimental": 3,
+      "future": 2,
+      "available": 12,
+      "unavailable_here": 2
+    },
+    "honestyNote": "কোনো মডেল blocked_by_license নয়; প্রকৃত বাধা GPU / SDK-API-প্রকাশনা / ইন্টিগ্রেশন / গুণমান-যাচাই — ম্যাট্রিক্স-সারিতে মাত্রাভিত্তিক লেখা।"
+  },
+  "tools": [
+    {
+      "name": "web_search",
+      "title": "ওয়েব সার্চ",
+      "category": "research",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → webSearchSpec → zai.functions.invoke(\"web_search\")"
+    },
+    {
+      "name": "read_web_page",
+      "title": "ওয়েব পেজ পড়া",
+      "category": "research",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → readWebPageSpec → zai.functions.invoke(\"page_reader\") + stripHtml"
+    },
+    {
+      "name": "generate_image",
+      "title": "ছবি তৈরি",
+      "category": "media",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → generateImageSpec → zai.images.generations.create"
+    },
+    {
+      "name": "search_images",
+      "title": "ছবি খোঁজা",
+      "category": "media",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → searchImagesSpec → sdk-helpers.imageSearchSdkFirst",
+      "implementationNote": "SDK zai.images.search প্রাথমিক; ব্যর্থ হলে CLI (z-ai image-search) ফলব্যাক — resultJson-এ via: \"sdk\"|\"cli\""
+    },
+    {
+      "name": "analyze_image",
+      "title": "ছবি বিশ্লেষণ",
+      "category": "vision",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → analyzeImageSpec → zai.chat.completions.createVision (VLM)"
+    },
+    {
+      "name": "text_to_speech",
+      "title": "কণ্ঠ তৈরি (TTS)",
+      "category": "audio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → textToSpeechSpec → zai.audio.tts.create",
+      "implementationNote": "mp3 চেষ্টা → সার্ভার না নিলে (কোড ১২১৪) wav-এ সৎ ফলব্যাক; RIFF-হেডার স্নিফ করে mime ঠিক করে"
+    },
+    {
+      "name": "speech_synthesis",
+      "title": "ভাষা-নিশ্চিত কণ্ঠ (যাচাইসহ)",
+      "category": "audio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/audio.ts → speechSynthesisSpec → audio/language_controller.synthesizeVerifiedSpeech (TTS → দৈর্ঘ্য-যাচাই → ASR ব্যাক-চেক → রায়)",
+      "implementationNote": "TTS/ASR ক্লাউড; ভাষা-শনাক্তকরণ ও রায়-লজিক লোকাল; bn-রায় সবসময় \"সতর্কতা\" + মানব-প্রিভিউ বাধ্যতামূলক"
+    },
+    {
+      "name": "analyze_audio",
+      "title": "অডিও বিশ্লেষণ",
+      "category": "audio_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/audio.ts → analyzeAudioSpec → audio/music_engine.analyzeAudioEnergy (FFmpeg ডিকোড → PCM RMS-হপ বিশ্লেষণ)",
+      "implementationNote": "সৎ নোট: এনার্জি-ভিত্তিক সরলীকৃত বিট-ট্র্যাকিং — নিখুঁত নয়"
+    },
+    {
+      "name": "transcribe_audio",
+      "title": "অডিও লিপিবদ্ধকরণ",
+      "category": "audio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/registry.ts → transcribeAudioSpec → zai.audio.asr.create",
+      "implementationNote": "বাংলা অডিওতে ASR দুর্বল — ট্রান্সক্রিপ্ট উপদেশমূলক"
+    },
+    {
+      "name": "search_conversations",
+      "title": "স্মৃতি খোঁজা",
+      "category": "memory",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/registry.ts → searchConversationsSpec → Prisma/SQLite কন্টেন্ট-সার্চ"
+    },
+    {
+      "name": "edit_image",
+      "title": "ছবি সম্পাদনা",
+      "category": "image_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/image.ts → editImageSpec → sdk-helpers.editImageBuffer (zai.images.generations.edit)"
+    },
+    {
+      "name": "inpaint_image",
+      "title": "নির্দিষ্ট অংশ পূরণ",
+      "category": "image_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/image.ts → inpaintImageSpec → editImageBuffer (inpaint-প্রম্পট)"
+    },
+    {
+      "name": "remove_background",
+      "title": "ব্যাকগ্রাউন্ড পরিবর্তন",
+      "category": "image_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/image.ts → removeBackgroundSpec → editImageBuffer"
+    },
+    {
+      "name": "remove_object",
+      "title": "বস্তু অপসারণ",
+      "category": "image_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/image.ts → removeObjectSpec → editImageBuffer"
+    },
+    {
+      "name": "restyle_image",
+      "title": "স্টাইল রূপান্তর",
+      "category": "image_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/image.ts → restyleImageSpec → editImageBuffer (image-to-image)"
+    },
+    {
+      "name": "enhance_image",
+      "title": "ছবি উন্নতকরণ",
+      "category": "image_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/image.ts → enhanceImageSpec → sharp (lanczos + median + sharpen)",
+      "implementationNote": "সৎ লেবেল: ক্লাসিক্যাল রিসাইজ/শার্পেন — নতুন AI-ডিটেইল নয়"
+    },
+    {
+      "name": "color_grade_image",
+      "title": "রং সংশোধন",
+      "category": "image_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/image.ts → colorGradeImageSpec → sharp (modulate/gamma/linear)"
+    },
+    {
+      "name": "transform_image",
+      "title": "ক্রপ/রিসাইজ/ঘোরানো",
+      "category": "image_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/image.ts → transformImageSpec → sharp (crop/resize/rotate/flip)"
+    },
+    {
+      "name": "compose_text_image",
+      "title": "টাইপোগ্রাফি/পোস্টার",
+      "category": "image_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/image.ts → composeTextImageSpec → SVG + Noto Sans Bengali + sharp রেন্ডার",
+      "implementationNote": "বেস-পোস্টার ছবি না দিলে SDK generateImageBuffer দিয়ে তৈরি হতে পারে; টাইপোগ্রাফি সম্পূর্ণ লোকাল"
+    },
+    {
+      "name": "export_image",
+      "title": "ফরম্যাট রপ্তানি",
+      "category": "image_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/image.ts → exportImageSpec → sharp (png/jpeg/webp রপ্তানি)"
+    },
+    {
+      "name": "inspect_image",
+      "title": "ছবির গুণমান পরীক্ষা",
+      "category": "image_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/image.ts → inspectImageSpec → sharp মেটাডেটা + visionAnalyze (VLM গুণমান-মূল্যায়ন)",
+      "implementationNote": "হাইব্রিড: মেটাডেটা-পরীক্ষা লোকাল (sharp), গুণমান-মূল্যায়ন ক্লাউড VLM"
+    },
+    {
+      "name": "plan_music",
+      "title": "গানের কাঠামো পরিকল্পনা",
+      "category": "audio_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/audio.ts → planMusicSpec → chatJson (LLM STRICT-JSON) → song-plan.txt"
+    },
+    {
+      "name": "generate_instrumental",
+      "title": "ইনস্ট্রুমেন্টাল (পরীক্ষামূলক)",
+      "category": "audio_studio",
+      "implementation": "local_engine",
+      "implementationFile": "src/lib/agent/tools/audio.ts → generateInstrumentalSpec → audio/music_engine.synthesizeInstrumental (প্রসিডিউরাল PCM) + validateInstrumental",
+      "implementationNote": "প্রসিডিউরাল সংশ্লেষণ — MusicGen-ধর্মী নিউরাল মডেল নয় (সৎ লেবেলসহ)"
+    },
+    {
+      "name": "generate_singing",
+      "title": "কণ্ঠসংগীত (ভবিষ্যৎ)",
+      "category": "audio_studio",
+      "implementation": "honest_gated",
+      "implementationFile": "src/lib/agent/tools/audio.ts → generateSingingSpec → throw GATE_SINGING (সৎ structured error + বিকল্প)",
+      "implementationNote": "প্রকৃত বাধা: GPU নেই + SDK-তে গান-জেনারেশন API নেই (লাইসেন্স নয় — ACE-Step/YuE অ-বাণিজ্যিকে অনুমোদিত)"
+    },
+    {
+      "name": "separate_stems",
+      "title": "স্টেম পৃথকীকরণ (ভবিষ্যৎ)",
+      "category": "audio_studio",
+      "implementation": "honest_gated",
+      "implementationFile": "src/lib/agent/tools/audio.ts → separateStemsSpec → throw GATE_STEMS (সৎ structured error + বিকল্প)",
+      "implementationNote": "প্রকৃত বাধা: Demucs/UVR মডেল-ইনস্টল নেই + CPU/RAM-সীমা; কিছু checkpoint-লাইসেন্স যাচাই বাকি (needs_review)"
+    },
+    {
+      "name": "process_audio",
+      "title": "অডিও সম্পাদনা",
+      "category": "audio_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/audio.ts → processAudioSpec → runFfmpeg (৯টি op; টেম্প-ডিরেক্টরি + finally-cleanup)"
+    },
+    {
+      "name": "mix_audio",
+      "title": "অডিও মিক্সিং",
+      "category": "audio_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/audio.ts → mixAudioSpec → runFfmpeg (aformat/afade/adelay/sidechaincompress/amix/alimiter — সময়-সংযুক্ত ডাকিং)"
+    },
+    {
+      "name": "validate_audio",
+      "title": "অডিও গুণমান পরীক্ষা",
+      "category": "audio_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/audio.ts → validateAudioSpec → runFfmpeg (astats + silencedetect + নিজস্ব নির্ভুল ebur128 পাস)"
+    },
+    {
+      "name": "inspect_media",
+      "title": "মিডিয়া পরিদর্শন",
+      "category": "audio_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/audio.ts → inspectMediaSpec → mediaInfo (ffprobe JSON)"
+    },
+    {
+      "name": "plan_video",
+      "title": "দৃশ্য-পরিকল্পনা",
+      "category": "video_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/video.ts → planVideoSpec → shotPlanFromLLM (chatJson LLM শট-তালিকা)"
+    },
+    {
+      "name": "generate_video",
+      "title": "রিয়েল AI ভিডিও",
+      "category": "video_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/video.ts → generateVideoSpec → video/ai_video.generateVideoClip (CogVideoX-3, withAudio, requestKey) + FFmpeg স্বাভাবিকীকরণ",
+      "implementationNote": "ইঞ্জিন ai_diffusion (ডিফল্ট) বা cinematic_motion; AI-শট ব্যর্থ হলে সৎ-লেবেলসহ Ken Burns ফলব্যাক; native_ai সাউন্ডে প্রকৃত AAC"
+    },
+    {
+      "name": "image_to_video",
+      "title": "ছবি → রিয়েল AI ভিডিও",
+      "category": "video_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/video.ts → imageToVideoSpec → video/ai_video.generateVideoClip (CogVideoX-3 image-to-video, data-URL ইনপুট)",
+      "implementationNote": "দুই বার ব্যর্থ হলে সৎ ত্রুটি + animate_image-এর সুপারিশ (লুকানো ফলব্যাক নয়)"
+    },
+    {
+      "name": "animate_image",
+      "title": "ছবি থেকে ভিডিও",
+      "category": "video_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/video.ts → animateImageSpec → film-helpers.kenBurnsClip (zoompan, ২x ওভারস্যাম্পল)",
+      "implementationNote": "ক্যামেরা-মোশন অ্যানিমেশন — নতুন AI-মোশন নয় (সৎ লেবেল)"
+    },
+    {
+      "name": "process_video",
+      "title": "ভিডিও সম্পাদনা",
+      "category": "video_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/video.ts → processVideoSpec → runFfmpeg (trim/concat/speed/scale/crop/add_audio/replace_audio)"
+    },
+    {
+      "name": "enhance_video",
+      "title": "ভিডিও উন্নতকরণ",
+      "category": "video_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/video.ts → enhanceVideoSpec → runFfmpeg (eq/unsharp/hqdn3d/vidstab দুই-পাস)"
+    },
+    {
+      "name": "interpolate_video",
+      "title": "ফ্রেম ইন্টারপোলেশন",
+      "category": "video_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/video.ts → interpolateVideoSpec → runFfmpeg (minterpolate)"
+    },
+    {
+      "name": "generate_subtitles",
+      "title": "সাবটাইটেল তৈরি",
+      "category": "video_studio",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/video.ts → generateSubtitlesSpec → LLM কিউ-সেগমেন্টেশন + media/ffmpeg.buildSrt",
+      "implementationNote": "হাইব্রিড: সেগমেন্টেশন ক্লাউড LLM, SRT-ফাইল তৈরি লোকাল"
+    },
+    {
+      "name": "validate_video",
+      "title": "ভিডিও গুণমান পরীক্ষা",
+      "category": "video_studio",
+      "implementation": "ffmpeg",
+      "implementationFile": "src/lib/agent/tools/video.ts → validateVideoSpec → mediaInfo/audioQuality (ffprobe যাচাই: দৈর্ঘ্য/রেজোলিউশন/fps/স্ট্রিম/A-V সিঙ্ক)"
+    },
+    {
+      "name": "lip_sync",
+      "title": "লিপ-সিঙ্ক (ভবিষ্যৎ)",
+      "category": "video_studio",
+      "implementation": "honest_gated",
+      "implementationFile": "src/lib/agent/tools/video.ts → lipSyncSpec → lipSyncCapabilityReport (৪+১-মাত্রিক বাধা-প্রতিবেদন) → throw",
+      "implementationNote": "বাধা: SDK-API নেই · GPU নেই · অ্যাডাপ্টার নেই · বেঞ্চমার্ক হয়নি (+লাইসেন্স needs_review) — মিথ্যা সফলতা নয়"
+    },
+    {
+      "name": "propose_job",
+      "title": "প্রোডাকশন প্রস্তাব",
+      "category": "production",
+      "implementation": "planning_only",
+      "implementationFile": "src/lib/agent/tools/production.ts → proposeJobSpec → capabilities.validateSpec + অটো-ওয়্যারিং → Production row (awaiting_confirmation)",
+      "implementationNote": "কোনো জেনারেশন নয় — নিশ্চিতকরণ-কার্ড; কাজ শুরু হয় POST /api/productions/[id]/confirm-এ"
+    },
+    {
+      "name": "create_character",
+      "title": "চরিত্র সৃষ্টি",
+      "category": "production",
+      "implementation": "sdk_cloud",
+      "implementationFile": "src/lib/agent/tools/production.ts → createCharacterSpec → chatComplete (পোর্ট্রেট-প্রম্পট) + generateImageBuffer + Character upsert (Prisma)",
+      "implementationNote": "হাইব্রিড: পোর্ট্রেট ক্লাউড ছবি-মডেল, Character Bible রেকর্ড লোকাল DB"
+    }
+  ],
+  "models": [
+    {
+      "key": "platform-llm",
+      "name": "Z.ai LLM (GLM)",
+      "category": "llm",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.chat.completions.create",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "প্রতিদিনের ব্যবহারে সক্রিয়; /api/system-এর মাইক্রো-চেক সবুজ (429-এ সৎ লাল)",
+      "tools": [
+        "চ্যাট-এজেন্ট (সব সিদ্ধান্ত)",
+        "plan_music",
+        "plan_video",
+        "generate_subtitles",
+        "propose_job",
+        "create_character"
+      ],
+      "capabilities": {
+        "role": "চ্যাট/পরিকল্পনা/স্ক্রিপ্ট/শট-প্ল্যান",
+        "json": true,
+        "bengali": "ভালো"
+      },
+      "notes": "এজেন্ট অর্কেস্ট্রেটর, script_writer, scene_breakdown, shot_planner, dialogue_generator ধাপে ব্যবহৃত।",
+      "sortOrder": 10
+    },
+    {
+      "key": "platform-vlm",
+      "name": "Z.ai VLM (ছবি-বোঝা)",
+      "category": "image",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.chat.completions.createVision",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "একাধিক ছবির তুলনা (continuity_checker) ও একক বিশ্লেষণ উভয়ই ব্যবহারে সক্রিয়",
+      "tools": [
+        "analyze_image",
+        "inspect_image",
+        "continuity_checker (short_film পাইপলাইন)"
+      ],
+      "capabilities": {
+        "input": "ছবি + প্রশ্ন (data URL বা পাবলিক URL)",
+        "use": "ছবি বিশ্লেষণ, ইনপুট-গুণমান পরীক্ষা, ধারাবাহিকতা-যাচাই"
+      },
+      "notes": "ছবি বিশ্লেষণ ও চলচ্চিত্র-ধারাবাহিকতা যাচাইয়ে ব্যবহৃত।",
+      "sortOrder": 22
+    },
+    {
+      "key": "platform-imagegen",
+      "name": "Z.ai Image Generation",
+      "category": "image",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.images.generations.create",
+      "apiModelId": "SDK ডিফল্ট (ছবি-মডেল)",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "E2E ব্যবহারে সক্রিয় — পাহাড়ের ছবি/পোর্ট্রেট/স্টোরিবোর্ড-ফ্রেম প্রকৃত PNG আউটপুট",
+      "tools": [
+        "generate_image",
+        "image পাইপলাইন",
+        "create_character",
+        "সব ভিডিও-পাইপলাইনের স্টোরিবোর্ড ধাপ"
+      ],
+      "capabilities": {
+        "sizes": [
+          "1024x1024",
+          "1344x768",
+          "768x1344",
+          "864x1152",
+          "1152x864",
+          "1440x720",
+          "720x1440"
+        ],
+        "formats": [
+          "png"
+        ]
+      },
+      "notes": "text-to-image, স্টোরিবোর্ড ফ্রেম, চরিত্রের পোর্ট্রেট ও পোস্টার-বেস তৈরিতে ব্যবহৃত।",
+      "sortOrder": 20
+    },
+    {
+      "key": "platform-imageedit",
+      "name": "Z.ai Image Edit",
+      "category": "image",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.images.generations.edit",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "E2E-যাচাই: \"bicycle → teal\" সম্পাদনা, চরিত্র-রেফারেন্স-কন্ডিশনড স্টোরিবোর্ড ফ্রেম",
+      "tools": [
+        "edit_image",
+        "inpaint_image",
+        "remove_background",
+        "remove_object",
+        "restyle_image",
+        "চরিত্র-বাইবেল ধাপ"
+      ],
+      "capabilities": {
+        "input": "ছবি (data URL/পাবলিক URL) + প্রম্পট",
+        "output": "PNG",
+        "regionPrompting": "বর্ণনা-ভিত্তিক"
+      },
+      "notes": "ইমেজ-এডিট টুলগুলোর ভিত্তি।",
+      "sortOrder": 21
+    },
+    {
+      "key": "platform-image-search",
+      "name": "Z.ai Image Search (ওয়েব-ছবি অনুসন্ধান)",
+      "category": "utility",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড) + z-ai CLI",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.images.search.create (প্রাথমিক) / z-ai image-search CLI (বিকল্প)",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইভ-প্রোব সফল: SDK মেথডে ৩টি ফলাফল ৯.৫ সে.-এ; SDK-পথকে প্রাথমিক করা হয়েছে, CLI বিকল্প-পথ",
+      "tools": [
+        "search_images"
+      ],
+      "capabilities": {
+        "query": "স্বাধীন অনুসন্ধান",
+        "count": "১–১০+",
+        "gl": "দেশ-কোড",
+        "note": "ফলাফল বাইরের ওয়েব-ছবি — AI-নির্মিত নয়, সেটাই সৎভাবে দেখানো হয়"
+      },
+      "notes": "SDK মেথড-পথ প্রোব-যাচাইকৃত (v0.0.18); ব্যর্থ হলে CLI-তে স্বয়ংক্রিয় ফলব্যাক।",
+      "sortOrder": 23
+    },
+    {
+      "key": "platform-functions",
+      "name": "Z.ai Functions (web_search + page_reader)",
+      "category": "utility",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.functions.invoke('web_search' | 'page_reader')",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইসেন্স-যাচাইসহ আজকের একাধিক সার্চ সফল; পেজ-রিডার E2E-তে সক্রিয়",
+      "tools": [
+        "web_search",
+        "read_web_page"
+      ],
+      "capabilities": {
+        "web_search": "সার্চ-ফলাফল (url, name, snippet, rank, date)",
+        "page_reader": "ওয়েবপেজ-কন্টেন্ট (title, html, publishedTime)"
+      },
+      "notes": "এজেন্টের তথ্য-সংগ্রহ টুল।",
+      "sortOrder": 24
+    },
+    {
+      "key": "platform-tts",
+      "name": "Z.ai TTS (কণ্ঠ-প্রিসেট, ৭টি কণ্ঠ)",
+      "category": "audio",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.audio.tts.create",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "৭-কণ্ঠ প্রোব সম্পন্ন: ইংরেজি রাউন্ড-ট্রিপ যাচাই কার্যকর; বাংলা কোনো কণ্ঠেই প্রশিক্ষিত নয় → রায় সবসময় \"সতর্কতা\" + মানব-প্রিভিউ",
+      "tools": [
+        "text_to_speech",
+        "speech_synthesis",
+        "audio পাইপলাইন (voiceover)",
+        "short_film সংলাপ-ধাপ"
+      ],
+      "capabilities": {
+        "task_type": "speech",
+        "voices": [
+          "tongtong",
+          "chuichui",
+          "xiaochen",
+          "jam",
+          "kazi",
+          "douji",
+          "luodo"
+        ],
+        "supported_languages": {
+          "bn": "আংশিক — কোনো কণ্ঠই বাংলা-প্রশিন্নত নয়; jam কেবল সম্ভাব্য-দৈর্ঘ্যে পড়ে, ASR যাচাই অসম্ভব",
+          "en": "নিশ্চিত (jam প্রধান; ASR রাউন্ড-ট্রিপ কার্যকর)"
+        },
+        "inputLimitChars": 1024,
+        "formats": [
+          "wav",
+          "mp3 (সার্ভার-সমর্থনভেদে)"
+        ],
+        "sampleRate": 24000,
+        "requires_gpu": false,
+        "fallback_tool": "—"
+      },
+      "notes": "ভাষা-নিয়ন্ত্রক (§২) ভাষা অনুযায়ী কণ্ঠ বাছে: bn→jam/douji, en→jam/tongtong/kazi/xiaochen। বাংলা উচ্চারণ যন্ত্রে নিশ্চিত হয় না — মানব-প্রিভিউ বাধ্যতামূলক।",
+      "sortOrder": 30
+    },
+    {
+      "key": "platform-asr",
+      "name": "Z.ai ASR (লিপিবদ্ধকরণ)",
+      "category": "audio",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.audio.asr.create",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "ইংরেজি ব্যাক-চেক সক্রিয়; বাংলা অডিওয়ে ASR দুর্বল — ভাষা-যাচাইয়ের সীমাবদ্ধতা স্বীকৃত",
+      "tools": [
+        "transcribe_audio",
+        "অডিও-অ্যাটাচমেন্ট প্রি-স্টেপ",
+        "speech_synthesis-এর ASR ব্যাক-চেক"
+      ],
+      "capabilities": {
+        "task_type": "speech-recognition",
+        "input": "অডিও ফাইল (≤৩০ সে./কল — ২৮ সে. চাঙ্কিং বাস্তবায়িত)",
+        "supported_languages": {
+          "bn": "দুর্বল",
+          "en": "ভালো"
+        },
+        "requires_gpu": false
+      },
+      "notes": "TTS ব্যাক-চেক (§২) ও অডিও আপলোড বোঝার ভিত্তি।",
+      "sortOrder": 31
+    },
+    {
+      "key": "platform-videogen",
+      "name": "CogVideoX-3 (ক্লাউড — প্রকৃত AI ভিডিও)",
+      "category": "video",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.video.generations.create + zai.async.result.query",
+      "apiModelId": "cogvideox-3",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "প্রোব: ৫ সে. t2v → ১৩৮ সে.-এ প্রকৃত MP4 (5.7MB) ✓; i2v data-URL ✓ (১০৮০×১০৮০ h264); ৪২৯-রেট-সীমা — ধৈর্যশীল ব্যাকঅফ বাস্তবায়িত",
+      "tools": [
+        "generate_video",
+        "image_to_video",
+        "motion_video/music_video/short_film পাইপলাইনের AI-শট ধাপ"
+      ],
+      "capabilities": {
+        "task_type": "text-to-video + image-to-video (ডিফিউশন)",
+        "modes": [
+          "t2v",
+          "i2v (ছবি data-URL গ্রহণ করে — প্রোব-যাচাইকৃত)"
+        ],
+        "supported_languages": {
+          "prompt": "ইংরেজি প্রম্পট প্রস্তাবিত",
+          "bn": "প্রম্পট অনুবাদ হয়ে যায়"
+        },
+        "max_duration_sec": 10,
+        "supported_resolution": "≈১০৮০p",
+        "quality_profile": "speed | quality",
+        "generation_time": "প্রতি ৫ সে. ক্লিপে ~১৪০–২৪০ সে.",
+        "requires_gpu": false,
+        "fallback_tool": "cinematic_motion (স্টোরিবোর্ড + Ken Burns — সৎ লেবেলসহ)"
+      },
+      "notes": "§৪-এর প্রধান ভিডিও-ইঞ্জিন। সব ISO-ধাঁচের API-প্যারামিটার (duration/quality/size/watermark) বাস্তবায়িত।",
+      "sortOrder": 32
+    },
+    {
+      "key": "platform-video-audio",
+      "name": "CogVideoX-3 নেটিভ অডিও (with_audio)",
+      "category": "video",
+      "provider": "z-ai-web-dev-sdk (ক্লাউড)",
+      "license": "Z.ai প্ল্যাটফর্ম পরিষেবা শর্তাবলি",
+      "commercialUse": "not_applicable",
+      "status": "enabled",
+      "licenseStatus": "provider_api_only",
+      "providerStatus": "exposed_by_sdk",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "apiEndpoint": "zai.video.generations.create (with_audio: true)",
+      "apiModelId": "cogvideox-3",
+      "qualityStatus": "quality_machine_checked",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইভ-প্রোব সফল: with_audio:true → ৫.২ সে. MP4-তে প্রকৃত AAC অডিও-স্ট্রিম (16kHz mono) ffprobe-নিশ্চিত; request_id-ও গৃহীত ও echo-হয়ে ফিরেছে (idempotency সমর্থিত)",
+      "tools": [
+        "generate_video (withAudio)",
+        "image_to_video"
+      ],
+      "capabilities": {
+        "task_type": "video+native-audio",
+        "note": "ভিডিওর সাথে মডেল-নির্মিত অ্যাম্বিয়েন্ট অডিও — প্রোব-যাচাইকৃত; প্রতিটি আউটপুটে অডিও-স্ট্রিম ffprobe দিয়ে নিশ্চিত হওয়া হয়"
+      },
+      "notes": "প্রোব: ৫.২ সে., ১৮৯০×১০৮০@31fps h264 + AAC — মিউজিক-ভিডিও/শর্টফিল্মে প্রকৃত জেনারেটেড অ্যাম্বিয়েন্স এখন সম্ভব।",
+      "sortOrder": 33
+    },
+    {
+      "key": "procedural-music-engine",
+      "name": "প্রসিডিউরাল সংগীত-সংশ্লেষণ ইঞ্জিন",
+      "category": "audio",
+      "provider": "স্থানীয় (TypeScript PCM গণিত)",
+      "license": "MIT (নিজস্ব বাস্তবায়ন)",
+      "licenseUrl": "",
+      "commercialUse": "allowed",
+      "status": "experimental",
+      "licenseStatus": "allowed",
+      "providerStatus": "local_engine",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "৬-মুড সংশ্লেষণ-ধূমপরীক্ষা পাস (foundation-smoke ৩২/৩২); ব্রাউজার-E2E সফল",
+      "tools": [
+        "generate_instrumental",
+        "music_video পাইপলাইন (প্রসিডিউরাল স্কোর)",
+        "analyze_audio"
+      ],
+      "capabilities": {
+        "task_type": "instrumental-music (প্রসিডিউরাল — নিউরাল নয়)",
+        "moods": [
+          "sad",
+          "romantic",
+          "joyful",
+          "suspense",
+          "action",
+          "peaceful"
+        ],
+        "tempoBpm": "৬০–১৭০",
+        "max_duration_sec": 120,
+        "outputs": "WAV 44.1kHz stereo + বিট-মার্কার + সেকশন-তালিকা",
+        "supported_languages": {
+          "instrumental": "ভাষা-নিরপেক্ষ"
+        },
+        "requires_gpu": false
+      },
+      "notes": "সৎ লেবেল: প্রসিডিউরাল সংশ্লেষণ — MusicGen/YuE-ধর্মী নিউরাল মডেল নয়; গান গাওয়া কণ্ঠ তৈরি করে না। নিউরাল মিউজিক API এই SDK-তে নেই।",
+      "sortOrder": 34
+    },
+    {
+      "key": "sound-design-engine",
+      "name": "সাউন্ড-ডিজাইন ইঞ্জিন (অ্যাম্বিয়েন্স/ফোলে সংশ্লেষণ)",
+      "category": "audio",
+      "provider": "স্থানীয় (TypeScript PCM গণিত + FFmpeg মিক্সার)",
+      "license": "MIT (নিজস্ব বাস্তবায়ন)",
+      "licenseUrl": "",
+      "commercialUse": "allowed",
+      "status": "experimental",
+      "licenseStatus": "allowed",
+      "providerStatus": "local_engine",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "A1–A5 মিক্সার ধূমপরীক্ষা পাস; শর্টফিল্ম E2E-তে সাউন্ড-ডিজাইন ধাপ সফল",
+      "tools": [
+        "short_film পাইপলাইনের sound_design ধাপ",
+        "process_audio",
+        "mix_audio"
+      ],
+      "capabilities": {
+        "task_type": "sound-design (সংশ্লেষিত — রেকর্ডেড লাইব্রেরি নয়)",
+        "layers": [
+          "A1 সংলাপ",
+          "A2 পরিবেশ-শব্দ",
+          "A3 ফোলে",
+          "A4 মিউজিক",
+          "A5 বর্ণনা"
+        ],
+        "ambience": [
+          "rain",
+          "cafe",
+          "night",
+          "city_traffic",
+          "crowd",
+          "wind",
+          "river",
+          "office",
+          "market"
+        ],
+        "foley": [
+          "cup_place",
+          "footsteps",
+          "door",
+          "thunder",
+          "bird",
+          "clock",
+          "phone",
+          "knock"
+        ],
+        "requires_gpu": false
+      },
+      "notes": "প্রতিটি ট্র্যাকের source ও generation mode সংরক্ষিত হয় (§৯)।",
+      "sortOrder": 35
+    },
+    {
+      "key": "mms-tts-ben",
+      "name": "Meta MMS TTS — বাংলা (লোকাল প্রার্থী-shortlist)",
+      "category": "audio",
+      "provider": "facebook/mms-tts-ben (HuggingFace, ওপেন-ওয়েট)",
+      "license": "ওয়েট: CC-BY-NC 4.0",
+      "licenseUrl": "https://huggingface.co/facebook/mms-tts-ben",
+      "commercialUse": "restricted",
+      "status": "planned",
+      "licenseStatus": "allowed_noncommercial",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইসেন্স-যাচাই (HuggingFace মডেল-কার্ড): ওয়েট CC-BY-NC 4.0 — অ-বাণিজ্যিক ব্যবহারে অনুমোদিত; চালানো হয়নি (এই স্যান্ডবক্সে Python-রানটাইম নেই)",
+      "errorReason": "লাইসেন্স অ-বাণিজ্যিক ব্যবহারে অনুমোদিত — প্রকৃত বাধা: (১) এই Node.js-অনলি স্যান্ডবক্সে Python+torch রানটাইম নেই, (২) ওয়েট (~১৫০MB) ডাউনলোড/ইনস্টল করা হয়নি ও ৪.১GB RAM-এ সীমান্ত-ঝুঁকি আছে, (৩) অ্যাপ-অ্যাডাপ্টার নেই — তাই needs_model_download (হার্ডওয়্যার-গেট /api/hardware-এ এই রায়ই)।",
+      "tools": [],
+      "capabilities": {
+        "would": "লোকাল বাংলা কথা-সংশ্লেষণ (VITS, ~১৫০MB)",
+        "cpu": "CPU-তে চালানো সম্ভব",
+        "runtime": "Python+torch দরকার — স্যান্ডবক্সে নেই"
+      },
+      "hardwareNotes": "GPU লাগে না (~১.৫GB RAM) — কিন্তু Python+torch রানটাইম লাগে, যা এই স্যান্ডবক্সে নেই",
+      "notes": "ব্যবহারকারীর পরিকল্পনা §৪-এর লোকাল বাংলা-TTS shortlist — নিজের GPU/CPU মেশিনে বাংলা TTS-এর সবচেয়ে বাস্তবসম্মত লোকাল প্রার্থী; এই স্যান্ডবক্সে Python-রানটাইম নেই ও RAM-ঝুঁকি আছে, তাই needs_model_download। বিকল্প: ক্লাউড TTS (platform-tts) চালু — বাংলায় মানব-প্রিভিউ বাধ্যতামূলক।",
+      "sortOrder": 36
+    },
+    {
+      "key": "ffmpeg",
+      "name": "FFmpeg 7.1",
+      "category": "infrastructure",
+      "provider": "স্থানীয় সিস্টেম বাইনারি",
+      "license": "GPL-2.1+ বিল্ড (libass, libx264 সহ)",
+      "licenseUrl": "https://ffmpeg.org/legal.html",
+      "commercialUse": "restricted",
+      "status": "enabled",
+      "licenseStatus": "allowed_with_conditions",
+      "providerStatus": "local_engine",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "qualityStatus": "quality_not_applicable",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "প্রতিদিনের সব পাইপলাইনে সক্রিয়; /api/system-চেক সবুজ",
+      "tools": [
+        "process_audio",
+        "mix_audio",
+        "validate_audio",
+        "process_video",
+        "enhance_video",
+        "interpolate_video",
+        "validate_video",
+        "সব পাইপলাইনের assemble/mix ধাপ"
+      ],
+      "capabilities": {
+        "video": [
+          "mp4 (h264)",
+          "trim/concat/speed",
+          "xfade/fade",
+          "সাবটাইটল বার্ন-ইন (libass)",
+          "vidstab",
+          "minterpolate",
+          "eq/unsharp/hqdn3d"
+        ],
+        "audio": [
+          "trim/concat",
+          "amix",
+          "loudnorm",
+          "eq/compressor/aecho",
+          "silencedetect",
+          "ebur128"
+        ]
+      },
+      "notes": "শর্ত: অভ্যন্তরীণ ব্যবহারে সীমাহীন; পুনর্বণ্টন করলে GPL-বাধ্যতা প্রযোজ্য। FFmpeg কেবল সম্পাদনা/অ্যাসেম্বলি করে — নতুন AI অ্যাক্টিং তৈরি করে না (সৎ-লেবেল সর্বত্র)।",
+      "sortOrder": 40
+    },
+    {
+      "key": "sharp",
+      "name": "sharp (libvips)",
+      "category": "utility",
+      "provider": "npm প্যাকেজ",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/lovell/sharp/blob/main/LICENSE",
+      "commercialUse": "allowed",
+      "status": "enabled",
+      "licenseStatus": "allowed",
+      "providerStatus": "local_engine",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "qualityStatus": "quality_not_applicable",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "আপস্কেল/ট্রান্সফর্ম/বাংলা টাইপোগ্রাফি — সব E2E-সক্রিয়",
+      "tools": [
+        "transform_image",
+        "enhance_image",
+        "color_grade_image",
+        "compose_text_image",
+        "export_image",
+        "inspect_image"
+      ],
+      "capabilities": {
+        "image": [
+          "resize/crop/rotate/flip",
+          "upscale (lanczos)",
+          "sharpen/median",
+          "png/jpeg/webp",
+          "SVG টাইপোগ্রাফি (বাংলা ফন্টসহ)"
+        ]
+      },
+      "notes": "নিয়তিশুদ্ধ ইমেজ-অপারেশনের ভিত্তি। আপস্কেল AI-আপস্কেল নয় — সৎ নোটসহ দেখানো হয়।",
+      "sortOrder": 41
+    },
+    {
+      "key": "noto-bengali-font",
+      "name": "Noto Sans Bengali",
+      "category": "utility",
+      "provider": "Google Noto Fonts",
+      "license": "OFL-1.1",
+      "licenseUrl": "https://fonts.google.com/noto/specimen/Noto+Sans+Bengali",
+      "commercialUse": "allowed",
+      "status": "enabled",
+      "licenseStatus": "allowed",
+      "providerStatus": "local_engine",
+      "integrationStatus": "integrated",
+      "runtimeStatus": "healthy",
+      "qualityStatus": "quality_not_applicable",
+      "tools": [
+        "compose_text_image",
+        "burnSubtitles (generate_subtitles/short_film)"
+      ],
+      "capabilities": {
+        "use": "বাংলা টাইপোগ্রাফি/সাবটাইটল রেন্ডারিং",
+        "weights": [
+          "Regular",
+          "Bold"
+        ]
+      },
+      "notes": "assets/fonts/ ও ফন্টকনফিগে ইনস্টলড।",
+      "sortOrder": 42
+    },
+    {
+      "key": "musicgen",
+      "name": "MusicGen (Meta)",
+      "category": "audio",
+      "provider": "Meta (ওপেন-ওয়েট)",
+      "license": "ওয়েট: CC-BY-NC 4.0 · কোড: MIT",
+      "licenseUrl": "https://github.com/facebookresearch/audiocraft/blob/main/LICENSE",
+      "commercialUse": "restricted",
+      "status": "planned",
+      "licenseStatus": "allowed_noncommercial",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইসেন্স-যাচাই (HuggingFace facebook/MusicGen মডেল-কার্ড, LICENSE_weights ফাইল + ২০২৬-১০-১১ ওয়েব-সার্চ): ওয়েট CC-BY-NC 4.0 — গবেষণা/শিক্ষা/অ-বাণিজ্যিক ব্যবহার অনুমোদিত",
+      "errorReason": "লাইসেন্স নয় — প্রকৃত বাধা: (১) এই স্যান্ডবক্সে GPU নেই ও RAM ~৪.১GB; MusicGen চালাতে ~৮–১৬GB VRAM লাগে, (২) z-ai-web-dev-sdk-তে মিউজিক-জেনারেশন API প্রকাশিত নয়। অ-বাণিজ্যিক ব্যবহারে লাইসেন্স-অনুমতি আছে — GPU-সমৃদ্ধ পরিবেশে চালু করা যাবে।",
+      "tools": [],
+      "capabilities": {
+        "would": "টেক্সট থেকে নিউরাল ইনস্ট্রুমেন্টাল সংগীত",
+        "vram": "≈৮–১৬GB"
+      },
+      "hardwareNotes": "GPU প্রয়োজন — এই স্যান্ডবক্সে নেই",
+      "notes": "সংশোধন (§২): আগে ভুলভাবে \"লাইসেন্স-অবরুদ্ধ\" দেখানো হত। এখন সঠিক যুক্তি: লাইসেন্স অ-বাণিজ্যিকে অনুমোদিত; বিকল্প হিসেবে প্রসিডিউরাল ইঞ্জিন চালু আছে (সৎ লেবেলসহ)।",
+      "sortOrder": 60
+    },
+    {
+      "key": "ace-step",
+      "name": "ACE-Step (গান-জেনারেশন প্রার্থী #১)",
+      "category": "audio",
+      "provider": "ACE-Step (ওপেন-ওয়েট)",
+      "license": "রিপো: Apache-2.0 · ব্যবহৃত checkpoint/dependency-শর্ত: যাচাই বাকি",
+      "licenseUrl": "https://github.com/ace-step/ACE-Step",
+      "commercialUse": "unknown",
+      "status": "planned",
+      "licenseStatus": "needs_review",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "রিপো-লাইসেন্স Apache-2.0 দেখা গেছে (২০২৬-১০-১১) — কিন্তু নির্দিষ্ট checkpoint ও dependency-শর্ত আলাদাভাবে যাচাই হয়নি (ব্যবহারকারীর নির্দেশনা) → licenseStatus: needs_review",
+      "errorReason": "লাইসেন্স মাত্রা-আলাদা: রিপো Apache-2.0 দেখা গেছে, কিন্তু নির্দিষ্ট checkpoint ও dependency-শর্ত আলাদাভাবে যাচাই হয়নি (ব্যবহারকারীর নির্দেশনা)। প্রকৃত চালু-না-হওয়ার কারণ: (১) এই স্যান্ডবক্সে GPU নেই (আনুমানিক ~৮–১২GB VRAM দরকার), (২) z-ai-web-dev-sdk-তে গান-জেনারেশন API নেই, (৩) অ্যাডাপ্টার/ইন্টিগ্রেশন নেই।",
+      "tools": [],
+      "capabilities": {
+        "would": "সম্পূর্ণ গান (lyrics→singing+instrumental)",
+        "vram": "≈৮–১২GB (আনুমানিক)"
+      },
+      "hardwareNotes": "GPU প্রয়োজন (আনুমানিক ~৮–১২GB VRAM)",
+      "notes": "ব্যবহারকারীর পরিকল্পনা §৫-এর গান-জেনারেশন প্রার্থী #১। সৎ বিকল্প: প্রসিডিউরাল ইনস্ট্রুমেন্টাল + লিরিক্স-ডকুমেন্ট (plan_music); TTS-কে কখনো \"গান\" বলা হয় না।",
+      "sortOrder": 75
+    },
+    {
+      "key": "yue",
+      "name": "YuE (গান-জেনারেশন প্রার্থী #২)",
+      "category": "audio",
+      "provider": "multimodal-art-projection (ওপেন-ওয়েট)",
+      "license": "ওয়েট: CC-BY-NC 4.0 · কোড: Apache-2.0",
+      "licenseUrl": "https://github.com/multimodal-art-projection/YuE",
+      "commercialUse": "restricted",
+      "status": "planned",
+      "licenseStatus": "allowed_noncommercial",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "ওয়েব-সার্চ যাচাই (২০২৬-১০-১১): YuE ওয়েট CC-BY-NC 4.0 — অ-বাণিজ্যিক ব্যবহারে অনুমোদিত; ন্যূনতম ~৪.৫GB VRAM দরকার — এই স্যান্ডবক্সে GPU নেই",
+      "errorReason": "লাইসেন্স অ-বাণিজ্যিক ব্যবহারে অনুমোদিত (CC-BY-NC 4.0) — প্রকৃত বাধা: (১) GPU নেই (ন্যূনতম ~৪.৫GB VRAM দরকার), (২) z-ai-web-dev-sdk-তে গান-জেনারেশন API নেই, (৩) বাংলা লিরিক্স-আনুগত্যের বেঞ্চমার্ক হয়নি।",
+      "tools": [],
+      "capabilities": {
+        "would": "সম্পূর্ণ গান (lyrics→singing+instrumental)",
+        "vram": "≈৪.৫GB+ (প্রকরণভেদে)"
+      },
+      "hardwareNotes": "GPU প্রয়োজন (ন্যূনতম ~৪.৫GB VRAM)",
+      "notes": "ব্যবহারকারীর পরিকল্পনা §৫-এর গান-জেনারেশন প্রার্থী #২। সৎ বিকল্প: ইনস্ট্রুমেন্টাল প্রসিডিউরাল স্কোর + লিরিক্স-ডকুমেন্ট; TTS-কে কখনো \"গান\" বলা হয় না।",
+      "sortOrder": 76
+    },
+    {
+      "key": "wan-video",
+      "name": "Wan 2.x (স্ব-হোস্টেড ভিডিও জেনারেশন)",
+      "category": "video",
+      "provider": "Wan-Video (ওপেন-ওয়েট)",
+      "license": "Apache-2.0 (কিছু checkpoint-এ ভিন্ন শর্ত)",
+      "licenseUrl": "https://github.com/Wan-Video/Wan2.2",
+      "commercialUse": "unknown",
+      "status": "planned",
+      "licenseStatus": "allowed_with_conditions",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "রিপো-লাইসেন্স Apache-2.0 মূল; প্রতিটি checkpoint-এর শর্ত আলাদা যাচাই করা হয়নি",
+      "errorReason": "প্রকৃত বাধা: GPU নেই (২৪GB+ VRAM দরকার) + SDK-তে স্ব-হোস্টেড মডেলের API নেই। লাইসেন্স মূলত অনুমোদিত (checkpoint-ভেদে শর্ত)।",
+      "tools": [],
+      "capabilities": {
+        "would": "স্ব-হোস্টেড ডিফিউশন t2v/i2v",
+        "vram": "২৪GB+ (প্রকরণভেদে)"
+      },
+      "hardwareNotes": "শক্তিশালী GPU প্রয়োজন — এই সার্ভারে GPU নেই (২ CPU কোর, ৪.১GB RAM)",
+      "notes": "ভিডিও-জেনারেশনের দায়িত্ব এখন ক্লাউড CogVideoX-3 (platform-videogen) বহন করছে; স্ব-হোস্টিং GPU-সমৃদ্ধ ভবিষ্যৎ পরিবেশের বিকল্প।",
+      "sortOrder": 70
+    },
+    {
+      "key": "cogvideox",
+      "name": "CogVideoX (ওপেন-ওয়েট, স্ব-হোস্টেড)",
+      "category": "video",
+      "provider": "THUDM (ওপেন-ওয়েট)",
+      "license": "প্রকরণভেদে (CogVideoX-2B: Apache-2.0; 5B: CC-BY-NC) — চূড়ান্ত যাচাই বাকি",
+      "licenseUrl": "https://github.com/THUDM/CogVideo",
+      "commercialUse": "unknown",
+      "status": "planned",
+      "licenseStatus": "needs_review",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "errorReason": "প্রকৃত বাধা: (১) GPU নেই (৮–২৪GB+ VRAM দরকার), (২) SDK-তে স্ব-হোস্টেড এই ওয়েটের API নেই। লাইসেন্স প্রকরণভেদে ভিন্ন — নির্দিষ্ট checkpoint বেছে যাচাই দরকার। দ্রষ্টব্য: ক্লাউড CogVideoX-3 আলাদা এন্ট্রিতে (platform-videogen) ইতিমধ্যে চালু।",
+      "tools": [],
+      "capabilities": {
+        "would": "স্ব-হোস্টেড ডিফিউশন text-to-video",
+        "vram": "৮–২৪GB+ (প্রকরণভেদে)"
+      },
+      "hardwareNotes": "GPU প্রয়োজন — স্থাপন করা হয়নি",
+      "notes": "স্ব-হোস্টিং ভবিষ্যতের বিকল্প; এখন ক্লাউড-পথই বাস্তবসম্মত।",
+      "sortOrder": 71
+    },
+    {
+      "key": "real-esrgan",
+      "name": "Real-ESRGAN (AI আপস্কেলার)",
+      "category": "image",
+      "provider": "xinntao (ওপেন-ওয়েট)",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://github.com/xinntao/Real-ESRGAN",
+      "commercialUse": "allowed",
+      "status": "planned",
+      "licenseStatus": "allowed",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "errorReason": "লাইসেন্স অনুমোদিত (BSD-3) — প্রকৃত বাধা: GPU নেই (≈২–৮GB VRAM দরকার) ও SDK-তে আপস্কেল API নেই।",
+      "tools": [],
+      "capabilities": {
+        "would": "AI আপস্কেল + ফেস-রিস্টোরেশন",
+        "vram": "≈২–৮GB"
+      },
+      "hardwareNotes": "GPU প্রয়োজন — স্থাপন করা হয়নি",
+      "notes": "এখন sharp-lanczos আপস্কেল ব্যবহৃত (সৎ নোট: নতুন AI-ডিটেইল যোগ হয় না)।",
+      "sortOrder": 72
+    },
+    {
+      "key": "wav2lip-sadtalker",
+      "name": "Wav2Lip / SadTalker / MuseTalk (লিপ-সিঙ্ক প্রার্থী)",
+      "category": "video",
+      "provider": "ওপেন-সোর্স",
+      "license": "প্রকল্পভেদে — Wav2Lip: গবেষণা/একাডেমিক শর্ত; SadTalker/MuseTalk: আলাদা শর্ত — যাচাই বাকি",
+      "licenseUrl": "https://github.com/Rudrabha/Wav2Lip",
+      "commercialUse": "restricted",
+      "status": "planned",
+      "licenseStatus": "needs_review",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "errorReason": "লিপ-সিঙ্কের ৪টি বাধা আলাদা (§৮): (১) SDK-তে লিপ-সিঙ্ক API নেই [প্রোভাইডার], (২) GPU নেই — মডেলগুলোতে ৪–১২GB VRAM লাগে [হার্ডওয়্যার], (৩) অ্যাডাপ্টার নেই [ইন্টিগ্রেশন], (৪) বাংলা সংলাপে বেঞ্চমার্ক হয়নি ও কিছু প্রকল্পের শর্ত স্পষ্ট নয় [লাইসেন্স/যাচাই]।",
+      "tools": [],
+      "capabilities": {
+        "would": "অডিও-চালিত ঠোঁট-মিলানো ও ফেস-অ্যানিমেশন",
+        "vram": "≈৪–১২GB"
+      },
+      "hardwareNotes": "GPU প্রয়োজন",
+      "notes": "সৎ বিকল্প এখন চালু: সংলাপ-অডিও (TTS) + AI-দৃশ্য আলাদাভাবে তৈরি হয়; মুখের নড়াচড়ার দাবি কখনো করা হয় না।",
+      "sortOrder": 73
+    },
+    {
+      "key": "demucs-uvr",
+      "name": "Demucs / UVR (স্টেম-পৃথকীকরণ)",
+      "category": "audio",
+      "provider": "ওপেন-সোর্স",
+      "license": "কোড: MIT — ওয়েট-লাইসেন্স মডেলভেদে যাচাই বাকি",
+      "licenseUrl": "https://github.com/adefossez/demucs",
+      "commercialUse": "unknown",
+      "status": "planned",
+      "licenseStatus": "needs_review",
+      "providerStatus": "not_exposed_by_sdk",
+      "integrationStatus": "not_integrated",
+      "runtimeStatus": "unavailable_hardware",
+      "qualityStatus": "quality_not_verified",
+      "errorReason": "প্রকৃত বাধা: (১) SDK-তে স্টেম-পৃথকীকরণ API নেই, (২) CPU-তে অত্যন্ত ধীর ও মোট RAM ৪.১GB হলে ঝুঁকিপূর্ণ — স্যান্ডবক্স-ক্র্যাশ এড়াতে স্থানীয় ইনস্টল করা হয়নি (মাস্টার প্ল্যান §৭.২), (৩) ওয়েট-লাইসেন্স যাচাই বাকি।",
+      "tools": [],
+      "capabilities": {
+        "would": "কণ্ঠ/বাদ্য পৃথকীকরণ",
+        "vram": "≈৪–৮GB (CPU-তে ধীর)"
+      },
+      "hardwareNotes": "GPU-হীন CPU-তে সীমান্ত-ব্যাপী ঝুঁকি",
+      "notes": "GPU-সমৃদ্ধ ভবিষ্যৎ পরিবেশে যুক্ত হবে।",
+      "sortOrder": 61
+    }
+  ],
+  "matrix": [
+    {
+      "key": "cap-speech",
+      "quality": "quality_not_verified",
+      "capability": "কথা-উচ্চারণ (TTS) — বাংলা/ইংরেজি",
+      "taskType": "speech",
+      "tools": [
+        "text_to_speech",
+        "speech_synthesis"
+      ],
+      "modelKey": "platform-tts",
+      "model": "Z.ai TTS (৭ কণ্ঠ)",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.audio.tts.create",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "৭-কণ্ঠ প্রোব + ভাষা-নিয়ন্ত্রক রাউন্ড-ট্রিপ যাচাই; ইংরেজি ASR-ব্যাক-চেক কার্যকর",
+      "overall": "available_with_limits",
+      "honestNote": "ইংরেজি যন্ত্র-যাচাইকৃত; বাংলায় কোনো কণ্ঠই প্রশিক্ষিত নয় — রায় সবসময় \"সতর্কতা\" + মানব-প্রিভিউ বাধ্যতামূলক। বাংলার মান-যাচাই এখন বেঞ্চমার্ক-ল্যাবে (রেজিস্ট্রি ভিউতে) — যন্ত্র-পরীক্ষা পাস হলেও \"মানব-শ্রবণ বাকি\" থাকবে।"
+    },
+    {
+      "key": "cap-transcription",
+      "quality": "quality_not_verified",
+      "capability": "অডিও → লেখা (ASR)",
+      "taskType": "transcription",
+      "tools": [
+        "transcribe_audio",
+        "TTS ব্যাক-চেক"
+      ],
+      "modelKey": "platform-asr",
+      "model": "Z.ai ASR",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.audio.asr.create",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "৩০ সে.-সীমার জন্য ২৮ সে. চাঙ্কিং বাস্তবায়িত",
+      "overall": "available_with_limits",
+      "honestNote": "ইংরেজি ভালো; বাংলা দুর্বল — বাংলা অডিওর ট্রান্সক্রিপ্ট নির্ভরযোগ্য নয়।"
+    },
+    {
+      "key": "cap-instrumental",
+      "quality": "quality_not_verified",
+      "capability": "ইনস্ট্রুমেন্টাল সংগীত",
+      "taskType": "instrumental_music",
+      "tools": [
+        "generate_instrumental",
+        "music_video পাইপলাইন (প্রসিডিউরাল স্কোর)"
+      ],
+      "modelKey": "procedural-music-engine",
+      "model": "প্রসিডিউরাল মিউজিক-ইঞ্জিন (স্থানীয়)",
+      "license": "allowed",
+      "provider": "local_engine",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "৬ মুড × স্কেল/কর্ড/ছন্দ; ধূমপরীক্ষা ৩২/৩২ পাস",
+      "overall": "experimental",
+      "honestNote": "প্রসিডিউরাল সংশ্লেষণ — MusicGen-ধর্মী নিউরাল মডেল নয় (SDK-তে মিউজিক API নেই)।",
+      "fallback": "নিজের গান আপলোড করলে সেটিই মিউজিক-ভিডিওতে ব্যবহৃত হয়।"
+    },
+    {
+      "key": "cap-full-song",
+      "quality": "quality_not_verified",
+      "capability": "সম্পূর্ণ গান (কণ্ঠসংগীত + সুর)",
+      "taskType": "full_song",
+      "tools": [
+        "generate_singing (সৎ-গেটেড)"
+      ],
+      "modelKey": "ace-step",
+      "model": "ACE-Step (প্রার্থী #১) · YuE (প্রার্থী #২)",
+      "license": "allowed_noncommercial",
+      "provider": "not_exposed_by_sdk",
+      "integration": "not_integrated",
+      "runtime": "unavailable_hardware",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "দুই প্রার্থী: ACE-Step — রিপো Apache-2.0, তবে নির্দিষ্ট checkpoint ও dependency-শর্ত যাচাই বাকি; YuE — ওয়েট CC-BY-NC 4.0 (অ-বাণিজ্যিকে অনুমোদিত)",
+      "errorReason": "প্রার্থী-দুটির লাইসেন্স-পথ আলাদা (YuE: অ-বাণিজ্যিকে অনুমোদিত; ACE-Step: রিপো Apache-2.0, ওয়েট-শর্ত যাচাই বাকি)। প্রকৃত বাধা উভয়ের ক্ষেত্রেই: GPU নেই (ন্যূনতম ~৪.৫GB VRAM) + SDK-তে গান-জেনারেশন API নেই + বাংলা লিরিক্স-বেঞ্চমার্ক হয়নি।",
+      "overall": "future",
+      "honestNote": "TTS-কে কখনো \"গান গাওয়া\" বলে দেখানো হয় না।",
+      "fallback": "প্রসিডিউরাল ইনস্ট্রুমেন্টাল + লিরিক্স-ডকুমেন্ট (plan_music), অথবা নিজের রেকর্ড করা গান আপলোড।"
+    },
+    {
+      "key": "cap-stems",
+      "quality": "quality_not_verified",
+      "capability": "স্টেম-পৃথকীকরণ (কণ্ঠ/বাদ্য আলাদা)",
+      "taskType": "stem_separation",
+      "tools": [
+        "separate_stems (সৎ-গেটেড)"
+      ],
+      "modelKey": "demucs-uvr",
+      "model": "Demucs / UVR",
+      "license": "needs_review",
+      "provider": "not_exposed_by_sdk",
+      "integration": "not_integrated",
+      "runtime": "unavailable_hardware",
+      "errorReason": "SDK-তে API নেই; CPU-তে অত্যন্ত ধীর ও ৪.১GB RAM-এ ঝুঁকিপূর্ণ (স্যান্ডবক্স-ক্র্যাশ এড়ানো হয়েছে); Demucs কোড MIT, তবে প্রতিটি checkpoint ও dependency-র শর্ত আলাদাভাবে যাচাই বাকি।",
+      "overall": "future",
+      "fallback": "মিক্স-টুল দিয়ে ভলিউম/ডাকিং-সমন্বয় সম্ভব (পৃথকীকরণ ছাড়া)।"
+    },
+    {
+      "key": "cap-imagegen",
+      "quality": "quality_machine_checked",
+      "capability": "টেক্সট থেকে ছবি",
+      "taskType": "image_generation",
+      "tools": [
+        "generate_image",
+        "সব পাইপলাইনের স্টোরিবোর্ড/পোর্ট্রেট ধাপ"
+      ],
+      "modelKey": "platform-imagegen",
+      "model": "Z.ai Image Generation",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.images.generations.create",
+      "lastTestedAt": "2026-10-11",
+      "overall": "available"
+    },
+    {
+      "key": "cap-imageedit",
+      "quality": "quality_machine_checked",
+      "capability": "ছবি সম্পাদনা (AI)",
+      "taskType": "image_editing",
+      "tools": [
+        "edit_image",
+        "inpaint_image",
+        "remove_background",
+        "remove_object",
+        "restyle_image"
+      ],
+      "modelKey": "platform-imageedit",
+      "model": "Z.ai Image Edit",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.images.generations.edit",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "রেফারেন্স-কন্ডিশনড স্টোরিবোর্ডসহ E2E-সক্রিয়",
+      "overall": "available"
+    },
+    {
+      "key": "cap-imagesearch",
+      "quality": "quality_machine_checked",
+      "capability": "ওয়েব-ছবি অনুসন্ধান",
+      "taskType": "image_search",
+      "tools": [
+        "search_images"
+      ],
+      "modelKey": "platform-image-search",
+      "model": "Z.ai Image Search",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.images.search.create / CLI",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইভ-প্রোব: SDK মেথডে ৩ ফলাফল ৯.৫ সে.-এ ✓",
+      "overall": "available",
+      "honestNote": "ফলাফল বাইরের ওয়েব-ছবি — AI-নির্মিত নয়, সেটাই সৎভাবে লেবেল করা হয়।"
+    },
+    {
+      "key": "cap-vision",
+      "quality": "quality_machine_checked",
+      "capability": "ছবি বিশ্লেষণ (VLM)",
+      "taskType": "image_analysis",
+      "tools": [
+        "analyze_image",
+        "inspect_image",
+        "ধারাবাহিকতা-যাচাই"
+      ],
+      "modelKey": "platform-vlm",
+      "model": "Z.ai VLM",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.chat.completions.createVision",
+      "lastTestedAt": "2026-10-11",
+      "overall": "available"
+    },
+    {
+      "key": "cap-t2v",
+      "quality": "quality_machine_checked",
+      "capability": "টেক্সট থেকে প্রকৃত AI ভিডিও",
+      "taskType": "text_to_video",
+      "tools": [
+        "generate_video (ইঞ্জিন: ai_diffusion)"
+      ],
+      "modelKey": "platform-videogen",
+      "model": "CogVideoX-3 (ক্লাউড)",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.video.generations.create",
+      "apiModelId": "cogvideox-3",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "৫ সে. t2v ১৩৮ সে.-এ প্রকৃত MP4; ৪২৯-রেট-সীমা — ব্যাকঅফ-সহ পুনঃচেষ্টা",
+      "overall": "available",
+      "honestNote": "প্রতি শটে ২–৪ মিনিট; ফলাফল ffprobe-যাচাইকৃত।",
+      "fallback": "cinematic_motion ইঞ্জিন (স্টোরিবোর্ড + Ken Burns — স্বেচ্ছায় বেছে নিলে, সৎ লেবেলসহ)।"
+    },
+    {
+      "key": "cap-i2v",
+      "quality": "quality_machine_checked",
+      "capability": "ছবি থেকে প্রকৃত AI ভিডিও",
+      "taskType": "image_to_video",
+      "tools": [
+        "image_to_video"
+      ],
+      "modelKey": "platform-videogen",
+      "model": "CogVideoX-3 i2v (ক্লাউড)",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.video.generations.create (image_url)",
+      "apiModelId": "cogvideox-3",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "data-URL ইনপুট প্রোব-যাচাইকৃত (১০৮০×১০৮০ h264 আউটপুট)",
+      "overall": "available"
+    },
+    {
+      "key": "cap-character-motion",
+      "quality": "quality_machine_checked",
+      "capability": "চরিত্রের শরীর-নড়াচড়া (অভিনয়)",
+      "taskType": "character_animation",
+      "tools": [
+        "generate_video (অভিনয়-নির্দেশিত প্রম্পট)"
+      ],
+      "modelKey": "platform-videogen",
+      "model": "CogVideoX-3 (ক্যারেক্টার-মোশন প্রম্পট)",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.video.generations.create",
+      "apiModelId": "cogvideox-3",
+      "lastTestedAt": "2026-10-11",
+      "overall": "experimental",
+      "honestNote": "হাঁটা/বসা/অঙ্গ-ভঙ্গি প্রম্পটযোগ্য; জটিল অ্যাকশনে ফলাফল পরিবর্তনশীল — প্রিভিউ-যাচাই দরকার। মুখের ঠোঁট-সিঙ্ক এর অংশ নয়।"
+    },
+    {
+      "key": "cap-video-audio",
+      "quality": "quality_machine_checked",
+      "capability": "ভিডিওর সাথে নেটিভ AI-অডিও",
+      "taskType": "video_native_audio",
+      "tools": [
+        "generate_video/image_to_video (withAudio)"
+      ],
+      "modelKey": "platform-video-audio",
+      "model": "CogVideoX-3 with_audio",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.video.generations.create (with_audio: true)",
+      "apiModelId": "cogvideox-3",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "লাইভ-প্রোব সফল: ৫.২ সে. MP4-তে প্রকৃত AAC অডিও-স্ট্রিম (16kHz mono) ffprobe-নিশ্চিত",
+      "overall": "available",
+      "honestNote": "অডিও-স্ট্রিমের উপস্থিতি ffprobe দিয়ে যাচাই হয় — কেবল API-সফলতা যথেষ্ট নয়।"
+    },
+    {
+      "key": "cap-talking-portrait",
+      "quality": "quality_not_verified",
+      "capability": "কথা বলার লিপ-সিঙ্ক (টকিং পোর্ট্রেট)",
+      "taskType": "talking_portrait",
+      "tools": [
+        "lip_sync (সৎ-গেটেড)"
+      ],
+      "modelKey": "wav2lip-sadtalker",
+      "model": "Wav2Lip / SadTalker / MuseTalk (প্রার্থী)",
+      "license": "needs_review",
+      "provider": "not_exposed_by_sdk",
+      "integration": "not_integrated",
+      "runtime": "unavailable_hardware",
+      "errorReason": "চার-মাত্রিক বাধা: প্রোভাইডার — SDK-তে লিপ-সিঙ্ক API নেই; হার্ডওয়্যার — GPU নেই (৪–১২GB VRAM দরকার); ইন্টিগ্রেশন — অ্যাডাপ্টার নেই; যাচাই — বাংলা সংলাপের বেঞ্চমার্ক হয়নি ও কিছু প্রকল্পের লাইসেন্স-শর্ত স্পষ্ট নয়।",
+      "overall": "unavailable_here",
+      "honestNote": "ছবিতে জুম করে \"লিপ-সিঙ্ক সফল\" দেখানো নিষিদ্ধ — মিথ্যা সফলতা নয়।",
+      "fallback": "সংলাপ-অডিও (TTS) + AI-দৃশ্য আলাদাভাবে তৈরি হয়; অডিও-ভিডিও টাইমলাইন-সমলয় থাকে, মুখের নড়াচড়ার দাবি থাকে না।"
+    },
+    {
+      "key": "cap-singing-lipsync",
+      "quality": "quality_not_verified",
+      "capability": "গান গাওয়ার লিপ-সিঙ্ক",
+      "taskType": "singing_lipsync",
+      "tools": [
+        "lip_sync (গান-মোড, সৎ-গেটেড)"
+      ],
+      "modelKey": "wav2lip-sadtalker",
+      "model": "—",
+      "license": "needs_review",
+      "provider": "not_exposed_by_sdk",
+      "integration": "not_integrated",
+      "runtime": "unavailable_hardware",
+      "errorReason": "টকিং পোর্ট্রেটের চার-মাত্রিক বাধার সাথে অতিরিক্ষম: গানের vocal-টাইমিং/সিলেবল-অ্যালাইনমেন্ট আলাদা বেঞ্চমার্ক বাধ্যতামূলক (কথার মডেল পরীক্ষা ছাড়া গানে চালু করা নিষিদ্ধ); এই স্যান্ডবক্সে পূর্ণ-গান মডেলও নেই।",
+      "overall": "unavailable_here",
+      "fallback": "গান-অডিও + AI-দৃশ্যের মিউজিক-ভিডিও (কণ্ঠ শোনা যায়, মুখ নড়ে না — সৎভাবে ঘোষিত)।"
+    },
+    {
+      "key": "cap-video-editing",
+      "quality": "quality_machine_checked",
+      "capability": "ভিডিও সম্পাদনা (কাট/জোড়া/রং/স্থিতিশীলতা)",
+      "taskType": "video_editing",
+      "tools": [
+        "process_video",
+        "enhance_video",
+        "interpolate_video",
+        "validate_video",
+        "animate_image"
+      ],
+      "modelKey": "ffmpeg",
+      "model": "FFmpeg 7.1 (স্থানীয়)",
+      "license": "allowed_with_conditions",
+      "provider": "local_engine",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "overall": "available",
+      "honestNote": "এটি সম্পাদনা/অ্যানিমেশন — নতুন AI-জেনারেশন নয়; প্রতিটি আউটপুটে generation_mode লেবেল থাকে।"
+    },
+    {
+      "key": "cap-subtitles",
+      "quality": "quality_machine_checked",
+      "capability": "সাবটাইটেল (SRT + বার্ন-ইন)",
+      "taskType": "subtitles",
+      "tools": [
+        "generate_subtitles",
+        "short_film পাইপলাইন"
+      ],
+      "modelKey": "ffmpeg",
+      "model": "LLM কিউ-সেগমেন্টেশন + FFmpeg libass (বাংলা ফন্ট)",
+      "license": "allowed_with_conditions",
+      "provider": "local_engine",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "overall": "available"
+    },
+    {
+      "key": "cap-sound-design",
+      "quality": "quality_not_verified",
+      "capability": "সাউন্ড-ডিজাইন (A1–A5 পাঁচ-স্তর)",
+      "taskType": "sound_design",
+      "tools": [
+        "short_film পাইপলাইনের sound_design ধাপ",
+        "process_audio",
+        "mix_audio"
+      ],
+      "modelKey": "sound-design-engine",
+      "model": "সাউন্ড-ডিজাইন ইঞ্জিন (স্থানীয়)",
+      "license": "allowed",
+      "provider": "local_engine",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "overall": "experimental",
+      "honestNote": "সংশ্লেষিত অ্যাম্বিয়েন্স/ফোলে — রেকর্ডেড লাইব্রেরি নয়; প্রতিটি ট্র্যাকের source ও mode সংরক্ষিত।"
+    },
+    {
+      "key": "cap-motion-video",
+      "quality": "quality_machine_checked",
+      "capability": "মোশন ভিডিও (৫–২০ সে.)",
+      "taskType": "motion_video",
+      "tools": [
+        "propose_job (motion_video পাইপলাইন)"
+      ],
+      "modelKey": "platform-videogen",
+      "model": "CogVideoX-3 + FFmpeg অ্যাসেম্বলি",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "AI-ইঞ্জিন পথ E2E সফল; cinematic-ফলব্যাকও সৎ-লেবেলসহ",
+      "overall": "available",
+      "honestNote": "ইঞ্জিন প্রতি আর্টিফ্যাক্টে generation_mode (ai_video/image_animation) লেবেল থাকে।"
+    },
+    {
+      "key": "cap-music-video",
+      "quality": "quality_machine_checked",
+      "capability": "মিউজিক ভিডিও",
+      "taskType": "music_video",
+      "tools": [
+        "propose_job (music_video পাইপলাইন)"
+      ],
+      "modelKey": "platform-videogen",
+      "model": "CogVideoX-3 + গান-ইনপুট/প্রসিডিউরাল স্কোর + FFmpeg",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "গান-সমলয় (avSyncOk) যাচাইসহ E2E সফল",
+      "overall": "available_with_limits",
+      "honestNote": "গায়কের মুখ নড়ে না (লিপ-সিঙ্ক নেই) — সৎভাবে ঘোষিত; গান আপলোড বা প্রসিডিউরাল স্কোর।",
+      "fallback": "নিজের গান আপলোড করলে সেটির সাথে ভিজ্যুয়াল-টাইমলাইন বাঁধা যায়।"
+    },
+    {
+      "key": "cap-short-film",
+      "quality": "quality_machine_checked",
+      "capability": "শর্ট ফিল্ম (৮-স্টেজ পাইপলাইন)",
+      "taskType": "short_film",
+      "tools": [
+        "propose_job (short_film পাইপলাইন)"
+      ],
+      "modelKey": "platform-videogen",
+      "model": "CogVideoX-3 + TTS + সাউন্ড-ডিজাইন + VLM + FFmpeg",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "lastTestedAt": "2026-10-11",
+      "lastTestNote": "E2E: ৩৩.৫ সে. ফিল্ম — বাংলা সাবটাইটেল বার্ন-ইন VLM-নিশ্চিত",
+      "overall": "available_with_limits",
+      "honestNote": "সংলাপ-অডিও ও AI-দৃশ্য থাকে, ঠোঁট-সিঙ্ক নয়; প্রতিটি ধাপের ফলাফল ও আংশিক-ব্যর্থতা সৎভাবে রিপোর্ট হয়।"
+    },
+    {
+      "key": "cap-web-search",
+      "quality": "quality_machine_checked",
+      "capability": "ওয়েব অনুসন্ধান",
+      "taskType": "web_search",
+      "tools": [
+        "web_search"
+      ],
+      "modelKey": "platform-functions",
+      "model": "Z.ai web_search",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.functions.invoke('web_search')",
+      "lastTestedAt": "2026-10-11",
+      "overall": "available"
+    },
+    {
+      "key": "cap-page-reader",
+      "quality": "quality_machine_checked",
+      "capability": "ওয়েবপেজ পড়া",
+      "taskType": "page_reading",
+      "tools": [
+        "read_web_page"
+      ],
+      "modelKey": "platform-functions",
+      "model": "Z.ai page_reader",
+      "license": "provider_api_only",
+      "provider": "exposed_by_sdk",
+      "integration": "integrated",
+      "runtime": "healthy",
+      "apiEndpoint": "zai.functions.invoke('page_reader')",
+      "lastTestedAt": "2026-10-11",
+      "overall": "available"
+    }
+  ],
+  "legend": {
+    "allowed": "লাইসেন্স: অনুমোদিত",
+    "allowed_noncommercial": "লাইসেন্স: অ-বাণিজ্যিক ব্যবহারে অনুমোদিত",
+    "allowed_with_conditions": "লাইসেন্স: শর্তসাপেক্ষে অনুমোদিত (attribution/পুনর্বণ্টন-শর্ত)",
+    "provider_api_only": "লাইসেন্স: অনুমোদিত প্রোভাইডার-API পথ ধরে ব্যবহার",
+    "needs_review": "লাইসেন্স/শর্ত: যাচাই বাকি",
+    "blocked_by_license": "লাইসেন্স: বর্তমান ব্যবহারে নিষিদ্ধ",
+    "exposed_by_sdk": "প্রোভাইডার: স্যান্ডবক্স SDK-তে API আছে",
+    "not_exposed_by_sdk": "প্রোভাইডার: SDK-তে API প্রকাশিত নয়",
+    "local_engine": "প্রোভাইডার লাগে না — স্থানীয় ইঞ্জিন",
+    "unknown": "প্রোভাইডার: অজানা",
+    "integrated": "ইন্টিগ্রেশন: অ্যাডাপ্টার/পাইপলাইন সম্পূর্ণ",
+    "partial": "ইন্টিগ্রেশন: আংশিক",
+    "not_integrated": "ইন্টিগ্রেশন: সংযুক্ত নয়",
+    "healthy": "রানটাইম: এই পরিবেশে চালু ও স্বাস্থ্যবান",
+    "degraded": "রানটাইম: চলে, কিন্তু সীমাবদ্ধতা আছে",
+    "temporarily_unavailable": "রানটাইম: সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট/আউটেজ)",
+    "unavailable_hardware": "রানটাইম: এই হার্ডওয়্যারে অসম্ভব (GPU/RAM)",
+    "not_applicable": "রানটাইম: প্রযোজ্য নয়",
+    "quality_not_verified": "গুণমান: বাস্তব মান-পরীক্ষা এখনো হয়নি",
+    "quality_machine_checked": "গুণমান: যন্ত্র-পরীক্ষায় উত্তীর্ণ (মানব-শ্রবণ বাকি)",
+    "quality_human_verified": "গুণমান: মানব-যাচাইতেও উত্তীর্ণ",
+    "quality_not_applicable": "গুণমান: প্রযোজ্য নয় (অবকাঠামো/টুলিং)",
+    "available": "সামগ্রিক: চালু",
+    "available_with_limits": "সামগ্রিক: চালু — নির্দিষ্ট সীমা/সতর্কতাসহ",
+    "experimental": "সামগ্রিক: পরীক্ষামূলক (সৎ লেবেলসহ)",
+    "unavailable_here": "সামগ্রিক: এই পরিবেশে অনুপলব্ধ",
+    "future": "সামগ্রিক: ভবিষ্যৎ পরিবেশে সম্ভব"
+  },
+  "usageMode": {
+    "environment": "Z.ai স্যান্ডবক্স (২ CPU কোর, ~৪.১GB RAM, GPU নেই)",
+    "usage": "ব্যক্তিগত / অ-বাণিজ্যিক ব্যবহার",
+    "note": "লাইসেন্স-রায় এই ঘোষিত ব্যবহার-ভিত্তিক। \"non-commercial\" লাইসেন্স এই ব্যবহারে অনুমোদিত; তাই কোনো মডেল শুধু এই কারণে অবরুদ্ধ নয়। বাস্তব বাধা (GPU/API/ইন্টিগ্রেশন) আলাদাভাবে দেখানো হয়েছে।"
+  }
+}

@@ -460,6 +460,11 @@ export function GuideView() {
           প্রতিটি ক্ষমতার চার-মাত্রিক রায় (লাইসেন্স · প্রোভাইডার · ইন্টিগ্রেশন · রানটাইম) রেজিস্ট্রি ভিউয়ের
           “অ্যাভেইলেবিলিটি ম্যাট্রিক্স”-এ দেখুন।
         </p>
+        <p className="mt-2 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          পাঁচ-মাত্রার স্ট্যাটাস (লাইসেন্স/প্রোভাইডার/ইন্টিগ্রেশন/রানটাইম/গুণমান) + বাংলা TTS
+          বেঞ্চমার্ক-ল্যাব (রেজিস্ট্রি ভিউ)।
+        </p>
       </SectionCard>
 
       {/* সততার সীমাবদ্ধতা */}

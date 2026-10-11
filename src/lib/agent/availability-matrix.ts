@@ -47,6 +47,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- অডিও ----------------
   {
     key: 'cap-speech',
+    quality: 'quality_not_verified',
     capability: 'কথা-উচ্চারণ (TTS) — বাংলা/ইংরেজি',
     taskType: 'speech',
     tools: ['text_to_speech', 'speech_synthesis'],
@@ -60,10 +61,12 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     lastTestedAt: TESTED,
     lastTestNote: '৭-কণ্ঠ প্রোব + ভাষা-নিয়ন্ত্রক রাউন্ড-ট্রিপ যাচাই; ইংরেজি ASR-ব্যাক-চেক কার্যকর',
     overall: 'available_with_limits',
-    honestNote: 'ইংরেজি যাচাইকৃত; বাংলায় কোনো কণ্ঠই প্রশিক্ষিত নয় — রায় সবসময় "সতর্কতা" + মানব-প্রিভিউ বাধ্যতামূলক।',
+    honestNote:
+      'ইংরেজি যন্ত্র-যাচাইকৃত; বাংলায় কোনো কণ্ঠই প্রশিক্ষিত নয় — রায় সবসময় "সতর্কতা" + মানব-প্রিভিউ বাধ্যতামূলক। বাংলার মান-যাচাই এখন বেঞ্চমার্ক-ল্যাবে (রেজিস্ট্রি ভিউতে) — যন্ত্র-পরীক্ষা পাস হলেও "মানব-শ্রবণ বাকি" থাকবে।',
   },
   {
     key: 'cap-transcription',
+    quality: 'quality_not_verified',
     capability: 'অডিও → লেখা (ASR)',
     taskType: 'transcription',
     tools: ['transcribe_audio', 'TTS ব্যাক-চেক'],
@@ -81,6 +84,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-instrumental',
+    quality: 'quality_not_verified',
     capability: 'ইনস্ট্রুমেন্টাল সংগীত',
     taskType: 'instrumental_music',
     tools: ['generate_instrumental', 'music_video পাইপলাইন (প্রসিডিউরাল স্কোর)'],
@@ -98,24 +102,28 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-full-song',
+    quality: 'quality_not_verified',
     capability: 'সম্পূর্ণ গান (কণ্ঠসংগীত + সুর)',
     taskType: 'full_song',
     tools: ['generate_singing (সৎ-গেটেড)'],
-    modelKey: 'singing-tts',
-    model: 'YuE / ACE-Step (ওপেন-ওয়েট)',
+    modelKey: 'ace-step',
+    model: 'ACE-Step (প্রার্থী #১) · YuE (প্রার্থী #২)',
     license: 'allowed_noncommercial',
     provider: 'not_exposed_by_sdk',
     integration: 'not_integrated',
     runtime: 'unavailable_hardware',
     lastTestedAt: TESTED,
-    lastTestNote: 'YuE ওয়েট CC-BY-NC 4.0 (অ-বাণিজ্যিকে অনুমোদিত) — কিন্তু GPU নেই ও SDK-তে API নেই',
-    errorReason: 'লাইসেন্স-অনুমতি আছে (অ-বাণিজ্যিক); প্রকৃত বাধা: GPU নেই (ন্যূনতম ~৪.৫GB VRAM) + SDK-তে গান-জেনারেশন API প্রকাশিত নয় + বাংলা বেঞ্চমার্ক হয়নি।',
+    lastTestNote:
+      'দুই প্রার্থী: ACE-Step — রিপো Apache-2.0, তবে নির্দিষ্ট checkpoint ও dependency-শর্ত যাচাই বাকি; YuE — ওয়েট CC-BY-NC 4.0 (অ-বাণিজ্যিকে অনুমোদিত)',
+    errorReason:
+      'প্রার্থী-দুটির লাইসেন্স-পথ আলাদা (YuE: অ-বাণিজ্যিকে অনুমোদিত; ACE-Step: রিপো Apache-2.0, ওয়েট-শর্ত যাচাই বাকি)। প্রকৃত বাধা উভয়ের ক্ষেত্রেই: GPU নেই (ন্যূনতম ~৪.৫GB VRAM) + SDK-তে গান-জেনারেশন API নেই + বাংলা লিরিক্স-বেঞ্চমার্ক হয়নি।',
     overall: 'future',
     honestNote: 'TTS-কে কখনো "গান গাওয়া" বলে দেখানো হয় না।',
     fallback: 'প্রসিডিউরাল ইনস্ট্রুমেন্টাল + লিরিক্স-ডকুমেন্ট (plan_music), অথবা নিজের রেকর্ড করা গান আপলোড।',
   },
   {
     key: 'cap-stems',
+    quality: 'quality_not_verified',
     capability: 'স্টেম-পৃথকীকরণ (কণ্ঠ/বাদ্য আলাদা)',
     taskType: 'stem_separation',
     tools: ['separate_stems (সৎ-গেটেড)'],
@@ -125,13 +133,14 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     provider: 'not_exposed_by_sdk',
     integration: 'not_integrated',
     runtime: 'unavailable_hardware',
-    errorReason: 'SDK-তে API নেই; CPU-তে অত্যন্ত ধীর ও ৪.১GB RAM-এ ঝুঁকিপূর্ণ (স্যান্ডবক্স-ক্র্যাশ এড়ানো হয়েছে); ওয়েট-লাইসেন্স যাচাই বাকি।',
+    errorReason: 'SDK-তে API নেই; CPU-তে অত্যন্ত ধীর ও ৪.১GB RAM-এ ঝুঁকিপূর্ণ (স্যান্ডবক্স-ক্র্যাশ এড়ানো হয়েছে); Demucs কোড MIT, তবে প্রতিটি checkpoint ও dependency-র শর্ত আলাদাভাবে যাচাই বাকি।',
     overall: 'future',
     fallback: 'মিক্স-টুল দিয়ে ভলিউম/ডাকিং-সমন্বয় সম্ভব (পৃথকীকরণ ছাড়া)।',
   },
   // ---------------- ছবি ----------------
   {
     key: 'cap-imagegen',
+    quality: 'quality_machine_checked',
     capability: 'টেক্সট থেকে ছবি',
     taskType: 'image_generation',
     tools: ['generate_image', 'সব পাইপলাইনের স্টোরিবোর্ড/পোর্ট্রেট ধাপ'],
@@ -147,6 +156,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-imageedit',
+    quality: 'quality_machine_checked',
     capability: 'ছবি সম্পাদনা (AI)',
     taskType: 'image_editing',
     tools: ['edit_image', 'inpaint_image', 'remove_background', 'remove_object', 'restyle_image'],
@@ -163,6 +173,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-imagesearch',
+    quality: 'quality_machine_checked',
     capability: 'ওয়েব-ছবি অনুসন্ধান',
     taskType: 'image_search',
     tools: ['search_images'],
@@ -180,6 +191,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-vision',
+    quality: 'quality_machine_checked',
     capability: 'ছবি বিশ্লেষণ (VLM)',
     taskType: 'image_analysis',
     tools: ['analyze_image', 'inspect_image', 'ধারাবাহিকতা-যাচাই'],
@@ -196,6 +208,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- ভিডিও ----------------
   {
     key: 'cap-t2v',
+    quality: 'quality_machine_checked',
     capability: 'টেক্সট থেকে প্রকৃত AI ভিডিও',
     taskType: 'text_to_video',
     tools: ['generate_video (ইঞ্জিন: ai_diffusion)'],
@@ -215,6 +228,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-i2v',
+    quality: 'quality_machine_checked',
     capability: 'ছবি থেকে প্রকৃত AI ভিডিও',
     taskType: 'image_to_video',
     tools: ['image_to_video'],
@@ -232,6 +246,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-character-motion',
+    quality: 'quality_machine_checked',
     capability: 'চরিত্রের শরীর-নড়াচড়া (অভিনয়)',
     taskType: 'character_animation',
     tools: ['generate_video (অভিনয়-নির্দেশিত প্রম্পট)'],
@@ -249,6 +264,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-video-audio',
+    quality: 'quality_machine_checked',
     capability: 'ভিডিওর সাথে নেটিভ AI-অডিও',
     taskType: 'video_native_audio',
     tools: ['generate_video/image_to_video (withAudio)'],
@@ -267,6 +283,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-talking-portrait',
+    quality: 'quality_not_verified',
     capability: 'কথা বলার লিপ-সিঙ্ক (টকিং পোর্ট্রেট)',
     taskType: 'talking_portrait',
     tools: ['lip_sync (সৎ-গেটেড)'],
@@ -284,6 +301,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-singing-lipsync',
+    quality: 'quality_not_verified',
     capability: 'গান গাওয়ার লিপ-সিঙ্ক',
     taskType: 'singing_lipsync',
     tools: ['lip_sync (গান-মোড, সৎ-গেটেড)'],
@@ -301,6 +319,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- সম্পাদনা/পোস্ট ----------------
   {
     key: 'cap-video-editing',
+    quality: 'quality_machine_checked',
     capability: 'ভিডিও সম্পাদনা (কাট/জোড়া/রং/স্থিতিশীলতা)',
     taskType: 'video_editing',
     tools: ['process_video', 'enhance_video', 'interpolate_video', 'validate_video', 'animate_image'],
@@ -316,6 +335,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-subtitles',
+    quality: 'quality_machine_checked',
     capability: 'সাবটাইটেল (SRT + বার্ন-ইন)',
     taskType: 'subtitles',
     tools: ['generate_subtitles', 'short_film পাইপলাইন'],
@@ -330,6 +350,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-sound-design',
+    quality: 'quality_not_verified',
     capability: 'সাউন্ড-ডিজাইন (A1–A5 পাঁচ-স্তর)',
     taskType: 'sound_design',
     tools: ['short_film পাইপলাইনের sound_design ধাপ', 'process_audio', 'mix_audio'],
@@ -346,6 +367,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- পাইপলাইন ----------------
   {
     key: 'cap-motion-video',
+    quality: 'quality_machine_checked',
     capability: 'মোশন ভিডিও (৫–২০ সে.)',
     taskType: 'motion_video',
     tools: ['propose_job (motion_video পাইপলাইন)'],
@@ -362,6 +384,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-music-video',
+    quality: 'quality_machine_checked',
     capability: 'মিউজিক ভিডিও',
     taskType: 'music_video',
     tools: ['propose_job (music_video পাইপলাইন)'],
@@ -379,6 +402,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-short-film',
+    quality: 'quality_machine_checked',
     capability: 'শর্ট ফিল্ম (৮-স্টেজ পাইপলাইন)',
     taskType: 'short_film',
     tools: ['propose_job (short_film পাইপলাইন)'],
@@ -396,6 +420,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- তথ্য ----------------
   {
     key: 'cap-web-search',
+    quality: 'quality_machine_checked',
     capability: 'ওয়েব অনুসন্ধান',
     taskType: 'web_search',
     tools: ['web_search'],
@@ -411,6 +436,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   },
   {
     key: 'cap-page-reader',
+    quality: 'quality_machine_checked',
     capability: 'ওয়েবপেজ পড়া',
     taskType: 'page_reading',
     tools: ['read_web_page'],
@@ -465,6 +491,11 @@ export function availabilityMatrixResponse(): AvailabilityMatrixResponse {
       temporarily_unavailable: 'রানটাইম: সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট/আউটেজ)',
       unavailable_hardware: 'রানটাইম: এই হার্ডওয়্যারে অসম্ভব (GPU/RAM)',
       not_applicable: 'রানটাইম: প্রযোজ্য নয়',
+      // গুণমান (নতুন পরিকল্পনা §১ — পাঁচম মাত্রা)
+      quality_not_verified: 'গুণমান: বাস্তব মান-পরীক্ষা এখনো হয়নি',
+      quality_machine_checked: 'গুণমান: যন্ত্র-পরীক্ষায় উত্তীর্ণ (মানব-শ্রবণ বাকি)',
+      quality_human_verified: 'গুণমান: মানব-যাচাইতেও উত্তীর্ণ',
+      quality_not_applicable: 'গুণমান: প্রযোজ্য নয় (অবকাঠামো/টুলিং)',
       // সামগ্রিক
       available: 'সামগ্রিক: চালু',
       available_with_limits: 'সামগ্রিক: চালু — নির্দিষ্ট সীমা/সতর্কতাসহ',

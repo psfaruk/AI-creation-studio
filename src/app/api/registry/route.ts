@@ -1,6 +1,6 @@
-// GET /api/registry — Model & License Registry (§৮ + নতুন পরিকল্পনা §২)
-// প্রতি কলে idempotent upsert-by-key (সস্তা — SQLite স্থানীয়, ~২২ সারি)।
-// নতুন ৪-মাত্রার স্ট্যাটাস + প্রোব-ইতিহাস সহ ফেরত দেয়।
+// GET /api/registry — Model & License Registry (§৮ + নতুন পরিকল্পনা §২ + §১)
+// প্রতি কলে idempotent upsert-by-key (সস্তা — SQLite স্থানীয়, ~২৪ সারি)।
+// নতুন ৪-মাত্রার স্ট্যাটাস + পঞ্চম মাত্রা (qualityStatus) + প্রোব-ইতিহাস সহ ফেরত দেয়।
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { MODEL_SEED } from '@/lib/agent/model-registry-data';
@@ -23,6 +23,7 @@ async function ensureSeeded(): Promise<void> {
       providerStatus: entry.providerStatus ?? null,
       integrationStatus: entry.integrationStatus ?? null,
       runtimeStatus: entry.runtimeStatus ?? null,
+      qualityStatus: entry.qualityStatus ?? null,
       apiEndpoint: entry.apiEndpoint ?? null,
       apiModelId: entry.apiModelId ?? null,
       lastTestedAt: entry.lastTestedAt ? new Date(`${entry.lastTestedAt}T12:00:00Z`) : null,
@@ -41,8 +42,10 @@ async function ensureSeeded(): Promise<void> {
       update: data,
     });
   }
-  // বাতিল-হওয়া পুরোনো key থাকলে মুছে ফেলা হয় না — তবে বর্তমান seed-এ
-  // সব পুরোনো key বজায় আছে, তাই অপ্রয়োজনীয়।
+  // seed থেকে বাদ-পড়া key (যেমন পুরোনো 'singing-tts' — এখন ace-step+yue-তে বিভক্ত) —
+  // ডিলিট করা হয়, নইলে GET পুরোনো এন্ট্রিও ফিরিয়ে দিত। ModelEntry-র একমাত্র লেখক এই রুট।
+  const seedKeys = MODEL_SEED.map(e => e.key);
+  await db.modelEntry.deleteMany({ where: { key: { notIn: seedKeys } } });
 }
 
 export async function GET() {
@@ -75,6 +78,7 @@ export async function GET() {
       providerStatus: (r.providerStatus ?? undefined) as ModelEntryView['providerStatus'],
       integrationStatus: (r.integrationStatus ?? undefined) as ModelEntryView['integrationStatus'],
       runtimeStatus: (r.runtimeStatus ?? undefined) as ModelEntryView['runtimeStatus'],
+      qualityStatus: (r.qualityStatus ?? undefined) as ModelEntryView['qualityStatus'],
       apiEndpoint: r.apiEndpoint ?? undefined,
       apiModelId: r.apiModelId ?? undefined,
       lastTestedAt: r.lastTestedAt?.toISOString(),

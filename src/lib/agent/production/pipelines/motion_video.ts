@@ -26,7 +26,8 @@ import {
   normalizeShotDurations,
   sanitize,
 } from '../../film-helpers';
-import { generateImageBuffer, synthesizeSpeech } from '../../sdk-helpers';
+import { generateImageBuffer } from '../../sdk-helpers';
+import { cachedSynthesizeSpeech } from '../../tts-cache';
 import type { ImageSize } from '../../sdk-helpers';
 import type { CameraMove } from '@/lib/types';
 import { mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
@@ -451,7 +452,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
       for (let i = 0; i < chunks.length; i++) {
         const filePath = path.join(wd, `voice-${i}.wav`);
         try {
-          const speech = await synthesizeSpeech(chunks[i], spec.voice ?? 'tongtong', 1);
+          const speech = await cachedSynthesizeSpeech(chunks[i], spec.voice ?? 'tongtong', 1);
           await writeFile(filePath, speech.buffer);
           const info = await mediaInfo(filePath);
           voiceFiles.push({ file: filePath, startSec: cursor });

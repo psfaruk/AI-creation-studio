@@ -1,0 +1,51 @@
+{
+  "id": "ttsbn-20261011-202918",
+  "scope": "quick",
+  "status": "cancelled",
+  "startedAt": "2026-10-11T20:29:18.617Z",
+  "progress": {
+    "done": 2,
+    "total": 8
+  },
+  "voices": [
+    "jam",
+    "douji"
+  ],
+  "results": [
+    {
+      "sentenceId": "bn-001",
+      "category": "conversation",
+      "text": "সকালে এক কাপ চা খেয়ে নাও, তারপর কথা হবে।",
+      "normalizedText": "সকালে এক কাপ চা খেয়ে নাও, তারপর কথা হবে।",
+      "voice": "jam",
+      "status": "skipped_rate_limited",
+      "notes": [
+        "রেট-লিমিট — সাময়িক, লাইসেন্স/ইন্টিগ্রেশন-সমস্যা নয়; পরে আবার চালান"
+      ],
+      "durationMs": 197918
+    },
+    {
+      "sentenceId": "bn-011",
+      "category": "dramatic",
+      "text": "থামো! আর এক পা-ও এগোলে সব শেষ হয়ে যাবে।",
+      "normalizedText": "থামো! আর এক পা-ও এগোলে সব শেষ হয়ে যাবে।",
+      "voice": "douji",
+      "status": "skipped_rate_limited",
+      "notes": [
+        "রেট-লিমিট — সাময়িক, লাইসেন্স/ইন্টিগ্রেশন-সমস্যা নয়; পরে আবার চালান"
+      ],
+      "durationMs": 180002
+    }
+  ],
+  "honestNote": "এটি যন্ত্র-ভিত্তিক পরীক্ষা (দৈর্ঘ্য/নীরবতা/ক্লিপিং/ASR-উপদেশ)। কোনো কণ্ঠই বাংলা-প্রশিন্নত নয় — \"যাচাইকৃত বাংলা\" দাবির আগে মানব-শ্রবণ পরীক্ষা বাধ্যতামূলক।",
+  "finishedAt": "2026-10-11T20:35:36.551Z",
+  "summary": {
+    "pass": 0,
+    "warn": 0,
+    "fail": 0,
+    "skipped": 2,
+    "error": 0,
+    "machineChecked": true,
+    "humanListeningPending": true
+  }
+}

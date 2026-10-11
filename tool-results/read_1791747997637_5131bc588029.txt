@@ -1,0 +1,1109 @@
+     1→'use client';
+     2→
+     3→// ============================================================
+     4→// RegistryView — Model & License Registry (মাস্টার প্ল্যান §৮, §৯.১)
+     5→// + Model & Tool Availability Matrix (নতুন পরিকল্পনা §১৫-এর প্রথম
+     6→// Deliverable — চার-মাত্রিক সৎ রায়)।
+     7→//
+     8→// - শীর্ষে "অ্যাভেইলেবিলিটি ম্যাট্রিক্স" প্যানেল: usageMode-ঘোষণা +
+     9→//   ফিল্টার-চিপ + প্রসারণযোগ্য সারি (apiEndpoint / শেষ পরীক্ষা /
+    10→//   সৎ-নোট / বিকল্প / প্রকৃত-কারণ) + লেজেন্ড — GET /api/availability
+    11→// - তারপর "সিস্টেম" প্যানেল (§৯): হার্ডওয়্যার-চিপস + টুল-স্বাস্থ্য +
+    12→//   "পুনঃচেক" (POST /api/system)
+    13→// - অবস্থা-ভিত্তিক ভাঁজযোগ্য সেকশন: চালু/পরীক্ষামূলক/অবরুদ্ধ/পরিকল্পিত
+    14→//   ("অবরুদ্ধ" শুধু প্রকৃত লাইসেন্স-বাধায় — এখন কেউই নয়, তাই সৎ নোট)
+    15→// - প্রতি এন্ট্রিতে §৯.১ মেটাডেটা + চার-মাত্রিক চিপ + API + পরীক্ষা-নোট
+    16→// ============================================================
+    17→
+    18→import { useEffect, useMemo, useState } from 'react';
+    19→import {
+    20→  AlertCircle,
+    21→  BadgeCheck,
+    22→  ChevronDown,
+    23→  Clock3,
+    24→  Cpu,
+    25→  ExternalLink,
+    26→  HardDrive,
+    27→  History,
+    28→  Info,
+    29→  Loader2,
+    30→  MemoryStick,
+    31→  MonitorCog,
+    32→  RefreshCcw,
+    33→  Search,
+    34→  ShieldCheck,
+    35→  TableProperties,
+    36→  TriangleAlert,
+    37→  Wrench,
+    38→} from 'lucide-react';
+    39→import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+    40→
+    41→import { formatDateBn, relativeTimeBn, toBnDigits } from '@/components/chat/bn-format';
+    42→import {
+    43→  DimensionChip,
+    44→  INTEGRATION_META,
+    45→  LICENSE_META,
+    46→  OverallBadge,
+    47→  PROVIDER_META,
+    48→  RUNTIME_META,
+    49→  type AvailMeta,
+    50→} from '@/components/studio/availability-badges';
+    51→import { Badge } from '@/components/ui/badge';
+    52→import { Button } from '@/components/ui/button';
+    53→import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+    54→import { Input } from '@/components/ui/input';
+    55→import { Skeleton } from '@/components/ui/skeleton';
+    56→import { useAvailability } from '@/hooks/use-availability';
+    57→import { RecheckError, useRecheckSystem, useSystemInfo, type SystemToolStatus } from '@/hooks/use-system';
+    58→import { toast } from '@/hooks/use-toast';
+    59→import type { AvailabilityMatrixRow, MatrixOverall, ModelEntryView, ModelStatus } from '@/lib/types';
+    60→import { cn } from '@/lib/utils';
+    61→
+    62→// ------------------------------------------------------------
+    63→// লেবেল ম্যাপ
+    64→// ------------------------------------------------------------
+    65→
+    66→interface SectionMeta {
+    67→  key: ModelStatus;
+    68→  label: string;
+    69→  className: string;
+    70→  dotClass: string;
+    71→}
+    72→
+    73→const SECTIONS: SectionMeta[] = [
+    74→  {
+    75→    key: 'enabled',
+    76→    label: 'চালু',
+    77→    className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+    78→    dotClass: 'bg-emerald-500',
+    79→  },
+    80→  {
+    81→    key: 'experimental',
+    82→    label: 'পরীক্ষামূলক',
+    83→    className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+    84→    dotClass: 'bg-amber-500',
+    85→  },
+    86→  {
+    87→    key: 'blocked',
+    88→    label: 'অবরুদ্ধ',
+    89→    className: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
+    90→    dotClass: 'bg-red-500',
+    91→  },
+    92→  {
+    93→    key: 'planned',
+    94→    label: 'পরিকল্পিত',
+    95→    className: 'border-muted bg-muted text-muted-foreground',
+    96→    dotClass: 'bg-muted-foreground/50',
+    97→  },
+    98→];
+    99→
+   100→const COMMERCIAL_META: Record<string, { label: string; className: string }> = {
+   101→  allowed: { label: 'বাণিজ্যিক-সম্মত', className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400' },
+   102→  restricted: { label: 'সীমিত', className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' },
+   103→  unknown: { label: 'অজানা', className: 'border-muted bg-muted text-muted-foreground' },
+   104→  not_applicable: { label: 'প্রযোজ্য নয়', className: 'border-muted bg-muted text-muted-foreground' },
+   105→};
+   106→
+   107→const CATEGORY_LABEL: Record<string, string> = {
+   108→  llm: 'LLM',
+   109→  image: 'ছবি',
+   110→  audio: 'অডিও',
+   111→  video: 'ভিডিও',
+   112→  utility: 'সহায়ক',
+   113→  infrastructure: 'অবকাঠামো',
+   114→};
+   115→
+   116→/** সক্ষমতার মান স্ট্রিং-এ রূপান্তর — সর্বোচ্চ ২৪ অক্ষর */
+   117→function stringifyCapability(value: unknown): string {
+   118→  let s: string;
+   119→  if (Array.isArray(value)) s = value.map(String).join(', ');
+   120→  else if (typeof value === 'string') s = value;
+   121→  else s = String(value);
+   122→  return s.length > 24 ? `${s.slice(0, 23)}…` : s;
+   123→}
+   124→
+   125→// ------------------------------------------------------------
+   126→// §৯.১ মেটাডেটা-কী — বাংলা লেবেলসহ সারি হিসেবে রেন্ডার
+   127→// ------------------------------------------------------------
+   128→
+   129→/** supported_languages অবজেক্টের কোড → বাংলা নাম */
+   130→const LANG_CODE_LABEL: Record<string, string> = {
+   131→  bn: 'বাংলা',
+   132→  en: 'ইংরেজি',
+   133→  prompt: 'প্রম্পট',
+   134→  instrumental: 'ইনস্ট্রুমেন্টাল',
+   135→};
+   136→
+   137→interface HighlightedCap {
+   138→  key: string;
+   139→  render: () => { label: string; value: string; tone?: 'ok' | 'warn' };
+   140→}
+   141→
+   142→/** চেনা capability-কীগুলো — বাংলা লেবেলে সুন্দরভাবে */
+   143→function buildHighlightedCaps(caps: Record<string, unknown>): HighlightedCap[] {
+   144→  const out: HighlightedCap[] = [];
+   145→
+   146→  if (typeof caps.task_type === 'string' && caps.task_type) {
+   147→    out.push({
+   148→      key: 'task_type',
+   149→      render: () => ({ label: 'কাজের ধরন', value: caps.task_type as string }),
+   150→    });
+   151→  }
+   152→
+   153→  const langs = caps.supported_languages;
+   154→  if (langs && typeof langs === 'object' && !Array.isArray(langs)) {
+   155→    for (const [code, val] of Object.entries(langs as Record<string, unknown>)) {
+   156→      out.push({
+   157→        key: `lang-${code}`,
+   158→        render: () => ({
+   159→          label: LANG_CODE_LABEL[code] ?? code,
+   160→          value: String(val),
+   161→          tone: String(val).includes('দুর্বল') || String(val).includes('আংশিক') ? 'warn' : 'ok',
+   162→        }),
+   163→      });
+   164→    }
+   165→  } else if (typeof langs === 'string' && langs) {
+   166→    out.push({
+   167→      key: 'supported_languages',
+   168→      render: () => ({ label: 'ভাষা', value: langs }),
+   169→    });
+   170→  }
+   171→
+   172→  if (typeof caps.requires_gpu === 'boolean') {
+   173→    out.push({
+   174→      key: 'requires_gpu',
+   175→      render: () => ({
+   176→        label: 'GPU',
+   177→        value: caps.requires_gpu ? 'প্রয়োজন' : 'লাগে না',
+   178→        tone: caps.requires_gpu ? 'warn' : 'ok',
+   179→      }),
+   180→    });
+   181→  }
+   182→
+   183→  if (typeof caps.max_duration_sec === 'number') {
+   184→    out.push({
+   185→      key: 'max_duration_sec',
+   186→      render: () => ({ label: 'সর্বোচ্চ দৈর্ঘ্য', value: `${toBnDigits(caps.max_duration_sec as number)} সেকেন্ড` }),
+   187→    });
+   188→  }
+   189→
+   190→  if (typeof caps.generation_time === 'string' && caps.generation_time) {
+   191→    out.push({
+   192→      key: 'generation_time',
+   193→      render: () => ({ label: 'উৎপাদন-সময়', value: caps.generation_time as string }),
+   194→    });
+   195→  }
+   196→
+   197→  if (typeof caps.fallback_tool === 'string' && caps.fallback_tool) {
+   198→    out.push({
+   199→      key: 'fallback_tool',
+   200→      render: () => ({ label: 'বিকল্প-টুল', value: caps.fallback_tool as string }),
+   201→    });
+   202→  }
+   203→
+   204→  return out;
+   205→}
+   206→
+   207→const HIGHLIGHTED_KEYS = new Set([
+   208→  'task_type',
+   209→  'supported_languages',
+   210→  'requires_gpu',
+   211→  'max_duration_sec',
+   212→  'generation_time',
+   213→  'fallback_tool',
+   214→]);
+   215→
+   216→// ------------------------------------------------------------
+   217→// একটি এন্ট্রি কার্ড (§৯.১ + চার-মাত্রিক স্ট্যাটাস)
+   218→// ------------------------------------------------------------
+   219→
+   220→function ModelEntryCard({ entry }: { entry: ModelEntryView }) {
+   221→  const commercial = COMMERCIAL_META[entry.commercialUse] ?? COMMERCIAL_META.unknown;
+   222→
+   223→  const highlighted = useMemo(
+   224→    () => buildHighlightedCaps(entry.capabilities ?? {}),
+   225→    [entry.capabilities],
+   226→  );
+   227→  const restCaps = useMemo(
+   228→    () => Object.entries(entry.capabilities ?? {}).filter(([k]) => !HIGHLIGHTED_KEYS.has(k)),
+   229→    [entry.capabilities],
+   230→  );
+   231→
+   232→  const hasDims = Boolean(entry.licenseStatus || entry.providerStatus || entry.integrationStatus || entry.runtimeStatus);
+   233→
+   234→  return (
+   235→    <li className="rounded-xl border bg-card px-4 py-3 shadow-sm">
+   236→      <div className="flex flex-wrap items-center gap-1.5">
+   237→        <p className="text-sm font-semibold">{entry.name}</p>
+   238→        <Badge variant="secondary" className="text-[11px] font-normal">
+   239→          {CATEGORY_LABEL[entry.category] ?? entry.category}
+   240→        </Badge>
+   241→        <Badge variant="outline" className={cn('text-[11px]', commercial.className)}>
+   242→          {commercial.label}
+   243→        </Badge>
+   244→      </div>
+   245→
+   246→      <p className="mt-1 text-xs text-muted-foreground">
+   247→        সরবরাহকারী: {entry.provider} · লাইসেন্স: {entry.license}
+   248→        {entry.licenseUrl && (
+   249→          <>
+   250→            {' · '}
+   251→            <a
+   252→              href={entry.licenseUrl}
+   253→              target="_blank"
+   254→              rel="noreferrer"
+   255→              className="inline-flex items-center gap-0.5 text-emerald-700 hover:underline dark:text-emerald-400"
+   256→            >
+   257→              লাইসেন্স-লিংক
+   258→              <ExternalLink className="size-3" aria-hidden="true" />
+   259→            </a>
+   260→          </>
+   261→        )}
+   262→      </p>
+   263→
+   264→      {/* চার-মাত্রিক স্ট্যাটাস-চিপ (নতুন পরিকল্পনা §২) */}
+   265→      {hasDims && (
+   266→        <div className="mt-2 flex flex-wrap gap-1" aria-label="চার-মাত্রিক স্ট্যাটাস">
+   267→          {entry.licenseStatus && <DimensionChip dimension="লাইসেন্স" meta={LICENSE_META[entry.licenseStatus]} />}
+   268→          {entry.providerStatus && <DimensionChip dimension="প্রোভাইডার" meta={PROVIDER_META[entry.providerStatus]} />}
+   269→          {entry.integrationStatus && <DimensionChip dimension="ইন্টিগ্রেশন" meta={INTEGRATION_META[entry.integrationStatus]} />}
+   270→          {entry.runtimeStatus && <DimensionChip dimension="রানটাইম" meta={RUNTIME_META[entry.runtimeStatus]} />}
+   271→        </div>
+   272→      )}
+   273→
+   274→      {/* সংশ্লিষ্ট টুল */}
+   275→      {entry.tools && entry.tools.length > 0 && (
+   276→        <div className="mt-2 flex flex-wrap gap-1" aria-label="সংশ্লিষ্ট টুল">
+   277→          {entry.tools.map((tool) => (
+   278→            <span
+   279→              key={tool}
+   280→              title={tool}
+   281→              className="max-w-full truncate rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+   282→            >
+   283→              {tool}
+   284→            </span>
+   285→          ))}
+   286→        </div>
+   287→      )}
+   288→
+   289→      {/* §৯.১ মেটাডেটা — বাংলা লেবেলসহ সারি */}
+   290→      {highlighted.length > 0 && (
+   291→        <dl className="mt-2 space-y-1" aria-label="মডেল-মেটাডেটা">
+   292→          {highlighted.map(cap => {
+   293→            const { label, value, tone } = cap.render();
+   294→            return (
+   295→              <div key={cap.key} className="flex items-start gap-1.5 text-xs leading-relaxed">
+   296→                <dt className="shrink-0 text-muted-foreground">{label}:</dt>
+   297→                <dd
+   298→                  className={cn(
+   299→                    'min-w-0 flex-1',
+   300→                    tone === 'warn' ? 'text-amber-700 dark:text-amber-400' : 'text-foreground/90',
+   301→                  )}
+   302→                >
+   303→                  {value}
+   304→                </dd>
+   305→              </div>
+   306→            );
+   307→          })}
+   308→        </dl>
+   309→      )}
+   310→
+   311→      {restCaps.length > 0 && (
+   312→        <div className="mt-2 flex flex-wrap gap-1.5" aria-label="অন্যান্য সক্ষমতা">
+   313→          {restCaps.map(([k, v]) => {
+   314→            const full = `${k}: ${Array.isArray(v) ? v.map(String).join(', ') : String(v)}`;
+   315→            return (
+   316→              <span
+   317→                key={k}
+   318→                title={full}
+   319→                className="max-w-full truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground"
+   320→              >
+   321→                {k}: {stringifyCapability(v)}
+   322→              </span>
+   323→            );
+   324→          })}
+   325→        </div>
+   326→      )}
+   327→
+   328→      {/* API-পথ */}
+   329→      {entry.apiEndpoint && (
+   330→        <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-[11px]">
+   331→          <span className="shrink-0 text-muted-foreground">API:</span>
+   332→          <code className="break-all rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] text-foreground/90">
+   333→            {entry.apiEndpoint}
+   334→          </code>
+   335→          {entry.apiModelId && <span className="text-muted-foreground">({entry.apiModelId})</span>}
+   336→        </p>
+   337→      )}
+   338→
+   339→      {/* শেষ পরীক্ষা */}
+   340→      {(entry.lastTestedAt || entry.lastTestNote) && (
+   341→        <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+   342→          <History className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   343→          <span>
+   344→            শেষ পরীক্ষা{entry.lastTestedAt ? `: ${formatDateBn(entry.lastTestedAt)}` : ''}
+   345→            {entry.lastTestNote ? ` — ${entry.lastTestNote}` : ''}
+   346→          </span>
+   347→        </p>
+   348→      )}
+   349→
+   350→      {/* প্রকৃত বাধার কারণ (লাইসেন্স নয় যদি না হয়) */}
+   351→      {entry.errorReason && (
+   352→        <p className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs leading-relaxed text-amber-800 dark:text-amber-300">
+   353→          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   354→          <span>
+   355→            <span className="font-semibold">অনুপলব্ধতার প্রকৃত কারণ: </span>
+   356→            {entry.errorReason}
+   357→          </span>
+   358→        </p>
+   359→      )}
+   360→
+   361→      {entry.hardwareNotes && (
+   362→        <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+   363→          <Cpu className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   364→          হার্ডওয়্যার: {entry.hardwareNotes}
+   365→        </p>
+   366→      )}
+   367→      {entry.notes && (
+   368→        <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+   369→          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   370→          {entry.notes}
+   371→        </p>
+   372→      )}
+   373→    </li>
+   374→  );
+   375→}
+   376→
+   377→// ------------------------------------------------------------
+   378→// অ্যাভেইলেবিলিটি ম্যাট্রিক্স প্যানেল (§১৫-এর প্রথম Deliverable)
+   379→// ------------------------------------------------------------
+   380→
+   381→type MatrixFilter = MatrixOverall | 'all';
+   382→
+   383→const MATRIX_FILTERS: Array<{ key: MatrixFilter; label: string }> = [
+   384→  { key: 'all', label: 'সব' },
+   385→  { key: 'available', label: 'চালু' },
+   386→  { key: 'available_with_limits', label: 'সীমাসহ' },
+   387→  { key: 'experimental', label: 'পরীক্ষামূলক' },
+   388→  { key: 'unavailable_here', label: 'অনুপলব্ধ' },
+   389→  { key: 'future', label: 'ভবিষ্যৎ' },
+   390→];
+   391→
+   392→/** ডেস্কটপ টেবিল-গ্রিড: ক্ষমতা + ৪ মাত্রা + সামগ্রিক */
+   393→const MATRIX_GRID_COLS =
+   394→  'md:grid-cols-[minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.15fr)]';
+   395→
+   396→/** ম্যাট্রিক্সের একটি প্রসারণযোগ্য সারি */
+   397→function MatrixRow({ row, legend }: { row: AvailabilityMatrixRow; legend: Record<string, string> }) {
+   398→  const [open, setOpen] = useState(false);
+   399→
+   400→  const dims: Array<{ dimension: string; meta: AvailMeta; legendText: string }> = [
+   401→    { dimension: 'লাইসেন্স', meta: LICENSE_META[row.license], legendText: legend[row.license] ?? LICENSE_META[row.license].title },
+   402→    { dimension: 'প্রোভাইডার', meta: PROVIDER_META[row.provider], legendText: legend[row.provider] ?? PROVIDER_META[row.provider].title },
+   403→    { dimension: 'ইন্টিগ্রেশন', meta: INTEGRATION_META[row.integration], legendText: legend[row.integration] ?? INTEGRATION_META[row.integration].title },
+   404→    { dimension: 'রানটাইম', meta: RUNTIME_META[row.runtime], legendText: legend[row.runtime] ?? RUNTIME_META[row.runtime].title },
+   405→  ];
+   406→
+   407→  return (
+   408→    <Collapsible open={open} onOpenChange={setOpen}>
+   409→      <div
+   410→        className={cn(
+   411→          'overflow-hidden rounded-lg border bg-card',
+   412→          row.overall === 'future' && 'border-dashed border-stone-400/60',
+   413→        )}
+   414→      >
+   415→        <CollapsibleTrigger
+   416→          className="flex min-h-11 w-full flex-col gap-2 px-3 py-2.5 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-600/50 md:gap-0 md:py-2"
+   417→          aria-expanded={open}
+   418→        >
+   419→          {/* মোবাইল: স্ট্যাকড কার্ড */}
+   420→          <div className="flex flex-col gap-2 md:hidden">
+   421→            <div className="flex items-start justify-between gap-2">
+   422→              <div className="min-w-0">
+   423→                <p className="text-xs leading-snug font-semibold">{row.capability}</p>
+   424→                <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{row.model}</p>
+   425→              </div>
+   426→              <span className="flex shrink-0 items-center gap-1">
+   427→                <OverallBadge overall={row.overall} />
+   428→                <ChevronDown
+   429→                  className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
+   430→                  aria-hidden="true"
+   431→                />
+   432→              </span>
+   433→            </div>
+   434→            <div className="flex flex-wrap gap-1">
+   435→              {dims.map(d => (
+   436→                <DimensionChip key={d.dimension} dimension={d.dimension} meta={d.meta} />
+   437→              ))}
+   438→            </div>
+   439→          </div>
+   440→
+   441→          {/* ডেস্কটপ: টেবিল-সারি */}
+   442→          <div className={cn('hidden items-center gap-x-3 md:grid', MATRIX_GRID_COLS)}>
+   443→            <div className="min-w-0">
+   444→              <p className="truncate text-xs font-semibold" title={row.capability}>
+   445→                {row.capability}
+   446→              </p>
+   447→              <p className="truncate text-[11px] text-muted-foreground" title={row.model}>
+   448→                {row.model}
+   449→              </p>
+   450→              {row.tools.length > 0 && (
+   451→                <div className="mt-1 flex flex-wrap gap-1">
+   452→                  {row.tools.slice(0, 2).map(tool => (
+   453→                    <span
+   454→                      key={tool}
+   455→                      title={tool}
+   456→                      className="max-w-full truncate rounded bg-muted/60 px-1.5 py-0.5 text-[9px] text-muted-foreground"
+   457→                    >
+   458→                      {tool}
+   459→                    </span>
+   460→                  ))}
+   461→                  {row.tools.length > 2 && (
+   462→                    <span className="text-[9px] text-muted-foreground">+{toBnDigits(row.tools.length - 2)}</span>
+   463→                  )}
+   464→                </div>
+   465→              )}
+   466→            </div>
+   467→            <DimensionChip meta={LICENSE_META[row.license]} withPrefix={false} />
+   468→            <DimensionChip meta={PROVIDER_META[row.provider]} withPrefix={false} />
+   469→            <DimensionChip meta={INTEGRATION_META[row.integration]} withPrefix={false} />
+   470→            <DimensionChip meta={RUNTIME_META[row.runtime]} withPrefix={false} />
+   471→            <span className="flex items-center justify-between gap-1">
+   472→              <OverallBadge overall={row.overall} />
+   473→              <ChevronDown
+   474→                className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
+   475→                aria-hidden="true"
+   476→              />
+   477→            </span>
+   478→          </div>
+   479→        </CollapsibleTrigger>
+   480→
+   481→        <CollapsibleContent>
+   482→          <div className="space-y-2.5 border-t px-3 py-3 sm:px-4">
+   483→            {/* চার-মাত্রিক বিশ্লেষণ — কোন মাত্রা বাধা তা স্পষ্ট */}
+   484→            <dl className="grid gap-2 sm:grid-cols-2" aria-label="চার-মাত্রিক স্ট্যাটাস বিশ্লেষণ">
+   485→              {dims.map(d => (
+   486→                <div key={d.dimension} className="flex items-start gap-1.5">
+   487→                  <dt className="shrink-0 text-[11px] font-medium text-muted-foreground">{d.dimension}:</dt>
+   488→                  <dd className="min-w-0 flex-1">
+   489→                    <DimensionChip meta={d.meta} withPrefix={false} />
+   490→                    <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">{d.legendText}</span>
+   491→                  </dd>
+   492→                </div>
+   493→              ))}
+   494→            </dl>
+   495→
+   496→            <dl className="space-y-1 text-xs leading-relaxed">
+   497→              {row.apiEndpoint && (
+   498→                <div className="flex gap-1.5">
+   499→                  <dt className="shrink-0 text-muted-foreground">API:</dt>
+   500→                  <dd className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground/90">
+   501→                    {row.apiEndpoint}
+   502→                    {row.apiModelId ? ` (${row.apiModelId})` : ''}
+   503→                  </dd>
+   504→                </div>
+   505→              )}
+   506→              {row.lastTestedAt && (
+   507→                <div className="flex gap-1.5">
+   508→                  <dt className="shrink-0 text-muted-foreground">শেষ পরীক্ষা:</dt>
+   509→                  <dd className="min-w-0 flex-1 text-foreground/90">
+   510→                    {formatDateBn(row.lastTestedAt)}
+   511→                    {row.lastTestNote ? ` — ${row.lastTestNote}` : ''}
+   512→                  </dd>
+   513→                </div>
+   514→              )}
+   515→              {row.honestNote && (
+   516→                <div className="flex gap-1.5">
+   517→                  <dt className="shrink-0 text-muted-foreground">সৎ-নোট:</dt>
+   518→                  <dd className="min-w-0 flex-1 text-foreground/90">{row.honestNote}</dd>
+   519→                </div>
+   520→              )}
+   521→              {row.fallback && (
+   522→                <div className="flex gap-1.5">
+   523→                  <dt className="shrink-0 text-muted-foreground">বিকল্প-পথ:</dt>
+   524→                  <dd className="min-w-0 flex-1 text-emerald-700 dark:text-emerald-400">{row.fallback}</dd>
+   525→                </div>
+   526→              )}
+   527→              {row.tools.length > 0 && (
+   528→                <div className="flex gap-1.5">
+   529→                  <dt className="shrink-0 text-muted-foreground">টুল:</dt>
+   530→                  <dd className="flex min-w-0 flex-1 flex-wrap gap-1">
+   531→                    {row.tools.map(tool => (
+   532→                      <span
+   533→                        key={tool}
+   534→                        title={tool}
+   535→                        className="max-w-full truncate rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+   536→                      >
+   537→                        {tool}
+   538→                      </span>
+   539→                    ))}
+   540→                  </dd>
+   541→                </div>
+   542→              )}
+   543→            </dl>
+   544→
+   545→            {row.errorReason && (
+   546→              <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:text-amber-300">
+   547→                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   548→                <span>
+   549→                  <span className="font-semibold">অনুপলব্ধতার প্রকৃত কারণ: </span>
+   550→                  {row.errorReason}
+   551→                </span>
+   552→              </p>
+   553→            )}
+   554→          </div>
+   555→        </CollapsibleContent>
+   556→      </div>
+   557→    </Collapsible>
+   558→  );
+   559→}
+   560→
+   561→function AvailabilityMatrixPanel() {
+   562→  const { data, isLoading, isError, refetch } = useAvailability();
+   563→  const [filter, setFilter] = useState<MatrixFilter>('all');
+   564→
+   565→  const counts = useMemo(() => {
+   566→    const c: Record<string, number> = { all: 0 };
+   567→    for (const r of data?.matrix ?? []) {
+   568→      c.all += 1;
+   569→      c[r.overall] = (c[r.overall] ?? 0) + 1;
+   570→    }
+   571→    return c;
+   572→  }, [data]);
+   573→
+   574→  const rows = useMemo(() => {
+   575→    if (!data) return [];
+   576→    return filter === 'all' ? data.matrix : data.matrix.filter(r => r.overall === filter);
+   577→  }, [data, filter]);
+   578→
+   579→  if (isLoading) {
+   580→    return (
+   581→      <section className="rounded-xl border bg-card px-4 py-4 shadow-sm" aria-busy="true" aria-labelledby="availability-matrix-title">
+   582→        <p id="availability-matrix-title" className="mb-3 flex items-center gap-2 text-sm font-semibold">
+   583→          <TableProperties className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   584→          মডেল ও টুল অ্যাভেইলেবিলিটি ম্যাট্রিক্স
+   585→        </p>
+   586→        <div className="space-y-2">
+   587→          <Skeleton className="h-9 w-2/3" />
+   588→          {Array.from({ length: 6 }).map((_, i) => (
+   589→            <Skeleton key={i} className="h-12 rounded-lg" />
+   590→          ))}
+   591→        </div>
+   592→      </section>
+   593→    );
+   594→  }
+   595→
+   596→  if (isError || !data) {
+   597→    return (
+   598→      <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">
+   599→        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+   600→          <AlertCircle className="size-4 shrink-0 text-red-500" aria-hidden="true" />
+   601→          ম্যাট্রিক্স লোড করা যায়নি।
+   602→        </p>
+   603→        <Button
+   604→          type="button"
+   605→          variant="outline"
+   606→          size="sm"
+   607→          className="min-h-11"
+   608→          onClick={() => void refetch()}
+   609→        >
+   610→          <RefreshCcw className="size-4" aria-hidden="true" />
+   611→          আবার
+   612→        </Button>
+   613→      </div>
+   614→    );
+   615→  }
+   616→
+   617→  return (
+   618→    <section className="rounded-xl border bg-card px-4 py-4 shadow-sm" aria-labelledby="availability-matrix-title">
+   619→      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+   620→        <h2 id="availability-matrix-title" className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+   621→          <TableProperties className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   622→          মডেল ও টুল অ্যাভেইলেবিলিটি ম্যাট্রিক্স
+   623→          <span className="text-xs font-normal text-muted-foreground">
+   624→            ({toBnDigits(data.matrix.length)} ক্ষমতা)
+   625→          </span>
+   626→        </h2>
+   627→        <span className="text-[11px] text-muted-foreground">তৈরি: {relativeTimeBn(data.generatedAt)}</span>
+   628→      </div>
+   629→
+   630→      {/* ব্যবহার-ধারার ঘোষণা (লাইসেন্স-রায়ের ভিত্তি) */}
+   631→      <div className="mb-3 rounded-lg border border-emerald-600/30 bg-emerald-600/5 px-3 py-2.5">
+   632→        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-medium">
+   633→          <span>
+   634→            পরিবেশ: <span className="font-normal text-foreground/90">{data.usageMode.environment}</span>
+   635→          </span>
+   636→          <span aria-hidden="true" className="text-muted-foreground">·</span>
+   637→          <span>
+   638→            ব্যবহার: <span className="font-normal text-foreground/90">{data.usageMode.usage}</span>
+   639→          </span>
+   640→        </p>
+   641→        <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+   642→          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   643→          {data.usageMode.note}
+   644→        </p>
+   645→      </div>
+   646→
+   647→      {/* ফিল্টার-চিপ (সামগ্রিক অবস্থা অনুযায়ী) */}
+   648→      <div className="mb-3 flex flex-wrap gap-1.5" role="group" aria-label="সামগ্রিক অবস্থা অনুযায়ী ফিল্টার">
+   649→        {MATRIX_FILTERS.map(f => {
+   650→          const active = filter === f.key;
+   651→          const count = counts[f.key] ?? 0;
+   652→          return (
+   653→            <button
+   654→              key={f.key}
+   655→              type="button"
+   656→              onClick={() => setFilter(f.key)}
+   657→              aria-pressed={active}
+   658→              className={cn(
+   659→                'inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors',
+   660→                active
+   661→                  ? 'border-emerald-600/50 bg-emerald-600/10 text-emerald-700 hover:bg-emerald-600/15 dark:text-emerald-400'
+   662→                  : 'bg-card text-muted-foreground hover:bg-muted/50',
+   663→              )}
+   664→            >
+   665→              {f.label}
+   666→              <span className="text-[10px] tabular-nums opacity-70">{toBnDigits(count)}</span>
+   667→            </button>
+   668→          );
+   669→        })}
+   670→      </div>
+   671→
+   672→      {/* ডেস্কটপ টেবিল-হেডার */}
+   673→      <div
+   674→        className={cn('mb-1.5 hidden px-3 text-[11px] font-medium text-muted-foreground md:grid', MATRIX_GRID_COLS)}
+   675→        aria-hidden="true"
+   676→      >
+   677→        <span>ক্ষমতা</span>
+   678→        <span>লাইসেন্স</span>
+   679→        <span>প্রোভাইডার</span>
+   680→        <span>ইন্টিগ্রেশন</span>
+   681→        <span>রানটাইম</span>
+   682→        <span>সামগ্রিক</span>
+   683→      </div>
+   684→
+   685→      {/* সারি-তালিকা (লম্বা হলে স্ক্রল) */}
+   686→      {rows.length === 0 ? (
+   687→        <p className="rounded-lg border bg-muted/30 px-4 py-6 text-center text-xs text-muted-foreground">
+   688→          এই ফিল্টারে কোনো সারি নেই।
+   689→        </p>
+   690→      ) : (
+   691→        <div
+   692→          className="grid max-h-[28rem] grid-cols-1 gap-2 overflow-y-auto pr-1 [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent"
+   693→          aria-label="অ্যাভেইলেবিলিটি ম্যাট্রিক্স সারিসমূহ"
+   694→        >
+   695→          {rows.map(row => (
+   696→            <MatrixRow key={row.key} row={row} legend={data.legend} />
+   697→          ))}
+   698→        </div>
+   699→      )}
+   700→
+   701→      {/* লেজেন্ড */}
+   702→      <div className="mt-3 border-t pt-2.5">
+   703→        <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">লেজেন্ড</p>
+   704→        <div className="flex flex-wrap gap-1">
+   705→          {Object.entries(data.legend).map(([legendKey, legendText]) => (
+   706→            <span
+   707→              key={legendKey}
+   708→              className="rounded-full border bg-muted/40 px-2 py-0.5 text-[10px] leading-relaxed text-muted-foreground"
+   709→            >
+   710→              {legendText}
+   711→            </span>
+   712→          ))}
+   713→        </div>
+   714→      </div>
+   715→    </section>
+   716→  );
+   717→}
+   718→
+   719→// ------------------------------------------------------------
+   720→// সিস্টেম প্যানেল (§৯) — হার্ডওয়্যার + টুল-স্বাস্থ্য + পুনঃচেক
+   721→// ------------------------------------------------------------
+   722→
+   723→const TOOL_STATUS_META: Record<SystemToolStatus, { label: string; dot: string; badge: string }> = {
+   724→  ok: {
+   725→    label: 'সচল',
+   726→    dot: 'bg-emerald-500',
+   727→    badge: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+   728→  },
+   729→  degraded: {
+   730→    label: 'অবনত',
+   731→    dot: 'bg-amber-500',
+   732→    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+   733→  },
+   734→  down: {
+   735→    label: 'বন্ধ',
+   736→    dot: 'bg-red-500',
+   737→    badge: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
+   738→  },
+   739→  unknown: {
+   740→    label: 'অজানা',
+   741→    dot: 'bg-muted-foreground/50',
+   742→    badge: 'border-muted bg-muted text-muted-foreground',
+   743→  },
+   744→};
+   745→
+   746→function HardwareChip({ icon: Icon, label, value }: { icon: typeof Cpu; label: string; value: string }) {
+   747→  return (
+   748→    <span
+   749→      className="inline-flex min-h-9 items-center gap-1.5 rounded-full border bg-card px-3 text-xs shadow-sm"
+   750→      title={`${label}: ${value}`}
+   751→    >
+   752→      <Icon className="size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+   753→      <span className="text-muted-foreground">{label}:</span>
+   754→      <span className="max-w-44 truncate font-medium">{value}</span>
+   755→    </span>
+   756→  );
+   757→}
+   758→
+   759→function SystemPanel() {
+   760→  const { data, isLoading, isError, refetch, isFetching } = useSystemInfo();
+   761→  const recheck = useRecheckSystem();
+   762→
+   763→  const handleRecheck = () => {
+   764→    recheck.mutate(undefined, {
+   765→      onError: (error) => {
+   766→        if (error instanceof RecheckError && error.status === 429) {
+   767→          toast({
+   768→            title: 'রেট-সীমা — কিছুক্ষণ পরে চেষ্টা করুন',
+   769→            description: 'স্বাস্থ্য-চেক খরচবহুল, তাই ঘন ঘন চালানো সীমিত।',
+   770→            variant: 'destructive',
+   771→          });
+   772→        } else {
+   773→          toast({ title: 'পুনঃচেক ব্যর্থ হয়েছে', variant: 'destructive' });
+   774→        }
+   775→      },
+   776→    });
+   777→  };
+   778→
+   779→  if (isLoading) {
+   780→    return (
+   781→      <div className="rounded-xl border bg-card px-4 py-4 shadow-sm">
+   782→        <p className="mb-3 flex items-center gap-2 text-sm font-semibold">
+   783→          <MonitorCog className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   784→          সিস্টেম
+   785→        </p>
+   786→        <div className="space-y-2">
+   787→          <Skeleton className="h-8 w-3/4" />
+   788→          <Skeleton className="h-8 w-1/2" />
+   789→        </div>
+   790→      </div>
+   791→    );
+   792→  }
+   793→
+   794→  if (isError || !data) {
+   795→    return (
+   796→      <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">
+   797→        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+   798→          <AlertCircle className="size-4 shrink-0 text-red-500" aria-hidden="true" />
+   799→          সিস্টেম-তথ্য লোড করা যায়নি।
+   800→        </p>
+   801→        <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={() => void refetch()}>
+   802→          <RefreshCcw className="size-4" aria-hidden="true" />
+   803→          আবার
+   804→        </Button>
+   805→      </div>
+   806→    );
+   807→  }
+   808→
+   809→  const hw = data.hardware;
+   810→
+   811→  return (
+   812→    <section className="rounded-xl border bg-card px-4 py-4 shadow-sm" aria-labelledby="system-panel-title">
+   813→      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+   814→        <h2 id="system-panel-title" className="flex items-center gap-2 text-sm font-semibold">
+   815→          <MonitorCog className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   816→          সিস্টেম
+   817→          <span className="text-xs font-normal text-muted-foreground">
+   818→            (শেষ চেক: {relativeTimeBn(data.checkedAt)})
+   819→          </span>
+   820→        </h2>
+   821→        <Button
+   822→          type="button"
+   823→          variant="outline"
+   824→          size="sm"
+   825→          className="min-h-11 border-emerald-600/40 text-emerald-700 hover:bg-emerald-600/10 dark:text-emerald-400"
+   826→          onClick={handleRecheck}
+   827→          disabled={recheck.isPending || isFetching}
+   828→        >
+   829→          {recheck.isPending ? (
+   830→            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+   831→          ) : (
+   832→            <RefreshCcw className="size-4" aria-hidden="true" />
+   833→          )}
+   834→          {recheck.isPending ? 'চেক হচ্ছে… (মাইক্রো-কল)' : 'পুনঃচেক'}
+   835→        </Button>
+   836→      </div>
+   837→
+   838→      {/* হার্ডওয়্যার-চিপস */}
+   839→      <div className="flex flex-wrap gap-2" aria-label="হার্ডওয়্যার">
+   840→        <HardwareChip icon={Cpu} label="CPU" value={`${toBnDigits(hw.cpuCores)} কোর`} />
+   841→        <HardwareChip icon={MemoryStick} label="RAM" value={`${toBnDigits(hw.totalMemGb)}GB মোট · ${toBnDigits(hw.freeMemGb)}GB খালি`} />
+   842→        <HardwareChip icon={HardDrive} label="ডিস্ক" value={`${toBnDigits(hw.diskFreeGb)}GB খালি / ${toBnDigits(hw.diskTotalGb)}GB`} />
+   843→        <HardwareChip icon={Cpu} label="GPU" value={hw.gpu.present ? 'আছে' : hw.gpu.note ?? 'নেই'} />
+   844→        <HardwareChip icon={Wrench} label="FFmpeg" value={hw.ffmpeg.split('-')[0]} />
+   845→        <HardwareChip icon={Info} label="Node" value={hw.nodeVersion} />
+   846→      </div>
+   847→
+   848→      {/* টুল-স্বাস্থ্য তালিকা */}
+   849→      <ul className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1" aria-label="টুল-স্বাস্থ্য">
+   850→        {data.tools.map((tool) => {
+   851→          const meta = TOOL_STATUS_META[tool.status] ?? TOOL_STATUS_META.unknown;
+   852→          return (
+   853→            <li
+   854→              key={tool.key}
+   855→              className="flex items-start gap-2.5 rounded-lg border bg-muted/30 px-3 py-2"
+   856→            >
+   857→              <span className={cn('mt-1.5 size-2 shrink-0 rounded-full', meta.dot)} aria-hidden="true" />
+   858→              <span className="min-w-0 flex-1">
+   859→                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-medium">
+   860→                  {tool.label}
+   861→                  <Badge variant="outline" className={cn('h-auto px-1.5 py-0 text-[10px]', meta.badge)}>
+   862→                    {meta.label}
+   863→                  </Badge>
+   864→                  {typeof tool.latencyMs === 'number' && tool.latencyMs > 0 && (
+   865→                    <span className="inline-flex items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground">
+   866→                      <Clock3 className="size-3" aria-hidden="true" />
+   867→                      {toBnDigits(tool.latencyMs)} মি.সে.
+   868→                    </span>
+   869→                  )}
+   870→                  {tool.checkedAt && (
+   871→                    <span className="text-[10px] text-muted-foreground/80">
+   872→                      ({relativeTimeBn(tool.checkedAt)})
+   873→                    </span>
+   874→                  )}
+   875→                </span>
+   876→                {tool.note && (
+   877→                  <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+   878→                    {tool.note}
+   879→                  </span>
+   880→                )}
+   881→              </span>
+   882→            </li>
+   883→          );
+   884→        })}
+   885→      </ul>
+   886→
+   887→      {data.note && (
+   888→        <p className="mt-2.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+   889→          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   890→          {data.note}
+   891→        </p>
+   892→      )}
+   893→    </section>
+   894→  );
+   895→}
+   896→
+   897→// ------------------------------------------------------------
+   898→// মূল ভিউ
+   899→// ------------------------------------------------------------
+   900→
+   901→function RegistryViewInner() {
+   902→  const [entries, setEntries] = useState<ModelEntryView[] | null>(null);
+   903→  const [error, setError] = useState(false);
+   904→  const [reload, setReload] = useState(0);
+   905→  const [query, setQuery] = useState('');
+   906→  // ডিফল্ট: "চালু" খোলা, বাকি ভাঁজা
+   907→  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ enabled: true });
+   908→
+   909→  useEffect(() => {
+   910→    let cancelled = false;
+   911→    const run = async () => {
+   912→      setEntries(null);
+   913→      setError(false);
+   914→      try {
+   915→        const res = await fetch('/api/registry');
+   916→        if (!res.ok) throw new Error('সার্ভার সমস্যা');
+   917→        const list = (await res.json()) as ModelEntryView[];
+   918→        if (!cancelled) setEntries(list);
+   919→      } catch {
+   920→        if (!cancelled) {
+   921→          setEntries([]);
+   922→          setError(true);
+   923→        }
+   924→      }
+   925→    };
+   926→    void run();
+   927→    return () => {
+   928→      cancelled = true;
+   929→    };
+   930→  }, [reload]);
+   931→
+   932→  const q = query.trim().toLowerCase();
+   933→
+   934→  const grouped = useMemo(() => {
+   935→    const map: Record<string, ModelEntryView[]> = {};
+   936→    for (const meta of SECTIONS) map[meta.key] = [];
+   937→    for (const e of entries ?? []) {
+   938→      if (!map[e.status]) map[e.status] = [];
+   939→      map[e.status].push(e);
+   940→    }
+   941→    if (q) {
+   942→      // অনুসন্ধানে নাম বা লাইসেন্স মেলাও
+   943→      for (const meta of SECTIONS) {
+   944→        map[meta.key] = map[meta.key].filter(
+   945→          e => e.name.toLowerCase().includes(q) || e.license.toLowerCase().includes(q),
+   946→        );
+   947→      }
+   948→    }
+   949→    return map;
+   950→  }, [entries, q]);
+   951→
+   952→  const totalByStatus = useMemo(() => {
+   953→    const c: Record<string, number> = {};
+   954→    for (const e of entries ?? []) c[e.status] = (c[e.status] ?? 0) + 1;
+   955→    return c;
+   956→  }, [entries]);
+   957→
+   958→  const searching = q.length > 0;
+   959→  const anyResult = SECTIONS.some(meta => (grouped[meta.key] ?? []).length > 0);
+   960→  const blockedCount = totalByStatus.blocked ?? 0;
+   961→
+   962→  return (
+   963→    <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6">
+   964→      <header className="space-y-1">
+   965→        <h1 className="flex items-center gap-2 text-lg font-semibold">
+   966→          <ShieldCheck className="size-5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   967→          মডেল ও লাইসেন্স রেজিস্ট্রি
+   968→        </h1>
+   969→        <p className="text-sm text-muted-foreground">কোন মডেল কী লাইসেন্সে চালু — স্বচ্ছতার সর্বজনীন তালিকা</p>
+   970→      </header>
+   971→
+   972→      {/* অ্যাভেইলেবিলিটি ম্যাট্রিক্স (§১৫ — প্রথম Deliverable, শীর্ষে) */}
+   973→      <AvailabilityMatrixPanel />
+   974→
+   975→      {/* সিস্টেম-প্যানেল (§৯) */}
+   976→      <SystemPanel />
+   977→
+   978→      {/* সারাংশ-স্ট্রিপ + সততা-নোট */}
+   979→      <div className="rounded-xl border border-emerald-600/30 bg-emerald-600/5 px-4 py-3">
+   980→        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium" aria-label="অবস্থা অনুযায়ী গণনা">
+   981→          <span>
+   982→            <span className="text-emerald-700 dark:text-emerald-400">{toBnDigits(totalByStatus.enabled ?? 0)}</span> চালু
+   983→          </span>
+   984→          <span aria-hidden="true" className="text-muted-foreground">·</span>
+   985→          <span>
+   986→            <span className="text-amber-700 dark:text-amber-400">{toBnDigits(totalByStatus.experimental ?? 0)}</span> পরীক্ষামূলক
+   987→          </span>
+   988→          <span aria-hidden="true" className="text-muted-foreground">·</span>
+   989→          <span>
+   990→            <span className={cn(blockedCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')}>
+   991→              {toBnDigits(blockedCount)}
+   992→            </span>{' '}
+   993→            অবরুদ্ধ (লাইসেন্সে)
+   994→          </span>
+   995→          <span aria-hidden="true" className="text-muted-foreground">·</span>
+   996→          <span>
+   997→            <span className="text-muted-foreground">{toBnDigits(totalByStatus.planned ?? 0)}</span> পরিকল্পিত
+   998→          </span>
+   999→        </p>
+  1000→        <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+  1001→          <BadgeCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+  1002→          {blockedCount === 0
+  1003→            ? 'কোনো মডেল লাইসেন্স-অবরুদ্ধ নয় — অনুপলব্ধতার প্রকৃত কারণ (হার্ডওয়্যার/API/ইন্টিগ্রেশন) উপরের ম্যাট্রিক্সে দেখুন।'
+  1004→            : 'অবরুদ্ধ মডেলের প্রকৃত কারণ (লাইসেন্স বনাম হার্ডওয়্যার/API) উপরের ম্যাট্রিক্সে মাত্রা-ভিত্তিক দেখানো হয়েছে।'}
+  1005→        </p>
+  1006→      </div>
+  1007→
+  1008→      {/* অনুসন্ধান */}
+  1009→      <div className="relative">
+  1010→        <Search
+  1011→          className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+  1012→          aria-hidden="true"
+  1013→        />
+  1014→        <Input
+  1015→          type="search"
+  1016→          value={query}
+  1017→          onChange={e => setQuery(e.target.value)}
+  1018→          placeholder="নাম বা লাইসেন্স খুঁজুন"
+  1019→          aria-label="নাম বা লাইসেন্স খুঁজুন"
+  1020→          className="min-h-11 bg-card pl-9"
+  1021→        />
+  1022→      </div>
+  1023→
+  1024→      {entries === null ? (
+  1025→        <div className="space-y-3">
+  1026→          {Array.from({ length: 5 }).map((_, i) => (
+  1027→            <Skeleton key={i} className="h-20 rounded-xl" />
+  1028→          ))}
+  1029→        </div>
+  1030→      ) : error ? (
+  1031→        <div className="flex flex-col items-center gap-3 rounded-xl border bg-card px-4 py-10 text-center">
+  1032→          <AlertCircle className="size-6 text-red-500" aria-hidden="true" />
+  1033→          <p className="text-sm text-muted-foreground">রেজিস্ট্রি লোড করা যায়নি।</p>
+  1034→          <Button
+  1035→            type="button"
+  1036→            variant="outline"
+  1037→            className="min-h-11 border-emerald-600/40 text-emerald-700 hover:bg-emerald-600/10 dark:text-emerald-400"
+  1038→            onClick={() => setReload(n => n + 1)}
+  1039→          >
+  1040→            <RefreshCcw className="size-4" aria-hidden="true" />
+  1041→            আবার চেষ্টা করুন
+  1042→          </Button>
+  1043→        </div>
+  1044→      ) : !anyResult ? (
+  1045→        <p className="rounded-xl border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+  1046→          কিছু পাওয়া যায়নি — অন্য নাম বা লাইসেন্স দিয়ে খুঁজে দেখুন।
+  1047→        </p>
+  1048→      ) : (
+  1049→        <div className="space-y-3">
+  1050→          {SECTIONS.map(meta => {
+  1051→            const list = grouped[meta.key] ?? [];
+  1052→            if (list.length === 0) return null;
+  1053→            const isOpen = searching ? true : (openSections[meta.key] ?? false);
+  1054→            return (
+  1055→              <Collapsible
+  1056→                key={meta.key}
+  1057→                open={isOpen}
+  1058→                onOpenChange={open => setOpenSections(prev => ({ ...prev, [meta.key]: open }))}
+  1059→              >
+  1060→                <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+  1061→                  <CollapsibleTrigger
+  1062→                    className="flex min-h-11 w-full items-center gap-2 px-4 py-2 text-sm font-medium transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-600/50"
+  1063→                    aria-expanded={isOpen}
+  1064→                  >
+  1065→                    <span className={cn('size-2 shrink-0 rounded-full', meta.dotClass)} aria-hidden="true" />
+  1066→                    {meta.label}
+  1067→                    <Badge variant="outline" className={cn('text-[11px]', meta.className)}>
+  1068→                      {toBnDigits(list.length)}
+  1069→                    </Badge>
+  1070→                    <ChevronDown
+  1071→                      className={cn('ml-auto size-4 shrink-0 text-muted-foreground transition-transform', isOpen && 'rotate-180')}
+  1072→                      aria-hidden="true"
+  1073→                    />
+  1074→                  </CollapsibleTrigger>
+  1075→                  <CollapsibleContent className="border-t px-4 py-3">
+  1076→                    <ul className="space-y-2.5">
+  1077→                      {list.map(e => (
+  1078→                        <ModelEntryCard key={e.id} entry={e} />
+  1079→                      ))}
+  1080→                    </ul>
+  1081→                  </CollapsibleContent>
+  1082→                </div>
+  1083→              </Collapsible>
+  1084→            );
+  1085→          })}
+  1086→        </div>
+  1087→      )}
+  1088→    </div>
+  1089→  );
+  1090→}
+  1091→
+  1092→/** লোকাল QueryClient-প্রভাইডার — use-system + use-availability উভয়ের জন্য */
+  1093→export function RegistryView() {
+  1094→  const [queryClient] = useState(
+  1095→    () =>
+  1096→      new QueryClient({
+  1097→        defaultOptions: {
+  1098→          queries: { staleTime: 5 * 60 * 1000, retry: 1, refetchOnWindowFocus: false },
+  1099→        },
+  1100→      }),
+  1101→  );
+  1102→
+  1103→  return (
+  1104→    <QueryClientProvider client={queryClient}>
+  1105→      <RegistryViewInner />
+  1106→    </QueryClientProvider>
+  1107→  );
+  1108→}
+  1109→

@@ -16,8 +16,11 @@
 // ============================================================
 
 import type { TtsVoice } from '../sdk-helpers';
-import { synthesizeSpeech, transcribeBuffer } from '../sdk-helpers';
+import { transcribeBuffer } from '../sdk-helpers';
+// §১১: ব্যবহারকারীর পুনরাবৃত্ত TTS-অনুরোধ ডিস্ক-ক্যাশে+ডিডুপ-পথে — রেট-লিমিট-চাপ কমে
+import { cachedSynthesizeSpeech } from '../tts-cache';
 import { audioQuality } from '@/lib/media/ffmpeg';
+import { normalizeBengaliSpeechText } from './bn-text-normalizer';
 
 // ------------------------------------------------------------
 // §২.১ AudioJobSpec
@@ -319,6 +322,15 @@ export async function synthesizeVerifiedSpeech(
 ): Promise<SynthesizedSpeech> {
   const verify = opts?.verify !== false;
 
+  // §৪ (তৃতীয় ধাপ): বাংলা হলে টেক্সট-নর্মালাইজেশন — সংখ্যা/তারিখ/সময়
+  // শব্দে, ইংরেজি শব্দের ধ্বন্যাত্মক রূপ, উচ্চারণ-সমন্বয়।
+  // ভাষা-শনাক্তকরণ সবসময় *মূল* স্ক্রিপ্টেই হয় (নর্মালাইজড নয়)।
+  const bnNorm = spec.language === 'bn' ? normalizeBengaliSpeechText(spec.script) : null;
+  const speakScript = bnNorm ? bnNorm.text : spec.script;
+  const normNote = bnNorm?.changed
+    ? `টেক্সট-নর্মালাইজেশন প্রযোজ্ত (${bnNorm.adjustments.length}টি সমন্বয়: ${bnNorm.adjustments.slice(0, 3).join('; ')}${bnNorm.adjustments.length > 3 ? '…' : ''})`
+    : null;
+
   // ১. স্ক্রিপ্টের ভাষা নির্বাচিত ভাষার সাথে মিল আছে কি না
   const det = detectLanguage(spec.script);
   if (det.language === 'unknown') {
@@ -339,8 +351,12 @@ export async function synthesizeVerifiedSpeech(
 
   for (const voice of [primaryVoice, ...profile.voices.filter(v => v !== primaryVoice)]) {
     attempts++;
-    const speech = await synthesizeSpeech(spec.script, voice, spec.speed ?? 1);
+    // নর্মালাইজড টেক্সটই বলা হয় (bn) — ইংরেজিতে speakScript === spec.script;
+    // §১১: cachedSynthesizeSpeech — একই (কণ্ঠ+গতি+টেক্সট)-এ পুনরাবৃত্ত কল ডিস্ক-ক্যাশে/ডিডুপ
+    const speech = await cachedSynthesizeSpeech(speakScript, voice, spec.speed ?? 1);
     if (!verify) {
+      const quickNotes = ['যাচাই বন্ধ ছিল — প্রিভিউ শুনে নিশ্চিত করুন।'];
+      if (normNote) quickNotes.push(normNote);
       return {
         buffer: speech.buffer,
         mimeType: speech.mimeType,
@@ -357,12 +373,14 @@ export async function synthesizeVerifiedSpeech(
           durationOk: true,
           silenceRanges: [],
           verdict: 'warn',
-          notes: ['যাচাই বন্ধ ছিল — প্রিভিউ শুনে নিশ্চিত করুন।'],
+          notes: quickNotes,
         },
         attempts,
       };
     }
-    const verification = await verifySpeechBuffer(speech.buffer, speech.ext, { ...spec, voiceId: voice });
+    // estimateSpeechSec-ভিত্তিক যাচাইও নর্মালাইজড টেক্সটে (দৈর্ঘ্য-প্রত্যাশা যথার্থ থাকে)
+    const verification = await verifySpeechBuffer(speech.buffer, speech.ext, { ...spec, voiceId: voice, script: speakScript });
+    if (normNote) verification.notes.push(normNote);
     lastResult = { buffer: speech.buffer, mimeType: speech.mimeType, ext: speech.ext, voice, verification, attempts };
     if (verification.verdict !== 'fail') return lastResult;
     if (attempts >= Math.min(2, profile.voices.length)) break;

@@ -4,6 +4,7 @@
 // ============================================================
 
 import ZAI from 'z-ai-web-dev-sdk';
+import { withRetry } from './retry';
 
 export interface LLMMessage {
   role: 'user' | 'assistant';
@@ -22,30 +23,26 @@ export function getZAI(): Promise<ZAI> {
 }
 
 /**
- * Non-streaming chat completion (thinking disabled)। সাময়িক 429/5xx-এ
- * ছোট backoff দিয়ে সর্বোচ্চ ৩ বার চেষ্টা করে (transport-স্তরের সহনশীলতা);
- * তারপরও ব্যর্থ হলে throw করে — orchestrator রানটি failed করে।
+ * Non-streaming chat completion (thinking disabled)।
+ * §১০-সংশোধন (S8-3): আগের পুরনো নির্দিষ্ট-বিরতির রিট্রাই-র বদলে এখন
+ * retry.ts-র withRetry — Retry-After-সচেতন + full-jitter ব্যাকঅফ (৪ চেষ্টা);
+ * ৪২৯-নিঃশেষে TemporarilyUnavailableError (সাময়িক, লাইসেন্স-সমস্যা নয়)।
  */
 export async function chatComplete(messages: LLMMessage[]): Promise<string> {
   const zai = await getZAI();
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
+  return withRetry(
+    async () => {
       const res = await zai.chat.completions.create({
         messages,
         thinking: { type: 'disabled' },
       });
       const content = res?.choices?.[0]?.message?.content;
       return typeof content === 'string' ? content : '';
-    } catch (err) {
-      lastError = err;
-      const message = err instanceof Error ? err.message : String(err);
-      const transient = /429|rate limit|too many requests|\b5\d{2}\b|timeout|econn/i.test(message);
-      if (!transient || attempt === 2) throw err;
-      await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 2500 : 6000));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    },
+    'LLM (চ্যাট)',
+    4,
+    3000
+  );
 }
 
 // ------------------------------------------------------------

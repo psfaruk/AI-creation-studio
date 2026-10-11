@@ -18,7 +18,7 @@ import { readFile, writeFile } from 'fs/promises';
 import type { VoicePreset } from '@/lib/types';
 import { runFfmpeg, mediaInfo, audioQuality } from '@/lib/media/ffmpeg';
 import type { PipelineContext, PipelineFn, PipelineResult, StepHandle } from '../runner';
-import { synthesizeSpeech } from '../../sdk-helpers';
+import { cachedSynthesizeSpeech } from '../../tts-cache';
 import {
   synthesizeVerifiedSpeech,
   detectLanguage,
@@ -199,15 +199,16 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
           firstVerification = out.verification;
         } else {
           // খরচ-নিয়ন্ত্রণ: প্রথম খণ্ডের রায় থেকে কণ্ঠ নিশ্চিত — বাকিগুলো সরল TTS
-          const out = await synthesizeSpeech(text, prep.voice, 1);
+          // (§১১: ক্যাশে-সহ পথ — পুনরাবৃত্ত বিষয়বস্তুতে ৪২৯-ঝুঁকি কমে)
+          const out = await cachedSynthesizeSpeech(text, prep.voice, 1);
           buffer = out.buffer;
           ext = out.ext;
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // পুনঃচেষ্টা (সরল TTS) — পুনঃযাচাই নয়
+        // পুনঃচেষ্টা (সরল TTS) — পুনঃযাচাই নয়; ক্যাশে-সহ পথ
         try {
-          const out = await synthesizeSpeech(text, prep.voice, 1);
+          const out = await cachedSynthesizeSpeech(text, prep.voice, 1);
           buffer = out.buffer;
           ext = out.ext;
         } catch (err2) {

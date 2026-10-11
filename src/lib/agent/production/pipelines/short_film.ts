@@ -40,7 +40,8 @@ import {
   normalizeShotDurations,
   segmentDialogueToCues,
 } from '../../film-helpers';
-import { generateImageBuffer, editImageBuffer, synthesizeSpeech, chatJson, visionCompare } from '../../sdk-helpers';
+import { generateImageBuffer, editImageBuffer, chatJson, visionCompare } from '../../sdk-helpers';
+import { cachedSynthesizeSpeech } from '../../tts-cache';
 import type { TtsVoice } from '../../sdk-helpers';
 import type { CameraMove, FilmMode } from '@/lib/types';
 import { ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
@@ -480,7 +481,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       if (narrationText.trim()) {
         const voice = resolveVoice(language, spec.voice);
         try {
-          const speech = await synthesizeSpeech(narrationText, voice, 1);
+          const speech = await cachedSynthesizeSpeech(narrationText, voice, 1);
           const p = path.join(wd, 'narration.wav');
           await writeFile(p, speech.buffer);
           const info = await mediaInfo(p);
@@ -548,7 +549,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           verification = out.verification;
           verifiedVoices.add(voice);
         } else {
-          const out = await synthesizeSpeech(d.line, voice, 1);
+          const out = await cachedSynthesizeSpeech(d.line, voice, 1);
           buffer = out.buffer;
           ext = out.ext;
         }

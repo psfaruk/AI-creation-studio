@@ -3,16 +3,20 @@
 // ============================================================
 // RegistryView — Model & License Registry (মাস্টার প্ল্যান §৮, §৯.১)
 // + Model & Tool Availability Matrix (নতুন পরিকল্পনা §১৫-এর প্রথম
-// Deliverable — চার-মাত্রিক সৎ রায়)।
+// Deliverable — পাঁচ-মাত্রিক সৎ রায়: লাইসেন্স/প্রোভাইডার/
+// ইন্টিগ্রেশন/রানটাইম/গুণমান)।
 //
 // - শীর্ষে "অ্যাভেইলেবিলিটি ম্যাট্রিক্স" প্যানেল: usageMode-ঘোষণা +
 //   ফিল্টার-চিপ + প্রসারণযোগ্য সারি (apiEndpoint / শেষ পরীক্ষা /
 //   সৎ-নোট / বিকল্প / প্রকৃত-কারণ) + লেজেন্ড — GET /api/availability
+// - ম্যাট্রিক্সের নিচে "বাংলা TTS মান-যাচাই ল্যাব" (BenchmarkPanel) ও
+//   "হার্ডওয়্যার-পরিমাপ ও মডেল-রায়" (HardwarePanel) প্যানেল (S8-2d)
 // - তারপর "সিস্টেম" প্যানেল (§৯): হার্ডওয়্যার-চিপস + টুল-স্বাস্থ্য +
 //   "পুনঃচেক" (POST /api/system)
 // - অবস্থা-ভিত্তিক ভাঁজযোগ্য সেকশন: চালু/পরীক্ষামূলক/অবরুদ্ধ/পরিকল্পিত
 //   ("অবরুদ্ধ" শুধু প্রকৃত লাইসেন্স-বাধায় — এখন কেউই নয়, তাই সৎ নোট)
-// - প্রতি এন্ট্রিতে §৯.১ মেটাডেটা + চার-মাত্রিক চিপ + API + পরীক্ষা-নোট
+// - প্রতি এন্ট্রিতে §৯.১ মেটাডেটা + মাত্রিক চিপ (গুণমানসহ) + API +
+//   পরীক্ষা-নোট
 // ============================================================
 
 import { useEffect, useMemo, useState } from 'react';
@@ -45,9 +49,13 @@ import {
   LICENSE_META,
   OverallBadge,
   PROVIDER_META,
+  QUALITY_META,
   RUNTIME_META,
+  QualityBadge,
   type AvailMeta,
 } from '@/components/studio/availability-badges';
+import { BenchmarkPanel } from '@/components/studio/benchmark-panel';
+import { HardwarePanel } from '@/components/studio/hardware-panel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -229,7 +237,9 @@ function ModelEntryCard({ entry }: { entry: ModelEntryView }) {
     [entry.capabilities],
   );
 
-  const hasDims = Boolean(entry.licenseStatus || entry.providerStatus || entry.integrationStatus || entry.runtimeStatus);
+  const hasDims = Boolean(
+    entry.licenseStatus || entry.providerStatus || entry.integrationStatus || entry.runtimeStatus || entry.qualityStatus,
+  );
 
   return (
     <li className="rounded-xl border bg-card px-4 py-3 shadow-sm">
@@ -261,13 +271,14 @@ function ModelEntryCard({ entry }: { entry: ModelEntryView }) {
         )}
       </p>
 
-      {/* চার-মাত্রিক স্ট্যাটাস-চিপ (নতুন পরিকল্পনা §২) */}
+      {/* মাত্রিক স্ট্যাটাস-চিপ (নতুন পরিকল্পনা §২ + পাঁচম মাত্রা গুণমান §১) */}
       {hasDims && (
-        <div className="mt-2 flex flex-wrap gap-1" aria-label="চার-মাত্রিক স্ট্যাটাস">
+        <div className="mt-2 flex flex-wrap gap-1" aria-label="মাত্রা-ভিত্তিক স্ট্যাটাস">
           {entry.licenseStatus && <DimensionChip dimension="লাইসেন্স" meta={LICENSE_META[entry.licenseStatus]} />}
           {entry.providerStatus && <DimensionChip dimension="প্রোভাইডার" meta={PROVIDER_META[entry.providerStatus]} />}
           {entry.integrationStatus && <DimensionChip dimension="ইন্টিগ্রেশন" meta={INTEGRATION_META[entry.integrationStatus]} />}
           {entry.runtimeStatus && <DimensionChip dimension="রানটাইম" meta={RUNTIME_META[entry.runtimeStatus]} />}
+          {entry.qualityStatus && <QualityBadge status={entry.qualityStatus} />}
         </div>
       )}
 
@@ -480,8 +491,8 @@ function MatrixRow({ row, legend }: { row: AvailabilityMatrixRow; legend: Record
 
         <CollapsibleContent>
           <div className="space-y-2.5 border-t px-3 py-3 sm:px-4">
-            {/* চার-মাত্রিক বিশ্লেষণ — কোন মাত্রা বাধা তা স্পষ্ট */}
-            <dl className="grid gap-2 sm:grid-cols-2" aria-label="চার-মাত্রিক স্ট্যাটাস বিশ্লেষণ">
+            {/* মাত্রিক বিশ্লেষণ — কোন মাত্রা বাধা তা স্পষ্ট (পাঁচম মাত্রা: গুণমান) */}
+            <dl className="grid gap-2 sm:grid-cols-2" aria-label="মাত্রা-ভিত্তিক স্ট্যাটাস বিশ্লেষণ">
               {dims.map(d => (
                 <div key={d.dimension} className="flex items-start gap-1.5">
                   <dt className="shrink-0 text-[11px] font-medium text-muted-foreground">{d.dimension}:</dt>
@@ -491,6 +502,17 @@ function MatrixRow({ row, legend }: { row: AvailabilityMatrixRow; legend: Record
                   </dd>
                 </div>
               ))}
+              {row.quality && (
+                <div className="flex items-start gap-1.5">
+                  <dt className="shrink-0 text-[11px] font-medium text-muted-foreground">গুণমান:</dt>
+                  <dd className="min-w-0 flex-1">
+                    <QualityBadge status={row.quality} />
+                    <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
+                      {legend[row.quality] ?? QUALITY_META[row.quality]?.title}
+                    </span>
+                  </dd>
+                </div>
+              )}
             </dl>
 
             <dl className="space-y-1 text-xs leading-relaxed">
@@ -626,6 +648,13 @@ function AvailabilityMatrixPanel() {
         </h2>
         <span className="text-[11px] text-muted-foreground">তৈরি: {relativeTimeBn(data.generatedAt)}</span>
       </div>
+
+      {/* পাঁচ-মাত্রিক রায়ের ঘোষণা (লাইসেন্স/প্রোভাইডার/ইন্টিগ্রেশন/রানটাইম/গুণমান) */}
+      <p className="mb-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+        <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        প্রতিটি সারিতে ৫-মাত্রার রায় — লাইসেন্স · প্রোভাইডার · ইন্টিগ্রেশন · রানটাইম · গুণমান; সারিতে চাপ দিলে সব
+        মাত্রার ব্যাখ্যা দেখা যায়।
+      </p>
 
       {/* ব্যবহার-ধারার ঘোষণা (লাইসেন্স-রায়ের ভিত্তি) */}
       <div className="mb-3 rounded-lg border border-emerald-600/30 bg-emerald-600/5 px-3 py-2.5">
@@ -971,6 +1000,12 @@ function RegistryViewInner() {
 
       {/* অ্যাভেইলেবিলিটি ম্যাট্রিক্স (§১৫ — প্রথম Deliverable, শীর্ষে) */}
       <AvailabilityMatrixPanel />
+
+      {/* বাংলা TTS মান-যাচাই ল্যাব (নতুন পরিকল্পনা §৪ — S8-2d) */}
+      <BenchmarkPanel />
+
+      {/* হার্ডওয়্যার-সচেতন মডেল ম্যানেজার (নতুন পরিকল্পনা §১০ — S8-2d) */}
+      <HardwarePanel />
 
       {/* সিস্টেম-প্যানেল (§৯) */}
       <SystemPanel />

@@ -1,14 +1,14 @@
 'use client';
 
 // ============================================================
-// availability-badges — Availability Matrix-এর চার-মাত্রিক
+// availability-badges — Availability Matrix-এর মাত্রিক
 // স্ট্যাটাস-চিপ, সামগ্রিক-ব্যাজ ও রঙ-ম্যাপ। রেজিস্ট্রি-ভিউয়ের
 // ম্যাট্রিক্স-প্যানেল, ModelEntryCard ও স্টুডিও-মোড-কার্ডে শেয়ার্ড।
 //
 // রঙ-চুক্তি (blue/indigo নিষিদ্ধ):
-//  emerald  = চালু / স্বাস্থ্যবান / SDK-এ আছে / সংযুক্ত
+//  emerald  = চালু / স্বাস্থ্যবান / SDK-এ আছে / সংযুক্ত / যাচাইকৃত
 //  amber    = সীমাসহ / শর্তসাপেক্ষ / আংশিক / যাচাই বাকি
-//  stone    = এই পরিবেশে অনুপলব্ধ / SDK-তে নেই / সংযুক্ত নয়
+//  stone    = এই পরিবেশে অনুপলব্ধ / SDK-তে নেই / সংযুক্ত নয় / প্রযোজ্য নয়
 //  dashed stone = ভবিষ্যৎ পরিবেশে সম্ভব
 // ============================================================
 
@@ -18,6 +18,7 @@ import type {
   LicenseStatus,
   MatrixOverall,
   ProviderStatus,
+  QualityStatus,
   RuntimeStatus,
 } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -142,6 +143,31 @@ export const RUNTIME_META: Record<RuntimeStatus, AvailMeta> = {
   not_applicable: { label: 'প্রযোজ্য নয়', title: 'রানটাইম: প্রযোজ্য নয়', className: STONE },
 };
 
+// ---------------- পাঁচম মাত্রা — গুণমান (নতুন পরিকল্পনা §১) ----------------
+
+export const QUALITY_META: Record<QualityStatus, AvailMeta> = {
+  quality_human_verified: {
+    label: 'মানব-যাচাইকৃত',
+    title: 'গুণমান: মানব-শ্রবণ/দেখা পরীক্ষাতেও উত্তীর্ণ',
+    className: EMERALD,
+  },
+  quality_machine_checked: {
+    label: 'যন্ত্র-যাচাইকৃত',
+    title: 'গুণমান: যন্ত্র-পরীক্ষায় পাস — মানব-শ্রবণ এখনো বাকি',
+    className: EMERALD,
+  },
+  quality_not_verified: {
+    label: 'মান-যাচাই বাকি',
+    title: 'গুণমান: কোনো বাস্তব মান-পরীক্ষা এখনো হয়নি',
+    className: AMBER,
+  },
+  quality_not_applicable: {
+    label: 'প্রযোজ্য নয়',
+    title: 'গুণমান: মান-ধারণা প্রযোজ্য নয় (অবকাঠামো/টুলিং)',
+    className: STONE,
+  },
+};
+
 // ---------------- উপাদান ----------------
 
 /** সামগ্রিক-রায়ের ব্যাজ */
@@ -178,5 +204,27 @@ export function DimensionChip({
       {withPrefix && dimension && <span className="shrink-0 opacity-70">{dimension}:</span>}
       <span className="min-w-0 truncate">{meta.label}</span>
     </span>
+  );
+}
+
+/**
+ * গুণমান-মাত্রার ছোট চিপ (পাঁচম মাত্রা — নতুন পরিকল্পনা §১)।
+ * OverallBadge-এর একই ভিজ্যুয়াল চুক্তি মেনে চলে।
+ */
+export function QualityBadge({ status, className }: { status: QualityStatus; className?: string }) {
+  // রানটাইম-সুরক্ষা: চুক্তির বাইরের মান এলেও ভিউ না ভেঙে সৎ লেবেল
+  const meta = (QUALITY_META as Record<string, AvailMeta | undefined>)[status] ?? {
+    label: 'অজানা',
+    title: 'গুণমান: অজানা',
+    className: 'border-muted bg-muted text-muted-foreground',
+  };
+  return (
+    <Badge
+      variant="outline"
+      title={meta.title}
+      className={cn('h-auto shrink-0 px-2 py-0.5 text-[11px] leading-snug whitespace-nowrap', meta.className, className)}
+    >
+      {meta.label}
+    </Badge>
   );
 }

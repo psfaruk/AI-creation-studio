@@ -6,6 +6,7 @@
 
 import { getZAI } from './llm';
 import type { LLMMessage } from './llm';
+import { withRetry, isRateLimitErrorText, TemporarilyUnavailableError } from './retry';
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import { mkdtemp, readdir, rm, writeFile } from 'fs/promises';
@@ -14,134 +15,17 @@ import os from 'os';
 
 const execFileAsync = promisify(execFileCb);
 
-// ------------------------------------------------------------
-// টুল-হেল্পার: ৪২৯/৫xx-সহনশীল পুনঃচেষ্টা (সব SDK কলের জন্য)
-// §১০ রিট্রাই-নীতি (Sprint-2):
-//  - Retry-After থাকলে সেটিই মানের ভিত্তি (সেকেন্ড বা HTTP-date)
-//  - না থাকলে full-jitter এক্সপোনেনশিয়াল ব্যাকঅফ:
-//    delay = random(baseMs/2, baseMs * 2^attempt), সর্বোচ্চ ৯০ সে.
-//  - সর্বোচ্চ চেষ্টা কনফিগারযোগ্য (ডিফল্ট ৪)
-//  - ৪২৯/রেট-লিমিটে পুনঃচেষ্টা শেষ হলে TemporarilyUnavailableError —
-//    ৪২৯ কখনোই লাইসেন্স/অনুমতির সমস্যা নয়, "সাময়িকভাবে অনুপলব্ধ"
-// ------------------------------------------------------------
+// §১০-র পুনঃচেষ্টা-নীতি এখন retry.ts-এ (বিশুদ্ধ মূল — llm.ts-ও ব্যবহার করে)।
+// পুরনো সব ইমপোর্টারের জন্য এখান থেকে পুনঃ-রপ্তানি:
+export {
+  TemporarilyUnavailableError,
+  isRateLimitErrorText,
+  parseRetryAfterMs,
+  fullJitterDelayMs,
+  withRetry,
+} from './retry';
 
-/**
- * সাময়িক অনুপলব্ধতা (রেট-লিমিট/৪২৯-নিঃশেষ)। বার্তার শুরুতেই
- * `TEMPORARILY_UNAVAILABLE:` — কলার/UI এটি দেখে লাইসেন্স-সমস্যার
- * বদলে "সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট)" দেখায়।
- */
-export class TemporarilyUnavailableError extends Error {
-  constructor(message: string) {
-    super(`TEMPORARILY_UNAVAILABLE: ${message}`);
-    this.name = 'TemporarilyUnavailableError';
-  }
-}
-
-/** বার্তাটি রেট-লিমিট/৪২৯ কি না (লাইসেন্স-সমস্যা কখনোই নয়) */
-export function isRateLimitErrorText(msg: string): boolean {
-  return /429|rate.?limit|too many/i.test(msg);
-}
-
-/** পুনঃচেষ্টা-যোগ্য (৪২৯/রেট-লিমিট/৫xx/টাইমআউট) কি না */
-function isRetryableErrorText(msg: string): boolean {
-  return /429|rate.?limit|too many|\b5\d{2}\b|timeout/i.test(msg);
-}
-
-/** একক-মান থেকে মিলিসেকেন্ড ("30" / "30s" / 30 / HTTP-date) — না বুঝলে null */
-function coerceRetryAfterMs(raw: unknown): number | null {
-  if (raw == null) return null;
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
-    // ≤১০০০ হলে সেকেন্ড-অনুমান, নয়তো মিলিসেকেন্ড
-    return raw <= 1000 ? Math.round(raw * 1000) : Math.round(raw);
-  }
-  const s = String(raw).trim();
-  if (!s) return null;
-  const withUnit = s.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|seconds?)$/i);
-  if (withUnit) {
-    const v = Number(withUnit[1]);
-    return /^ms$/i.test(withUnit[2]) ? Math.round(v) : Math.round(v * 1000);
-  }
-  if (/^\d+(\.\d+)?$/.test(s)) {
-    const sec = Number(s);
-    return sec <= 1000 ? Math.round(sec * 1000) : Math.round(sec);
-  }
-  const asDate = Date.parse(s); // HTTP-date (যেমন: Fri, 11 Oct 2026 18:00:00 GMT)
-  if (!Number.isNaN(asDate)) {
-    return Math.max(0, asDate - Date.now());
-  }
-  return null;
-}
-
-/**
- * §১০: ত্রুটি-বস্তু থেকে Retry-After বের করা। ক্রমানুসারে দেখা হয়:
- * err.retryAfter / err.retry_after → err.headers['retry-after'] (বা Headers.get)
- * → বার্তা-টেক্সটে "Retry-After: …"। মান সেকেন্ড বা HTTP-date হতে পারে।
- */
-export function parseRetryAfterMs(err: unknown): number | null {
-  const e = err as any;
-  const fromProp = coerceRetryAfterMs(e?.retryAfter ?? e?.retry_after);
-  if (fromProp != null) return fromProp;
-  const h = e?.headers;
-  const headerRaw =
-    typeof h?.get === 'function' ? h.get('retry-after') : (h?.['retry-after'] ?? h?.['Retry-After']);
-  const fromHeader = coerceRetryAfterMs(headerRaw);
-  if (fromHeader != null) return fromHeader;
-  const msg = String(e?.message ?? e ?? '');
-  const m = msg.match(/retry[- ]after\s*[:=]?\s*([^\n;]{1,40})/i);
-  if (m) return coerceRetryAfterMs(m[1]);
-  return null;
-}
-
-/**
- * Full-jitter এক্সপোনেনশিয়াল ব্যাকঅফ (§১০):
- * delay = random(baseMs/2, min(maxDelayMs, baseMs * 2^attempt))
- */
-export function fullJitterDelayMs(baseMs: number, attempt: number, maxDelayMs: number): number {
-  const ceiling = Math.max(1, Math.min(maxDelayMs, baseMs * Math.pow(2, attempt)));
-  const floor = Math.min(baseMs / 2, ceiling);
-  return Math.round(floor + Math.random() * (ceiling - floor));
-}
-
-/**
- * ৪২৯/৫xx হলে ব্যাকঅফ-সহ পুনঃচেষ্টা — TTS/ASR/ছবি-সার্চ সবখানে ব্যবহৃত।
- * ৪২৯-নিঃশেষে TemporarilyUnavailableError (লাইসেন্স-সমস্যা নয়),
- * ৫xx/টাইমআউট-নিঃশেষে সাধারণ সৎ-ব্যর্থতা।
- */
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  label: string,
-  attempts = 4,
-  baseMs = 4000,
-  opts?: { maxDelayMs?: number }
-): Promise<T> {
-  const maxAttempts = Math.max(1, Math.floor(attempts));
-  const maxDelayMs = opts?.maxDelayMs ?? 90_000;
-  let lastErr: unknown;
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastErr = err;
-      const msg = String(err?.message ?? err);
-      if (i === maxAttempts - 1) break;
-      if (!isRetryableErrorText(msg)) throw err;
-      // §১০: Retry-After থাকলে সেটিই (৯০ সে.-ছাদে সীমিত), নয়তো full-jitter
-      const ra = parseRetryAfterMs(err);
-      const delayMs =
-        ra != null
-          ? Math.max(0, Math.min(maxDelayMs, ra))
-          : fullJitterDelayMs(baseMs, i, maxDelayMs);
-      await new Promise(r => setTimeout(r, delayMs));
-    }
-  }
-  const finalMsg = String((lastErr as any)?.message ?? lastErr).slice(0, 200);
-  if (isRateLimitErrorText(finalMsg)) {
-    throw new TemporarilyUnavailableError(
-      `${label} — সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট): ${finalMsg}`
-    );
-  }
-  throw new Error(`${label} — সব পুনঃচেষ্টা ব্যর্থ: ${finalMsg}`);
-}
+// নোট: টুল-হেল্পারের ৪২৯/৫xx-নীতির বিস্তারিত ব্যাখ্যা retry.ts-এর শিরোনাম-টীকায়।
 
 /** ছবি জেনারেশনের সমর্থিত মাপ */
 export const IMAGE_SIZES = [
@@ -368,21 +252,15 @@ export interface StructuredResult<T> {
 export async function chatJson<T>(messages: LLMMessage[], retry = 1): Promise<StructuredResult<T>> {
   for (let attempt = 0; ; attempt++) {
     const zai = await getZAI();
-    let raw = '';
-    try {
+    // §১০: নেটওয়ার্ক-স্তরের ৪২৯/৫xx/টাইমআউট withRetry-তে (Retry-After + full-jitter);
+    // নিচের লুপ কেবল JSON-পার্স-পুনঃচেষ্টার জন্য
+    const raw = await withRetry(async () => {
       const res = await zai.chat.completions.create({
         messages,
         thinking: { type: 'disabled' },
       });
-      raw = String(res?.choices?.[0]?.message?.content ?? '');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (attempt < 1 && /429|rate limit|\b5\d{2}\b|timeout/i.test(msg)) {
-        await new Promise(r => setTimeout(r, 3000));
-        continue;
-      }
-      throw err;
-    }
+      return String(res?.choices?.[0]?.message?.content ?? '');
+    }, 'LLM (কাঠামোগত JSON)', 3, 4000);
     const parsed = extractJson<T>(raw);
     if (parsed !== null) return { data: parsed, raw };
     if (attempt >= retry) return { data: null, raw };
