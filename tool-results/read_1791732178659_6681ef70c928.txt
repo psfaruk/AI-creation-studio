@@ -1,0 +1,613 @@
+     1→// ============================================================
+     2→// Short film pipeline — মাস্টার প্ল্যান §১১ workflow
+     3→// চিত্রনাট্য → দৃশ্য-বিভাজন → চরিত্র বাইবেল → স্টোরিবোর্ড →
+     4→// সংলাপ-কণ্ঠ → মোশন → ধারাবাহিকতা-পরীক্ষা → অ্যাসেম্বলি
+     5→// (ডাকড অডিও-মিক্স + বাংলা সাবটাইটেল বার্ন) → যাচাই।
+     6→//
+     7→// সৎ পদ্ধতি: AI স্টোরিবোর্ড ফ্রেম + Ken Burns ক্যামেরা-মোশন +
+     8→// TTS সংলাপ + FFmpeg অ্যাসেম্বলি। ডিফিউশন ভিডিও বা লিপ-সিঙ্ক নয়।
+     9→// ============================================================
+    10→
+    11→import path from 'path';
+    12→import type { PipelineFn, StepHandle } from '../runner';
+    13→import {
+    14→  kenBurnsClip,
+    15→  concatClips,
+    16→  mixAudioTracks,
+    17→  muxAudio,
+    18→  imagePromptForShot,
+    19→  portraitPrompt,
+    20→  sanitize,
+    21→  makeSrt,
+    22→  burnSubtitles,
+    23→  normalizeShotDurations,
+    24→} from '../../film-helpers';
+    25→import { generateImageBuffer, editImageBuffer, synthesizeSpeech, chatJson, visionCompare } from '../../sdk-helpers';
+    26→import { mediaInfo } from '@/lib/media/ffmpeg';
+    27→import { outputDims, maxShots, ASPECT_TO_GEN_SIZE } from '../../capabilities';
+    28→import type { CameraMove } from '@/lib/types';
+    29→
+    30→interface DialogueLine {
+    31→  character: string;
+    32→  line: string;
+    33→  emotion?: string;
+    34→}
+    35→
+    36→interface Scene {
+    37→  index: number;
+    38→  location: string;
+    39→  timeOfDay: string;
+    40→  action: string;
+    41→  dialogue: DialogueLine[];
+    42→}
+    43→
+    44→interface TimedLine extends DialogueLine {
+    45→  sceneIndex: number;
+    46→  filePath?: string;
+    47→  measuredSec: number;
+    48→  startSec: number;
+    49→  endSec: number;
+    50→}
+    51→
+    52→interface FilmShot {
+    53→  sceneIndex: number;
+    54→  description: string;
+    55→  label: string;
+    56→  cameraMove: CameraMove;
+    57→  durationSec: number;
+    58→  characters: string[];
+    59→  // runtime
+    60→  framePath?: string;
+    61→  clipPath?: string;
+    62→  lines?: TimedLine[];
+    63→}
+    64→
+    65→const MOVES: CameraMove[] = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'];
+    66→const VOICES = ['tongtong', 'jam', 'kazi'] as const;
+    67→
+    68→export const shortFilmPipeline: PipelineFn = async ctx => {
+    69→  const spec = ctx.spec;
+    70→  const aspect = spec.aspect ?? '16:9';
+    71→  const fps = spec.fps ?? 24;
+    72→  const durationSec = Math.max(30, Math.min(120, spec.durationSec ?? 60));
+    73→  const subtitlesOn = spec.subtitles ?? true;
+    74→  const resolution = spec.quality === 'draft' ? '720p' : '1080p';
+    75→  const dims = outputDims(aspect, resolution);
+    76→  const genSize = ASPECT_TO_GEN_SIZE[aspect];
+    77→  const wd = ctx.workingDir;
+    78→  const crossfadeSec = 0.4;
+    79→
+    80→  // ------------------------------------------------------- script_writer
+    81→  let title = spec.title;
+    82→  let logline = '';
+    83→  let scenes: Scene[] = [];
+    84→  const characterVoices: Record<string, string> = {};
+    85→  const characterAppearance: Record<string, string> = {};
+    86→  await ctx.runStep('script_writer', 'চিত্রনাট্য রচনা', async (step: StepHandle) => {
+    87→    // সংলাপ-বাজেট: ≈২.৫ অক্ষর/সেকেন্ড (কথা কম, দৃশ্য বেশি — সিনেম্যাটিক)
+    88→    const dialogueBudget = Math.round(durationSec * 2.5);
+    89→    const { data } = await chatJson<{
+    90→      title: string;
+    91→      logline: string;
+    92→      characters: { name: string; appearancePrompt: string; voice?: string }[];
+    93→      scenes: { index: number; location: string; timeOfDay: string; action: string; dialogue: { character: string; line: string; emotion?: string }[] }[];
+    94→    }>([
+    95→      {
+    96→        role: 'assistant',
+    97→        content:
+    98→          'তুমি একজন পুরস্কারজয়ী বাংলা চিত্রনাট্যকার। গল্প থেকে ছোট চলচ্চিত্রের চিত্রনাট্য লেখো।\n' +
+    99→          `মোট দৈর্ঘ্য ${durationSec} সেকেন্ড — সংলাপের মোট অক্ষর সর্বোচ্চ ${dialogueBudget}-এর মধ্যে রাখো (কথা কম, দৃশ্য বেশি)।\n` +
+   100→          '৩-৬টি দৃশ্য, প্রতিটিতে সংক্ষিপ্ত action (বাংলায়) ও সংলাপ। চরিত্র সর্বোচ্চ ৩জন।\n' +
+   101→          'প্রতিটি চরিত্রের appearancePrompt ইংরেজিতে বিস্তারিত (বাইবেল-পোর্ট্রেটের জন্য: বয়স, মুখ, চুল, পোশাক), voice এর একটি: "tongtong"|"jam"|"kazi"।\n' +
+   102→          'dialogue-র character অবশ্যই চরিত্র-তালিকার নাম হবে। সংলাপ বাংলায়।\n' +
+   103→          'শুধুমাত্র JSON: {"title":"...","logline":"...","characters":[{"name":"...","appearancePrompt":"...","voice":"tongtong"}],"scenes":[{"index":1,"location":"...","timeOfDay":"...","action":"...","dialogue":[{"character":"...","line":"...","emotion":"..."}]}]}',
+   104→      },
+   105→      { role: 'user', content: `গল্প: ${spec.story ?? spec.idea ?? spec.title}`.slice(0, 4000) },
+   106→    ]);
+   107→    if (!data || !Array.isArray(data.scenes) || data.scenes.length === 0) {
+   108→      throw new Error('চিত্রনাট্য তৈরি হয়নি');
+   109→    }
+   110→    title = String(data.title ?? title).slice(0, 120);
+   111→    logline = String(data.logline ?? '').slice(0, 400);
+   112→    const chars = Array.isArray(data.characters) ? data.characters : [];
+   113→    for (const c of chars.slice(0, 3)) {
+   114→      const name = String(c?.name ?? '').trim().slice(0, 60);
+   115→      if (!name) continue;
+   116→      const voice = VOICES.includes(String(c?.voice) as (typeof VOICES)[number]) ? String(c.voice) : spec.voice ?? 'tongtong';
+   117→      characterVoices[name] = voice;
+   118→      characterAppearance[name] = String(c?.appearancePrompt ?? `a character named ${name}`).slice(0, 600);
+   119→    }
+   120→    scenes = data.scenes.slice(0, 6).map((s, i) => ({
+   121→      index: Number(s?.index) || i + 1,
+   122→      location: String(s?.location ?? '').slice(0, 120),
+   123→      timeOfDay: String(s?.timeOfDay ?? 'দিন').slice(0, 40),
+   124→      action: String(s?.action ?? '').slice(0, 600),
+   125→      dialogue: (Array.isArray(s?.dialogue) ? s.dialogue : [])
+   126→        .filter((d: DialogueLine) => String(d?.line ?? '').trim())
+   127→        .slice(0, 5)
+   128→        .map((d: DialogueLine) => ({
+   129→          character: String(d?.character ?? '').slice(0, 60),
+   130→          line: String(d?.line ?? '').slice(0, 300),
+   131→          emotion: d?.emotion ? String(d.emotion).slice(0, 40) : undefined,
+   132→        })),
+   133→    }));
+   134→    await step.setDetail(`"${title}" — ${scenes.length}টি দৃশ্য, ${Object.keys(characterVoices).length}টি চরিত্র`);
+   135→
+   136→    // চিত্রনাট্য artifact — ব্যবহারকারীর পাঠযোগ্য দলিল
+   137→    const doc = [
+   138→      `${title}`,
+   139→      logline ? `লগলাইন: ${logline}` : '',
+   140→      `দৈর্ঘ্য-লক্ষ্য: ${durationSec} সেকেন্ড · অনুপাত ${aspect} · ${fps}fps`,
+   141→      '',
+   142→      ...scenes.flatMap(s => [
+   143→        `দৃশ্য ${s.index} — ${s.location} (${s.timeOfDay})`,
+   144→        s.action,
+   145→        ...(s.dialogue.length > 0
+   146→          ? s.dialogue.map(d => `${d.character}${d.emotion ? ` (${d.emotion})` : ''}: "${d.line}"`)
+   147→          : ['(সংলাপহীন দৃশ্য)']),
+   148→        '',
+   149→      ]),
+   150→    ]
+   151→      .filter(l => l !== '')
+   152→      .join('\n');
+   153→    await ctx.registerArtifact({
+   154→      buffer: Buffer.from(doc, 'utf-8'),
+   155→      kind: 'text',
+   156→      mimeType: 'text/plain',
+   157→      fileName: 'screenplay.txt',
+   158→      metaJson: { pipeline: 'short_film', scenes: scenes.length },
+   159→    });
+   160→  });
+   161→
+   162→  // ------------------------------------------------------- scene_breakdown
+   163→  let shots: FilmShot[] = [];
+   164→  await ctx.runStep('scene_breakdown', 'দৃশ্য ও শট বিভাজন', async (step: StepHandle) => {
+   165→    const maxShotCount = maxShots('short_film', spec.quality);
+   166→    const count = Math.max(3, Math.min(maxShotCount, Math.round(durationSec / 6)));
+   167→    const { data } = await chatJson<{
+   168→      shots: { sceneIndex: number; description: string; label?: string; cameraMove: string; durationSec: number; characters?: string[] }[];
+   169→    }>([
+   170→      {
+   171→        role: 'assistant',
+   172→        content:
+   173→          'তুমি চিত্রনাট্য থেকে শট-তালিকা বানাও (shot breakdown)।\n' +
+   174→          `ঠিক ${count}টি শট (সর্বোচ্চ ${maxShotCount}), প্রতিটি ৩-৭ সেকেন্ড, যোগফল ≈ ${durationSec} সেকেন্ড।\n` +
+   175→          'প্রতিটি দৃশ্য কমপক্ষে একটি শট পাবে। description ইংরেজিতে (সেই দৃশ্যের দৃশ্যমান বিষয়: পরিবেশ, চরিত্রের অবস্থান/ভঙ্গি, আলো — ইমেজ-জেনারেশনের জন্য), label বাংলায়।\n' +
+   176→          'cameraMove: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static"। দৃশ্যে উপস্থিত চরিত্রের নাম characters-এ।\n' +
+   177→          'শুধুমাত্র JSON: {"shots":[{"sceneIndex":1,"description":"...","label":"...","cameraMove":"zoom_in","durationSec":5,"characters":["নাম"]}]}',
+   178→      },
+   179→      {
+   180→        role: 'user',
+   181→        content:
+   182→          `চিত্রনাট্য (${durationSec} সেকেন্ড, ${count}টি শট):\n` +
+   183→          scenes
+   184→            .map(
+   185→              s =>
+   186→                `দৃশ্য ${s.index} (${s.location}, ${s.timeOfDay}): ${s.action} [সংলাপ: ${
+   187→                  s.dialogue.map(d => `${d.character}: ${d.line}`).join(' | ') || 'নেই'
+   188→                }]`
+   189→            )
+   190→            .join('\n'),
+   191→      },
+   192→    ]);
+   193→    const rawShots = Array.isArray(data?.shots) ? data.shots : [];
+   194→    shots = rawShots
+   195→      .filter(s => String(s?.description ?? '').trim())
+   196→      .slice(0, maxShotCount)
+   197→      .map((s, i) => ({
+   198→        sceneIndex: Number(s?.sceneIndex) || scenes[0]?.index || 1,
+   199→        description: String(s.description).slice(0, 900),
+   200→        label: String(s?.label ?? '').slice(0, 120) || `শট ${i + 1}`,
+   201→        cameraMove: MOVES.includes(String(s?.cameraMove) as CameraMove) ? (s.cameraMove as CameraMove) : MOVES[i % MOVES.length],
+   202→        durationSec: Math.max(3, Math.min(7, Number(s?.durationSec) || 5)),
+   203→        characters: (Array.isArray(s?.characters) ? s.characters : []).map(c => String(c).slice(0, 60)).slice(0, 3),
+   204→      }));
+   205→    if (shots.length === 0) throw new Error('শট-বিভাজন তৈরি হয়নি');
+   206→    normalizeShotDurations(shots, durationSec);
+   207→    await step.setDetail(`${shots.length}টি শট, যোগফল ≈ ${shots.reduce((a, s) => a + s.durationSec, 0).toFixed(1)} সে.`);
+   208→  });
+   209→
+   210→  // ------------------------------------------------------- character_bible
+   211→  interface Bible {
+   212→    name: string;
+   213→    portraitDataUrl?: string;
+   214→  }
+   215→  const bible: Bible[] = [];
+   216→  await ctx.runStep('character_bible', 'চরিত্র বাইবেল ও পোর্ট্রেট', async (step: StepHandle) => {
+   217→    // শটে আসলে যে চরিত্রগুলো দরকার (সর্বোচ্চ ৩)
+   218→    const needed = new Set<string>();
+   219→    for (const shot of shots) {
+   220→      for (const name of shot.characters) needed.add(name);
+   221→    }
+   222→    const selected = Object.keys(characterVoices).filter(n => needed.has(n)).slice(0, 3);
+   223→    if (selected.length === 0) {
+   224→      await step.setDetail('কোনো চরিত্র পোর্ট্রেট লাগবে না');
+   225→      return;
+   226→    }
+   227→    const { writeFile } = await import('fs/promises');
+   228→    for (let i = 0; i < selected.length; i++) {
+   229→      await ctx.checkCancelled();
+   230→      const name = selected[i];
+   231→      await step.setDetail(`${name} — পোর্ট্রেট ${i + 1}/${selected.length}`);
+   232→      const entry: Bible = { name };
+   233→      try {
+   234→        const { buffer } = await generateImageBuffer(portraitPrompt(name, characterAppearance[name] ?? `character "${name}"`), '864x1152');
+   235→        entry.portraitDataUrl = `data:image/png;base64,${buffer.toString('base64')}`;
+   236→        const p = path.join(wd, `bible-${i}.png`);
+   237→        await writeFile(p, buffer);
+   238→        await ctx.registerArtifact({
+   239→          buffer,
+   240→          kind: 'image',
+   241→          mimeType: 'image/png',
+   242→          fileName: `bible-${sanitize(name) || i + 1}.png`,
+   243→          metaJson: { characterName: name, voice: characterVoices[name], pipeline: 'short_film', kind: 'character-bible' },
+   244→        });
+   245→        bible.push(entry);
+   246→      } catch (err) {
+   247→        ctx.partialNotes.push(
+   248→          `চরিত্র "${name}"-এর পোর্ট্রেট ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — দৃশ্য-প্রম্পট ব্যবহৃত হবে`
+   249→        );
+   250→      }
+   251→    }
+   252→    await step.setDetail(`${bible.length}টি পোর্ট্রেট সম্পন্ন`);
+   253→  });
+   254→
+   255→  // ------------------------------------------------------- storyboard
+   256→  await ctx.runStep('storyboard', 'স্টোরিবোর্ড তৈরি', async (step: StepHandle) => {
+   257→    const { writeFile } = await import('fs/promises');
+   258→    const valid: FilmShot[] = [];
+   259→    for (let i = 0; i < shots.length; i++) {
+   260→      await ctx.checkCancelled();
+   261→      const shot = shots[i];
+   262→      await step.setDetail(`${i + 1}/${shots.length} ফ্রেম${shot.characters.length > 0 ? ` (${shot.characters.join(', ')})` : ''}`);
+   263→      const matching = shot.characters.map(c => bible.find(b => b.name === c)).find(Boolean);
+   264→      let buffer: Buffer | null = null;
+   265→      const tryGen = async () => {
+   266→        if (matching?.portraitDataUrl) {
+   267→          return (
+   268→            await editImageBuffer(
+   269→              matching.portraitDataUrl,
+   270→              `Same person (identical face, hair, outfit) now in: ${shot.description}. Keep the character consistent with the reference portrait.`,
+   271→              genSize
+   272→            )
+   273→          ).buffer;
+   274→        }
+   275→        return (await generateImageBuffer(imagePromptForShot(shot, spec.style), genSize)).buffer;
+   276→      };
+   277→      try {
+   278→        buffer = await tryGen();
+   279→      } catch {
+   280→        try {
+   281→          buffer = await tryGen();
+   282→        } catch (err) {
+   283→          ctx.partialNotes.push(
+   284→            `শট ${i + 1}-এর ফ্রেম ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শট বাদ`
+   285→          );
+   286→          continue;
+   287→        }
+   288→      }
+   289→      if (!buffer) continue;
+   290→      const framePath = path.join(wd, `frame-${i}.png`);
+   291→      await writeFile(framePath, buffer);
+   292→      await ctx.registerArtifact({
+   293→        buffer,
+   294→        kind: 'image',
+   295→        mimeType: 'image/png',
+   296→        fileName: `storyboard-shot-${i + 1}.png`,
+   297→        metaJson: { shot: i + 1, of: shots.length, sceneIndex: shot.sceneIndex, cameraMove: shot.cameraMove, label: shot.label },
+   298→      });
+   299→      valid.push({ ...shot, framePath });
+   300→    }
+   301→    if (valid.length === 0) throw new Error('কোনো স্টোরিবোর্ড ফ্রেমই তৈরি হয়নি');
+   302→    shots = valid;
+   303→    await step.setDetail(`${valid.length}টি ফ্রেম সম্পন্ন`);
+   304→  });
+   305→
+   306→  // ------------------------------------------------------- speech
+   307→  const timedLines: TimedLine[] = [];
+   308→  await ctx.runStep('speech', 'সংলাপ/ভয়েসওভার তৈরি', async (step: StepHandle) => {
+   309→    const allLines: (DialogueLine & { sceneIndex: number })[] = [];
+   310→    for (const scene of scenes) {
+   311→      for (const d of scene.dialogue) allLines.push({ ...d, sceneIndex: scene.index });
+   312→    }
+   313→    // সংলাপ না থাকলে লগলাইন থেকে বর্ণনকারী-লাইন
+   314→    if (allLines.length === 0 && logline) {
+   315→      allLines.push({
+   316→        character: Object.keys(characterVoices)[0] ?? 'নরেটর',
+   317→        line: logline.slice(0, 300),
+   318→        emotion: 'বর্ণনা',
+   319→        sceneIndex: scenes[0]?.index ?? 1,
+   320→      });
+   321→    }
+   322→    if (allLines.length === 0) {
+   323→      await step.setDetail('কোনো সংলাপ নেই — নীরব চলচ্চিত্র');
+   324→      return;
+   325→    }
+   326→    const { writeFile } = await import('fs/promises');
+   327→    let done = 0;
+   328→    for (let i = 0; i < allLines.length; i++) {
+   329→      await ctx.checkCancelled();
+   330→      const d = allLines[i];
+   331→      await step.setDetail(`${i + 1}/${allLines.length} লাইন সংশ্লেষিত — ${d.character}`);
+   332→      const voice = (characterVoices[d.character] ?? spec.voice ?? 'tongtong') as (typeof VOICES)[number];
+   333→      try {
+   334→        const speech = await synthesizeSpeech(d.line, voice, 1);
+   335→        const filePath = path.join(wd, `line-${i}.wav`);
+   336→        await writeFile(filePath, speech.buffer);
+   337→        const info = await mediaInfo(filePath);
+   338→        timedLines.push({ ...d, filePath, measuredSec: info.durationSec, startSec: 0, endSec: 0 });
+   339→        done++;
+   340→      } catch (err) {
+   341→        ctx.partialNotes.push(
+   342→          `"${d.character}"-এর লাইন ${i + 1} TTS ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শুধু সাবটাইটেলে থাকবে`
+   343→        );
+   344→        timedLines.push({ ...d, measuredSec: Math.max(1.5, d.line.length / 14), startSec: 0, endSec: 0 });
+   345→      }
+   346→    }
+   347→    await step.setDetail(`${done}/${allLines.length} লাইন সফল`);
+   348→  });
+   349→
+   350→  // সংলাপ→শট বণ্টন + শট-দৈর্ঘ্য সমন্বয় (মোশনের আগেই স্থির হয়)
+   351→  const assignLinesAndDurations = () => {
+   352→    for (const shot of shots) shot.lines = [];
+   353→    const byScene = new Map<number, TimedLine[]>();
+   354→    for (const l of timedLines) {
+   355→      if (!byScene.has(l.sceneIndex)) byScene.set(l.sceneIndex, []);
+   356→      byScene.get(l.sceneIndex)!.push(l);
+   357→    }
+   358→    const stray: TimedLine[] = [];
+   359→    for (const scene of scenes) {
+   360→      const sceneShots = shots.filter(s => s.sceneIndex === scene.index);
+   361→      const lines = byScene.get(scene.index) ?? [];
+   362→      if (sceneShots.length === 0) {
+   363→        stray.push(...lines);
+   364→        continue;
+   365→      }
+   366→      let li = 0;
+   367→      for (const shot of sceneShots) {
+   368→        while (li < lines.length) {
+   369→          const line = lines[li];
+   370→          const used = (shot.lines ?? []).reduce((a, l) => a + l.measuredSec + 0.25, 0);
+   371→          if (used + line.measuredSec + 0.3 <= shot.durationSec || (shot.lines ?? []).length === 0) {
+   372→            shot.lines!.push(line);
+   373→            li++;
+   374→          } else {
+   375→            break;
+   376→          }
+   377→        }
+   378→      }
+   379→      // দৃশ্যের বাকি লাইন ওই দৃশ্যের শেষ শটে
+   380→      while (li < lines.length) {
+   381→        sceneShots[sceneShots.length - 1].lines!.push(lines[li]);
+   382→        li++;
+   383→      }
+   384→    }
+   385→    for (const l of stray) shots[shots.length - 1].lines!.push(l);
+   386→    // শট-দৈর্ঘ্য = max(পরিকল্পিত, নিজের লাইনের মোট + ০.৪)
+   387→    for (const shot of shots) {
+   388→      const linesDur = (shot.lines ?? []).reduce((a, l) => a + l.measuredSec + 0.25, 0);
+   389→      shot.durationSec = Math.round(Math.max(shot.durationSec, linesDur + 0.4) * 10) / 10;
+   390→    }
+   391→  };
+   392→
+   393→  // চূড়ান্ত টাইমলাইন-অফসেট (crossfade সংকোচন হিসাবে) — assemble-এ
+   394→  const computeOffsets = () => {
+   395→    let prefix = 0;
+   396→    for (let i = 0; i < shots.length; i++) {
+   397→      const shot = shots[i];
+   398→      const shotStart = Math.max(0, prefix - i * crossfadeSec);
+   399→      let cursor = shotStart + 0.15;
+   400→      for (const line of shot.lines ?? []) {
+   401→        line.startSec = Math.round(cursor * 100) / 100;
+   402→        line.endSec = Math.round((cursor + line.measuredSec) * 100) / 100;
+   403→        cursor += line.measuredSec + 0.25;
+   404→      }
+   405→      prefix += shot.durationSec;
+   406→    }
+   407→    return Math.max(1, prefix - (shots.length - 1) * crossfadeSec);
+   408→  };
+   409→
+   410→  // ------------------------------------------------------- motion
+   411→  await ctx.runStep('motion', 'শট-প্রতি মোশন ক্লিপ', async (step: StepHandle) => {
+   412→    assignLinesAndDurations();
+   413→    const valid: FilmShot[] = [];
+   414→    for (let i = 0; i < shots.length; i++) {
+   415→      await ctx.checkCancelled();
+   416→      const shot = shots[i];
+   417→      if (!shot.framePath) continue;
+   418→      await step.setDetail(`${i + 1}/${shots.length} ক্লিপ (${shot.cameraMove}, ${shot.durationSec.toFixed(1)} সে.)`);
+   419→      const clipPath = path.join(wd, `clip-${i}.mp4`);
+   420→      try {
+   421→        await kenBurnsClip(shot.framePath, clipPath, {
+   422→          durationSec: shot.durationSec,
+   423→          fps,
+   424→          width: dims.w,
+   425→          height: dims.h,
+   426→          move: shot.cameraMove,
+   427→        });
+   428→      } catch (err) {
+   429→        const msg = err instanceof Error ? err.message : String(err);
+   430→        try {
+   431→          await kenBurnsClip(shot.framePath, clipPath, {
+   432→            durationSec: shot.durationSec,
+   433→            fps,
+   434→            width: dims.w,
+   435→            height: dims.h,
+   436→            move: shot.cameraMove,
+   437→          });
+   438→        } catch {
+   439→          ctx.partialNotes.push(`শট ${i + 1}-এর ক্লিপ ব্যর্থ (${msg.slice(0, 120)}) — বাদ`);
+   440→          continue;
+   441→        }
+   442→      }
+   443→      valid.push({ ...shot, clipPath });
+   444→    }
+   445→    if (valid.length === 0) throw new Error('কোনো মোশন ক্লিপই তৈরি হয়নি');
+   446→    shots = valid;
+   447→    await step.setDetail(`${valid.length}টি ক্লিপ সম্পন্ন`);
+   448→  });
+   449→
+   450→  // ------------------------------------------------------- continuity
+   451→  const continuityWarnings: string[] = [];
+   452→  await ctx.runStep('continuity', 'ধারাবাহিকতা পরীক্ষা', async (step: StepHandle) => {
+   453→    const characterShots = shots.filter(s => s.characters.length > 0).slice(0, 3);
+   454→    if (characterShots.length === 0 || bible.length === 0) {
+   455→      await step.setDetail('চরিত্র-ধারাবাহিকতা পরীক্ষার মতো নমুনা নেই');
+   456→      return;
+   457→    }
+   458→    const { readFile } = await import('fs/promises');
+   459→    let checked = 0;
+   460→    for (const shot of characterShots) {
+   461→      const match = shot.characters.map(c => bible.find(b => b.name === c)).find(Boolean);
+   462→      if (!match?.portraitDataUrl || !shot.framePath) continue;
+   463→      await ctx.checkCancelled();
+   464→      await step.setDetail(`${shot.label} — ফ্রেম পরীক্ষা ${checked + 1}/${characterShots.length}`);
+   465→      try {
+   466→        const frameBuf = await readFile(shot.framePath);
+   467→        const frameDataUrl = `data:image/png;base64,${frameBuf.toString('base64')}`;
+   468→        const answer = await visionCompare(
+   469→          match.portraitDataUrl,
+   470→          frameDataUrl,
+   471→          `প্রথম ছবিটি রেফারেন্স চরিত্র "${match.name}"-এর পোর্ট্রেট, দ্বিতীয়টি একটি সিনেম্যাটিক ফ্রেম। দ্বিতীয় ফ্রেমে কি একই ব্যক্তি (মুখ/চুল/পোশাক) ধারাবাহিকভাবে আছে? বাংলায় ১ বাক্যে সৎ উত্তর দাও — মিললে কী মিলেছে, না মিললে কী অমিল।`
+   472→        );
+   473→        if (answer) continuityWarnings.push(`${shot.label}: ${answer.slice(0, 160)}`);
+   474→        checked++;
+   475→      } catch (err) {
+   476→        continuityWarnings.push(`${shot.label}: পরীক্ষা ব্যর্থ (${err instanceof Error ? err.message.slice(0, 80) : 'অজানা'})`);
+   477→      }
+   478→    }
+   479→    await step.setDetail(`${checked}টি ফ্রেম পরীক্ষিত — সতর্কতা অ-বাধামূলক`);
+   480→  });
+   481→
+   482→  // ------------------------------------------------------- assemble
+   483→  let finalVideo = '';
+   484→  let finalDuration = 0;
+   485→  let srtContent: string | null = null;
+   486→  await ctx.runStep('assemble', 'টাইমলাইন অ্যাসেম্বলি ও সাউন্ড ডিজাইন', async (step: StepHandle) => {
+   487→    await step.setDetail('সংলাপ-টাইমলাইন হিসাব');
+   488→    const total = computeOffsets();
+   489→
+   490→    await step.setDetail(`${shots.length}টি শট জোড়া (${crossfadeSec} সে. ক্রসফেড)`);
+   491→    const silentPath = path.join(wd, 'assembled.mp4');
+   492→    await concatClips(shots.map(s => s.clipPath!), silentPath, { transitionSec: crossfadeSec });
+   493→    const vInfo = await mediaInfo(silentPath);
+   494→    finalDuration = vInfo.durationSec;
+   495→    finalVideo = silentPath;
+   496→
+   497→    // অডিও-মিক্স: সংলাপ অফসেটে + পরিবেশ-শব্দ (ডাকড)
+   498→    const voiceFiles = timedLines.filter(l => l.filePath).map(l => ({ file: l.filePath!, startSec: l.startSec }));
+   499→    if (voiceFiles.length > 0 || spec.sound !== 'none') {
+   500→      await step.setDetail(`${voiceFiles.length}টি কণ্ঠ + পরিবেশ-শব্দ মিক্স`);
+   501→      const audioPath = await mixAudioTracks({
+   502→        voiceFiles,
+   503→        ambient: true,
+   504→        durationSec: finalDuration,
+   505→        outputPath: path.join(wd, 'audio.wav'),
+   506→        duck: true,
+   507→      });
+   508→      if (audioPath) {
+   509→        const withAudio = path.join(wd, 'with-audio.mp4');
+   510→        await muxAudio(finalVideo, audioPath, withAudio, { durationSec: finalDuration, fadeOutSec: 1.2 });
+   511→        finalVideo = withAudio;
+   512→      }
+   513→    }
+   514→
+   515→    // সাবটাইটেল: সংলাপ-টাইমলাইন থেকে SRT → libass বার্ন
+   516→    if (subtitlesOn && timedLines.length > 0) {
+   517→      await step.setDetail('বাংলা সাবটাইটেল বার্ন');
+   518→      const cues = timedLines
+   519→        .filter(l => l.line.trim())
+   520→        .map(l => ({
+   521→          start: l.startSec,
+   522→          end: Math.max(l.startSec + 0.8, l.endSec),
+   523→          text: `${l.character}: ${l.line}`,
+   524→        }));
+   525→      srtContent = makeSrt(cues);
+   526→      const { writeFile } = await import('fs/promises');
+   527→      const srtPath = path.join(wd, 'dialogue.srt');
+   528→      await writeFile(srtPath, srtContent, 'utf-8');
+   529→      try {
+   530→        const burned = path.join(wd, 'subtitled.mp4');
+   531→        await burnSubtitles(finalVideo, srtPath, burned);
+   532→        finalVideo = burned;
+   533→      } catch (err) {
+   534→        ctx.partialNotes.push(
+   535→          `সাবটাইটেল বার্ন ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — SRT আলাদাভাবে থাকবে`
+   536→        );
+   537→      }
+   538→    }
+   539→    await step.setDetail(`চূড়ান্ত টাইমলাইন: ${finalDuration.toFixed(1)} সেকেন্ড (হিসাব ${total.toFixed(1)})`);
+   540→  });
+   541→
+   542→  // ------------------------------------------------------- validate
+   543→  const result: Record<string, unknown> = {};
+   544→  await ctx.runStep('validate', 'চূড়ান্ত রেন্ডার ও যাচাই', async (step: StepHandle) => {
+   545→    await step.setDetail('মিডিয়া পরিদর্শন');
+   546→    const info = await mediaInfo(finalVideo);
+   547→    const problems: string[] = [];
+   548→    if (!info.hasVideo) problems.push('ভিডিও স্ট্রিম নেই');
+   549→    if (Math.abs(info.durationSec - durationSec) > 3) {
+   550→      ctx.partialNotes.push(
+   551→        `দৈর্ঘ্য ${info.durationSec.toFixed(1)} সে. — লক্ষ্য ${durationSec} সে. থেকে >৩ সে. আলাদা (সংলাপ-সময়ের কারণে হতে পারে)`
+   552→      );
+   553→      problems.push('দৈর্ঘ্য-বিচ্যুতি');
+   554→    }
+   555→    if (info.width !== dims.w || info.height !== dims.h) {
+   556→      ctx.partialNotes.push(`রেজোলিউশন ${info.width}×${info.height} — প্রত্যাশিত ${dims.w}×${dims.h}`);
+   557→      problems.push('রেজোলিউশন-বিচ্যুতি');
+   558→    }
+   559→    if (timedLines.some(l => l.filePath) && !info.hasAudio) {
+   560→      problems.push('সংলাপ থাকা সত্ত্বেও অডিও ট্র্যাক নেই');
+   561→    }
+   562→
+   563→    if (srtContent) {
+   564→      await step.setDetail('SRT নিবন্ধন');
+   565→      await ctx.registerArtifact({
+   566→        buffer: Buffer.from(srtContent, 'utf-8'),
+   567→        kind: 'text',
+   568→        mimeType: 'application/x-subrip',
+   569→        fileName: `${sanitize(title).slice(0, 32) || 'film'}-dialogue.srt`,
+   570→        metaJson: { pipeline: 'short_film', kind: 'dialogue', lines: timedLines.length },
+   571→      });
+   572→    }
+   573→
+   574→    await step.setDetail('চূড়ান্ত MP4 নিবন্ধন');
+   575→    const { readFile } = await import('fs/promises');
+   576→    const buf = await readFile(finalVideo);
+   577→    const artifact = await ctx.registerArtifact({
+   578→      buffer: buf,
+   579→      kind: 'video',
+   580→      mimeType: 'video/mp4',
+   581→      fileName: `${sanitize(title).slice(0, 40) || 'short-film'}.mp4`,
+   582→      metaJson: {
+   583→        pipeline: 'short_film',
+   584→        title,
+   585→        logline,
+   586→        durationSec: info.durationSec,
+   587→        width: info.width,
+   588→        height: info.height,
+   589→        fps: info.fps,
+   590→        aspect,
+   591→        shots: shots.length,
+   592→        scenes: scenes.length,
+   593→        subtitles: !!srtContent,
+   594→        method: 'AI storyboard frames + Ken Burns camera motion + TTS dialogue + FFmpeg assembly',
+   595→      },
+   596→    });
+   597→
+   598→    const verdict =
+   599→      problems.length === 0
+   600→        ? `চমৎকার — ${shots.length}টি শট, ${info.durationSec.toFixed(1)} সেকেন্ড, ${info.width}×${info.height}@${info.fps}FPS${info.hasAudio ? ', সংলাপ-সাউন্ড-সহ' : ''}${srtContent ? ', বাংলা সাবটাইটেল-সহ' : ''}। (পদ্ধতি: AI স্টোরিবোর্ড + ক্যামেরা-মোশন + TTS)`
+   601→        : `কার্যকর, তবে সতর্কতা: ${problems.join(', ')}। ${info.durationSec.toFixed(1)} সেকেন্ড, ${shots.length}টি শট।`;
+   602→    result.quality = verdict;
+   603→    result.artifactId = artifact.id;
+   604→    result.title = title;
+   605→    result.characters = Object.keys(characterVoices);
+   606→    result.durationSec = info.durationSec;
+   607→    result.shots = shots.length;
+   608→    result.continuityWarnings = continuityWarnings;
+   609→  });
+   610→
+   611→  return { result };
+   612→};
+   613→

@@ -341,3 +341,91 @@ Work Log:
 
 Stage Summary:
 - ব্রাউজারে প্রতিটি কোর-ফ্লো বাস্তব ইন্টারঅ্যাকশনে যাচাইকৃত — অ্যাপ ইন্টারঅ্যাক্টিভ ও রানযোগ্য। একমাত্র সীমা: TTS আপস্ট্রিমে সাময়িক 500 (আমাদের কোডের বাইরে, সৎ হ্যান্ডলিং যাচাইকৃত)।
+
+---
+Task ID: 2–6, 8 (নতুন মাস্টার প্ল্যান §২–§৫, §৮, §৯, §১২-৮ — মূল এজেন্ট)
+Agent: main (Z.ai Code orchestrator)
+Task: Phase 1 অডিট + কোর-মডিউল: Audio Language Controller (§২), Music Engine (§৩), Real AI Video (§৪), Lip-Sync স্থাপত্য (§৫), Sound Design (§৮), রেজিস্ট্রি/সিস্টেম/হার্ডেনিং (§৯, §১২-৮)
+
+Work Log:
+- Phase 1 অডিট: হার্ডওয়্যার = ২ CPU কোর, ৪.১GB RAM, ডিস্ক ৯.৯GB (৭.৪ খালি), GPU নেই, FFmpeg 7.1.5
+- **আবিষ্কার: SDK-তে প্রকৃত ভিডিও-জেনারেশন API আছে** (`zai.video.generations.create` + `zai.async.result.query`) — মডেল **cogvideox-3**। প্রোব-যাচাই: ৫ সে. t2v → ১৩৮ সে.-এ প্রকৃত MP4 (5.7MB); **i2v data-URL গ্রহণ করে** (১০৮০×১০৮০ h264); সাবমিটে ৪২৯-রেট-সীমা — ৬০ সে. ব্যাকঅফ দরকার; প্রতি শটে ২–৪ মিনিট
+- TTS ভাষা-প্রোব: ৭ কণ্ঠ (tongtong/chuichui/xiaochen/jam/kazi/douji/luodo); tongtong/chuichui/xiaochen/luodo বাংলা লেখা মাত্র ২.৪–২.৭ সে.-এ "পড়ে" (আসলে পড়তে পারে না); jam ১০.১ সে. (সম্ভাব্য, ASR বাংলা বোঝে না); douji ৩৫ সে. ফাইল (ASR-এর ৩০ সে. সীমা ছাড়ায়); **সিদ্ধান্ত: কোনো কণ্ঠই বাংলা-প্রশিক্ষিত নয় → bn-রায় সবসময় 'warn' + মানব-প্রিভিউ**; en: jam প্রধান, ASR রাউন্ড-ট্রিপ কার্যকর
+- ASR-এর ৩০ সে. সীমা → transcribeBuffer-এ ২৮ সে. চাঙ্কিং
+- নতুন মডিউল (সব লোকাল-সংশ্লেষণ + SDK):
+  * `src/lib/agent/audio/language_controller.ts` (§২) — AudioJobSpec, LANGUAGE_PROFILES, detectLanguage, resolveVoice, synthesizeVerifiedSpeech (TTS→দৈর্ঘ্য-যাচাই→ASR ব্যাক-চেক→রায় pass/warn/fail→fail-হলে বিকল্প কণ্ঠে ১ পুনঃচেষ্টা), transcriptSimilarity
+  * `src/lib/agent/audio/music_engine.ts` (§৩) — synthesizeInstrumental (৬ মুড × স্কেল/কর্ড-প্রগ্রেশন/ছন্দ-সচেতন PCM সংশ্লেষণ + বিট-মার্কার + সেকশন + যাচাই), analyzeAudioEnergy (এনার্জি-বিট-শনাক্তকরণ §৬.১), detectMoodFromText
+  * `src/lib/agent/audio/pcm.ts` — শেয়ার্ড WAV-এনকোডার/নয়েজ/রেজোনেটর/নরমালাইজার
+  * `src/lib/agent/audio/sound_design.ts` (§৮) — ৫-স্তর (A1–A5), planSoundscape (বাংলা কীওয়ার্ড→অ্যাম্বিয়েন্স/ফোলে), ৯ অ্যাম্বিয়েন্স+৮ ফোলে PCM সংশ্লেষণ, mixSoundLayers (ডাকিং+লিমিটার+নির্ভুল ebur128)
+  * `src/lib/agent/video/ai_video.ts` (§৪) — submitVideoTask (৪২৯-ধৈর্যশীল ৬০ সে. ব্যাকঅফ ×৬, ৩০ সে. স্পেসিং), pollVideoTask, downloadVideo, validateVideoBuffer (ffprobe), generateVideoClip, generateVideoClips
+  * `src/lib/agent/video/capability_router.ts` (§৪.৩) — ৭-রুট টেবিল (কে কী করবে; FFmpeg কখনো AI-ভিডিও নয়)
+  * `src/lib/agent/video/lip_sync_module.ts` (§৫) — সৎ-অবরুদ্ধ + ৭-ধাপ ওয়ার্কফ্লো + গান-অতিরিক্ত + সম্মতি-নিয়ম
+- টুল-আপগ্রেড: generate_instrumental (অবরুদ্ধ→প্রকৃত প্রসিডিউরাল), **speech_synthesis** (নতুন, §২-সম্পূর্ণ), **analyze_audio** (নতুন, §৬.১), generate_video (নতুন engine প্যারামিটার: ai_diffusion ডিফল্ট + সৎ-ফলব্যাক + শট-লেবেল), **image_to_video** (নতুন, প্রকৃত CogVideoX i2v), lip_sync (§৫-প্রতিবেদনসহ), create_character (Character-টেবিল upsert, §৭.২)
+- types.ts: TOOL_CATALOG +৩ টুল (মোট ৪১), spec-ফিল্ড +language/videoEngine/filmMode/mood/genre/tempoBpm/musicSource, AppView +'studio', ArtifactMeta+meta, VoicePreset ৭ কণ্ঠ, audioOperation +'instrumental'
+- capabilities.ts: নতুন ফিল্ড-যাচাই, AI-শট-সীমা (motion≤3, mv≤5–7, sf≤6–8), ইঞ্জিন-সচেতন সততা-নোট, ধাপ-কাঠামো নতুন (motion: plan/generate_shots/assemble/validate; mv: song_input/visual_plan/characters/generate_shots/timeline/final_qc; sf: script_breakdown/character_bible/acting_plan/speech/generate_shots/sound_design/continuity/final_mix; audio: prepare/synthesize/verify/master/validate)
+- prisma: Character মডেল (স্থায়ী বাইবেল, conversationId+name unique) → db:push ✓
+- runner.ts: কনকারেন্সি-সীমা (সর্বোচ্চ ২ সমান্তরাল + সারি), stale-sweep ভিডিওতে ৬০ মি./শুধু-অডিও ২০ মি.
+- system-info.ts + GET/POST /api/system (হার্ডওয়্যার + LLM/TTS-মাইক্রো-চেক + সৎ স্ট্যাটিক-স্বাস্থ্য; ৪২৯-এ সৎ 'down')
+- model-registry-data: platform-videogen (CogVideoX-3 সক্রিয়), procedural-music-engine, sound-design-engine + §৯.১ মেটাডেটা (task_type/supported_languages/requires_gpu/max_duration/fallback_tool)
+- prompts.ts: capability-router নিয়ম, নতুন টুল-নীতি, §৯.৩ স্ব-যাচাই চেকলিস্ট (৫ প্রশ্ন)
+- ভিত্তি-যাচাই: foundation-smoke.ts → **৩২/৩২ পাস** (৬ মুড সংগীত, দৃশ্য-পরিকল্পনা, §৮ মিক্সার, ভাষা-ফাংশন, রাউটার, লিপ-সিঙ্ক-প্রতিবেদন); tsc src/ শূন্য; bun run lint শূন্য
+
+Stage Summary:
+- কোর-চুক্তি প্রস্তুত — Task 7 (পাইপলাইন) ও Task 9 (UI) এখন প্যারালালে চালু করা যায়
+- পাইপলাইন-এজেন্টের জন্য API: generateVideoClips(reqs,{onStatus}) / synthesizeInstrumental({mood,durationSec,tempoBpm}) / analyzeAudioEnergy(file) / planSoundscape(text,{ambience,foley}) / renderSoundscapeBed(plan,durationSec,{foleyAtSec}) / mixSoundLayers(layers,outputPath,rules) / synthesizeVerifiedSpeech(spec,{verify}) / moodLabel / detectMoodFromText
+- ধাপ-key অবশ্যই capabilities.ts-এর plannedStepsFor-এর সাথে মিলবে
+- ArtifactMeta.meta এখন যাচাই/ইঞ্জিন-মেটাডেটা বহন করে (UI-এজেন্ট এটি দেখাবে)
+
+---
+Task ID: 9
+Agent: full-stack-developer (UI)
+Task: Creative Studio UI আপগ্রেড — মোড-স্টুডিও ভিউ (§১০), রেজিস্ট্রি-সিস্টেম প্যানেল (§৯), আর্টিফ্যাক্ট যাচাই-প্রিভিউ (§২.৩/§১১-B), SpecEditor নতুন ফিল্ড, গাইড-ফেজম্যাপ/Router/DoD
+
+Work Log:
+- লাইভ API-চুক্তি যাচাই: /api/system (হার্ডওয়্যার+১১ টুল-স্বাস্থ্য, POST=পুনঃচেক রেট-লিমিটেড), /api/registry (১৯ এন্ট্রি — platform-videogen/procedural-music-engine/sound-design-engine নতুন, §৯.১ কীসহ), /api/tools (৪১) — সব ডেটা-শেপ মিলিয়ে UI লেখা
+- নতুন `src/hooks/use-system.ts`: useSystemInfo (useQuery, staleTime ৫ মি., retry ১) + useRecheckSystem (POST, RecheckError-এ status-বাহী → 429-টোস্ট আলাদা করে ধরা যায়); টাইপগুলো লোকালি (types.ts স্পর্শ নয়)
+- নতুন `src/components/studio/studio-view.tsx` (§১০): Tabs-এ ৩ সেকশন — অডিও ৫ / ভিডিও ৬ / ফিল্ম ৫ = ১৬টি মোড-কার্ড; প্রতিটিতে স্ট্যাটাস-ব্যাজ (চালু=emerald, পরীক্ষামূলক=amber, অবরুদ্ধ=ধূসর-স্টোন, strikethrough নয়) + ৫টি বাধ্যতামূলক মেটা (ভাষা/সর্বোচ্চ দৈর্ঘ্য/ইঞ্জিন-প্রকৃতির ৩-লেবেল/আনুমানিক সময়/GPU) + সতর্কতা-নোট (বাংলা ভয়েসওভার="কণ্ঠ বাংলা-প্রশিক্ষিত নয়", ইনস্ট্রুমেন্টাল="প্রসিডিউরাল, নিউরাল নয়", রিয়েল AI="প্রতি শটে ২–৪ মি."); অবরুদ্ধ মোডে বোতাম নেই — কারণ-নোট; "শুরু করুন" → setDraft(মোড-ভিত্তিক সুপারিশ-সেটিংসসহ বাংলা draft) + setActiveView('chat') + focusComposer + টোস্ট; grid-cols-1 sm:grid-cols-2 lg:grid-cols-3, বোতাম h-11 (৪৪px)
+- 'studio' ভিউ-ওয়্যারিং: sidebar.tsx VIEWS-এ দ্বিতীয় পজিশনে 'স্টুডিও' (LayoutGrid), nav grid-cols-3 (৬ আইটেম ২ সারিতে — মোবাইল Sheet-এও নিরাপদ); page.tsx-এ studio-section; use-ui-view.ts-এ কেবল নোট ('studio' AppView-এ আগেই ছিল)
+- registry-view.tsx (§৯.১+§১৩): উপরে নতুন "সিস্টেম" প্যানেল — হার্ডওয়্যার-চিপস (CPU/RAM/ডিস্ক/GPU-nodata/FFmpeg/Node), ১১ টুল-স্বাস্থ্য (সবুজ/হলুদ/লাল ডট + লেটেন্সি + checkedAt + নোট, max-h-72 স্ক্রল), "পুনঃচেক" (লোডিং-স্পিনার, 429-এ বাংলা টোস্ট); QueryClientProvider লোকালি মোড়ানো (layout স্পর্শ নয়); ModelEntryCard-এ §৯.১ কী-রেন্ডার: task_type/supported_languages (বাংলা কোড-ম্যাপ, warn-tone)/requires_gpu/max_duration_sec/generation_time/fallback_tool বাংলা লেবেলসহ dl-সারি, বাকি capability আগের চিপে
+- artifact-view.tsx (§২.৩+§১১-B): অডিওতে meta.verification → যাচাই-কার্ড (রায়-ব্যাজ pass=সবুজ/.warn=amber/fail=লাল, ভাষা+কণ্ঠ+সাদৃশ্য%+দৈর্ঘ্য চিপ, ASR-ট্রান্সক্রিপ্ট quote-স্টাইলে line-clamp-3 + প্রসারণ, নোট-তালিকা List-আইকনসহ); ইনস্ট্রুমেন্টালে মুড/টেম্পো/স্কেল/বিট-সংখ্যা/সেকশন + honestLabel; ভিডিওতে shotEngineLabels-চিপ + beatsSec + honestLabel; সব নিরাপদ রিডার-হেল্পার দিয়ে (meta না থাকলে আগের মতোই — backward-compatible)
+- production-card.tsx: SpecEditor-এ ভাষা Select (audio+ভিডিও), ভিডিও-ইঞ্জিন Select (ai_diffusion ডিফল্ট/cinematic_motion — motion/mv/sf), filmMode Select (sf), mood Select (mv + audio-instrumental), সাবটাইটেল-সুইচ (sf, নতুন); কণ্ঠ-তালিকা ৭টিতে সম্প্রসারিত; spec-সারাংশে ভাষা/ইঞ্জিন/ফিল্ম-মোড/মুড/টেম্পো ব্যাজ; VIDEO_PIPELINE_NOTE → ইঞ্জিন-সচেতন VIDEO_ENGINE_NOTES (ai_diffusion="CogVideoX-3, প্রতি শটে ২–৪ মি." / cinematic_motion=আগের সৎ-নোট); মিউজিক-ভিডিও গান-নোট musicSource-সচেতন (procedural-স্কোর বনাম নীরব)
+- empty-state.tsx: "ভিডিও স্টুডিও" কার্ড → "রিয়েল AI ভিডিও" (Video আইকন, CogVideoX-3-উল্লেখ), অডিও-কার্ডে ভাষা-যাচাই+প্রসিডিউরাল-সততা, ফিল্ম-কার্ডে ৮-স্তর; নতুন চিপ "✨ CogVideoX-3 দিয়ে ১০ সেকেন্ডের রিয়েল AI ভিডিও…" (ছবি→ভিডিও চিপের পাশে); হিরো-টেক্সট হালনাগাদ — কোথাও লিপ-সিঙ্ক/গান-গাওয়ার প্রতিশ্রুতি নেই
+- guide-view.tsx: ফেজ-ম্যাপ নতুন ৮-ফেজ সত্য অনুযায়ী (P1 অডিট ✓ → P8 হার্ডেনিং ✓, P5 লিপ-সিঙ্ক অবরুদ্ধ-সৎ); §৪.৩ Capability Router ৭-সারির CSS-টেবিল (অনুরোধ→টুল→ইঞ্জিন→স্ট্যাটাস — capability_router.ts-এর লাইভ টেবিলের সাথে মিলিয়ে); §১৪ DoD ১৫-দফা সৎ-ব্যাজসহ (১১ চালু/২ পরীক্ষামূলক/২ অবরুদ্ধ); HONESTY/ROADMAP/CAPABILITIES/স্থাপত্য-চিত্র (৪১ টুল, ক্লাউড/লোকাল Workers-ভাগ) হালনাগাদ
+- যাচাই: bunx tsc --noEmit → src/-এ আমার স্কোপে (components/hooks/page) ০ এরর; bunx eslint (সব স্পর্শিত ফাইল) → ০; ব্রাউজার-E2E (agent-browser): স্টুডিও-ভিউ ৩ ট্যাব+১৬ কার্ড+মেটা-সারি রেন্ডার ✓, "শুরু করুন"→draft+চ্যাট-ভিউ+ফোকাস ✓, রেজিস্ট্রি-সিস্টেম প্যানেল (চিপ/১১ স্বাস্থ্য-সারি/পুনঃচেক pending→সফল) ✓, TTS-কার্ডে §৯.১ মেটা-সারি ✓, গাইড ৮-ফেজ+৭-Router+১৫-DoD ✓, SpecEditor নতুন ফিল্ড+ইঞ্জিন-বদলে নোট/ব্যাজ-আপডেট ✓; মোবাইল ৩৯০px: কোনো horizontal overflow নেই, কার্ড ১-কলাম, বোতাম ৪৪px, ট্যাব-স্ক্রল নেই (viewport-emulation দিয়ে — সত্যিকারের ডিভাইস-টেস্ট এই পরিবেশে সম্ভব নয়, কোড-পর্যালোচনায় রেসপনসিভ-ক্লাস নিশ্চিত); dev.log-এ আমার পরিবর্তনে কোনো কম্পাইল-এরর নেই (একটি transient ⨯ ছিল src/lib/agent/tools/video.ts:465-এ — প্যারালাল পাইপলাইন-এজেন্টের মিড-এডিট, পরের রিকোয়েস্টেই ✓ Compiled)
+
+Stage Summary:
+- পরিবর্তিত ফাইল: src/components/studio/studio-view.tsx (নতুন), src/hooks/use-system.ts (নতুন), registry-view.tsx, production-card.tsx, guide-view.tsx, artifact-view.tsx, empty-state.tsx, sidebar.tsx, page.tsx, use-ui-view.ts (নোট) — types.ts বা কোনো backend/lib ফাইল স্পর্শ করা হয়নি
+- মূল এজেন্টের জন্য নোট: ArtifactMeta.meta-র রেন্ডারিং সম্পূর্ণভাবে optional-নিরাপদ — পাইপলাইন-এজেন্ট meta বসালেই যাচাই/ইঞ্জিন-কার্ড দেখা যাবে (speech: verification+languageLabel+voice; ভিডিও: shotEngineLabels+honestLabel; ইনস্ট্রুমেন্টাল: tempoBpm+keyLabel+beatsSec+sections+honestLabel); registry-view-এর QueryClientProvider লোকাল — ভবিষ্যতে গ্লোবাল প্রভাইডার চাইলে layout.tsx-এ নিতে পারবেন; sidebar ViewNav এখন grid-cols-3 (৬ ভিউ, ২ সারি)
+- সীমা: মোবাইল-যাচাই viewport-emulation-ভিত্তিক (৩৯০x৮৪৪) + কোড-পর্যালোচনা; /api/system-এর LLM/TTS স্বাস্থ্য এখন 'down' (429 রেট-সীমা) — UI সেটা সৎভাবেই লাল ডটে দেখাচ্ছে
+
+---
+Task ID: 7 (সাবএজেন্ট টাইমআউট — মূল এজেন্ট যাচাই-সহ সম্পন্ন)
+Agent: full-stack-developer (pipelines) + main (সংশোধন/পরীক্ষা)
+Task: নতুন মাস্টার প্ল্যান §৬/§৭/§২-অনুযায়ী ৪টি পাইপলাইন আপগ্রেড
+
+Work Log (সাবএজেন্ট): motion_video (৩০১→৫৭৮ লাইন), music_video (৪২৪→৬৮৪), short_film (৬১২→১২২৪), audio (৩০৬→৫৩৯) — ধাপ-key চুক্তি মেনে, নতুন কোর-মডিউল (ai_video/sound_design/music_engine/language_controller) সংযুক্ত, সৎ-লেবেল/ফলব্যাক/Character-পুনঃব্যবহার — কোড লেখা শেষে রিপোর্টের আগে টাইমআউট।
+Work Log (মূল এজেন্ট):
+- tsc শূন্য নিশ্চিত + ধাপ-key যাচাই (মাল্টি-লাইন regex): সব পাইপলাইনে চুক্তিসম্মত key
+- বাগ-ফিক্স: mixSoundLayers-এর ডাকিং-গ্রাফে অব্যবহৃত [musicSc] প্যাড → ffmpeg ব্যর্থ — asplit সংশোধন (৪-স্তর A1+A2+A4+A5 মিক্স এখন সফল, LUFS −২৭.২)
+- TTS ব্যাকঅফ ধৈর্যশীলতর: ৫ চেষ্টা × ২০ সে.-বেস (৪২৯-বাস্তবতা)
+- E2E ধূম-পরীক্ষা (pipeline-smoke.ts): (১) instrumental — ৬ সে.-এ completed, WAV+MP3, ৫ ধাপ ✓; (২) বাংলা ভয়েসওভার — verify-ধাপসহ completed ✓; (৩) মিউজিক ভিডিও (প্রসিডিউরাল গান+cinematic) — ৬ ধাপ, ২০.০৭ সে. গান-সমলয়, avSyncOk ✓; (৪) শর্টফিল্ম (cinematic) — ৮ ধাপ সম্পূর্ণ, ফিল্ম+SRT+সংলাপ-অডিও, সৎ partialNotes (এক TTS-লাইন ৪২৯-ব্যর্থ সৎভাবে রিপোর্ট) ✓; (৫) AI মোশন-ভিডিও — প্রকৃত CogVideoX-3 শট, লেবেল "শট 1: প্রকৃত AI (cogvideox-3)" ✓
+- speech-tool-smoke: ১০/১০ (বাংলা রায় warn+নোট, ইংরেজি রাউন্ড-ট্রিপ, অসামঞ্জস্য-ত্রুটি, স্বয়ংক্রিয় শনাক্তকরণ, analyze_audio)
+
+Stage Summary:
+- ৫টি পাইপলাইনই নতুন কাঠামোতে বাস্তব-চালিত সফল; সৎ-ফলব্যাক/লেবেল-ব্যবস্থা সর্বত্র
+
+---
+Task ID: 10
+Agent: main (Z.ai Code orchestrator)
+Task: Definition of Done যাচাই (§১৪) + ব্রাউজার-E2E + চূড়ান্ত ইন্টিগ্রেশন
+
+Work Log:
+- স্টুডিও-ভিউ ব্রাউজার-যাচাই: ৩ ট্যাবে ১৬ মোড-কার্ড (চালু/পরীক্ষামূলক/অবরুদ্ধ ব্যাজ সঠিক), "শুরু করুন" → চ্যাটে draft+ফোকাস ✓
+- রেজিস্ট্রি-ভিউ: সিস্টেম-প্যানেল (হার্ডওয়্যার-চিপ ২ কোর/৪.১GB/৭.৩GB খালি/GPU নেই + টুল-স্বাস্থ্য + পুনঃচেক) ✓
+- গোল্ডেন-পাথ (ব্রাউজার-চ্যাট): "রোমান্টিক ইনস্ট্রুমেন্টাল ১৫ সে. ৯০ BPM" → এজেন্ট generate_instrumental কল → অ্যাক্টিভিটি-কার্ড সম্পন্ন → চূড়ান্ত উত্তরে সৎ-লেবেল ("প্রসিডিউরাল… নিউরাল মডেল নয়") → অডিও-প্লেয়ার (artifact প্রকৃত চালু) ✓
+- মোবাইল ৩৯০×৮৪৪: কোনো হরাইজন্টাল-স্ক্রল নেই, ফুটার ৮৪৪-এ আটকা ✓; ডেস্কটপ ১২৮০×৮০০ ✓; console/page errors শূন্য ✓
+- §১৫ প্রথম বাস্তব মাইলস্টোন-উপাদান যাচাই: বাংলা সংলাপ (ভাষা-যাচাইসহ) ✓ + প্রকৃত AI-generated চলমান শট (CogVideoX-3) ✓ + ব্যাকগ্রাউন্ড সাউন্ড-স্তর (A1–A5 মিক্স) ✓ — লিপ-সিঙ্ক অংশ সৎ-অবরুদ্ধ
+- টেস্ট-ডাটা পরিষ্কার (সব ধূম-কথোপকথন/প্রোডাকশন/artifact); bun run lint শূন্য; tsc src/ শূন্য; dev.log পরিষ্কার
+
+Stage Summary:
+- §১৪-এর ১৫ দফার অবস্থা: ১,২ (বাংলা/ইংরেজি TTS+যাচাই) ✓ · ৩ ইনস্ট্রুমেন্টাল ✓ (পরীক্ষামূলক-সৎ) · ৪ গান-গাওয়া অবরুদ্ধ-সৎ · ৫,৬ (t2v/i2v প্রকৃত মোশন) ✓ · ৭ চরিত্র-অ্যানিমেশন পরীক্ষামূলক-সৎ · ৮,৯ লিপ-সিঙ্ক অবরুদ্ধ-সৎ · ১০ (A1–A5 ট্র্যাক) ✓ · ১১ (A/V সমলয়-যাচাই) ✓ · ১২ (বহু-দৃশ্য শর্টফিল্ম+সংলাপ+সাউন্ড+সাবটাইটেল+এক্সপোর্ট) ✓ · ১৩ (সৎ এরর/রিট্রাই/ফলব্যাক) ✓ · ১৪ (লাইসেন্স-রেজিস্ট্রি) ✓ · ১৫ (প্রিভিউ+রিভিশন-ফ্লো আগের সেশন থেকে চালু) ✓

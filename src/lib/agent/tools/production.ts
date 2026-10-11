@@ -109,19 +109,26 @@ const proposeJobSpec: ToolSpec<{
 const createCharacterSpec: ToolSpec<{
   name: string;
   description: string;
-  voice?: 'tongtong' | 'jam' | 'kazi';
+  role?: string;
+  voice?: string;
+  language?: 'bn' | 'en';
+  appearance?: string;
   style?: string;
 }> = {
   name: 'create_character',
   parameters: z.object({
     name: z.string().min(1).max(80),
     description: z.string().min(5).max(1200),
-    voice: z.enum(['tongtong', 'jam', 'kazi']).optional(),
+    role: z.string().max(80).optional(),
+    voice: z.string().max(20).optional(),
+    language: z.enum(['bn', 'en']).optional(),
+    appearance: z.string().max(600).optional(),
     style: z.string().max(300).optional(),
   }),
   timeoutMs: 200_000,
-  usage: 'create_character — চরিত্রের নাম ও বর্ণনা থেকে Character Bible এন্ট্রি + রেফারেন্স পোর্ট্রেট তৈরি করে (চরিত্র-ধারাবাহিকতার ভিত্তি)। arguments: {"name": string, "description": string (চেহারা/পোশাক/বয়স/স্বভাব), "voice"?: "tongtong"|"jam"|"kazi", "style"?: string}',
-  inputSummary: i => `${i.name}`,
+  usage:
+    'create_character — চরিত্রের নাম ও বর্ণনা থেকে Character Bible এন্ট্রি + রেফারেন্স পোর্ট্রেট তৈরি করে (§৭.২: স্থায়ী character ID — পরবর্তী প্রোডাকশনে একই চরিত্র পুনর্ব্যবহারযোগ্য)। একই নামের চরিত্র আবার তৈরি করলে বিদ্যমান এন্ট্রি আপডেট হয়। arguments: {"name": string, "description": string (ব্যক্তিত্ব/পরিচয়), "role"?: string (যেমন "প্রধান চরিত্র"), "voice"?: string (বাংলা: jam/douji, ইংরেজি: jam/tongtong/kazi), "language"?: "bn"|"en", "appearance"?: string (বয়স/চুল/পোশাক), "style"?: string}',
+  inputSummary: i => `${i.name}${i.role ? ` (${i.role})` : ''}`,
   execute: async (input, ctx) => {
     // পোর্ট্রেট-প্রম্পট প্রস্তুত (LLM দিয়ে ইংরেজি প্রম্পট)
     let prompt: string;
@@ -135,7 +142,7 @@ const createCharacterSpec: ToolSpec<{
           },
           {
             role: 'user',
-            content: `নাম: ${input.name}\nবর্ণনা: ${input.description}\n${input.style ? `শৈলী: ${input.style}` : ''}`,
+            content: `নাম: ${input.name}\nবর্ণনা: ${input.description}${input.appearance ? `\nচেহারা: ${input.appearance}` : ''}${input.style ? `\nশৈলী: ${input.style}` : ''}`,
           },
         ])
       ).trim();
@@ -144,8 +151,13 @@ const createCharacterSpec: ToolSpec<{
     }
     prompt = prompt.slice(0, 1200);
 
+    // §৭.২: বিদ্যমান চরিত্র হলে তার পুরনো পোর্ট্রেট রেফারেন্স হিসেবে ধরে পরিচয় ধরে রাখি
+    const existing = await db.character.findUnique({
+      where: { conversationId_name: { conversationId: ctx.conversationId, name: input.name } },
+    });
+
     const { buffer } = await generateImageBuffer(prompt, '864x1152');
-    const { storagePath, relName } = await saveArtifactFile(buffer, 'png');
+    const { storagePath } = await saveArtifactFile(buffer, 'png');
     const artifact = await db.artifact.create({
       data: {
         conversationId: ctx.conversationId,
@@ -160,12 +172,39 @@ const createCharacterSpec: ToolSpec<{
       },
     });
     const meta: ArtifactMeta = toArtifactMeta(artifact);
+
+    // §৭.২: স্থায়ী Character Bible রেকর্ড (upsert — একই নামে আপডেট)
+    const language = input.language ?? 'bn';
+    const character = await db.character.upsert({
+      where: { conversationId_name: { conversationId: ctx.conversationId, name: input.name } },
+      create: {
+        conversationId: ctx.conversationId,
+        name: input.name,
+        role: input.role ?? 'প্রধান চরিত্র',
+        description: input.description,
+        appearanceJson: JSON.stringify({ appearance: input.appearance ?? null, style: input.style ?? null }),
+        language,
+        voice: input.voice ?? (language === 'bn' ? 'jam' : 'jam'),
+        portraitArtifactId: meta.id,
+      },
+      update: {
+        role: input.role ?? undefined,
+        description: input.description,
+        appearanceJson: JSON.stringify({ appearance: input.appearance ?? null, style: input.style ?? null }),
+        language,
+        voice: input.voice ?? undefined,
+        portraitArtifactId: meta.id,
+      },
+    });
+
     return {
-      summary: `চরিত্র তৈরি: ${input.name}`,
+      summary: `চরিত্র তৈরি: ${input.name}${existing ? ' (পুরনো এন্ট্রি আপডেট)' : ''} — Character Bible ID: ${character.id.slice(0, 12)}`,
       resultJson: JSON.stringify({
+        characterId: character.id,
         characterName: input.name,
         description: input.description,
-        voice: input.voice ?? null,
+        voice: character.voice,
+        language: character.language,
         portraitArtifactId: meta.id,
         prompt,
       }),

@@ -11,6 +11,7 @@ import { GalleryView } from '@/components/studio/gallery-view';
 import { GuideView } from '@/components/studio/guide-view';
 import { ProductionsView } from '@/components/studio/productions-view';
 import { RegistryView } from '@/components/studio/registry-view';
+import { StudioView } from '@/components/studio/studio-view';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -127,6 +128,12 @@ export default function Home() {
               />
             )}
             <Composer />
+          </section>
+        )}
+
+        {activeView === 'studio' && (
+          <section className="min-h-0 min-w-0 flex-1 overflow-y-auto" aria-label="স্টুডিও">
+            <StudioView />
           </section>
         )}
 

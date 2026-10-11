@@ -43,6 +43,14 @@ export function toActivityView(tc: ToolCall): ActivityView {
 
 /** Artifact row → ArtifactMeta (url সবসময় লোকাল API endpoint) */
 export function toArtifactMeta(a: Artifact): ArtifactMeta {
+  let meta: Record<string, unknown> | undefined;
+  if (a.metaJson) {
+    try {
+      meta = JSON.parse(a.metaJson);
+    } catch {
+      meta = undefined;
+    }
+  }
   return {
     id: a.id,
     kind: a.kind as ArtifactMeta['kind'],
@@ -51,6 +59,7 @@ export function toArtifactMeta(a: Artifact): ArtifactMeta {
     size: a.size,
     url: `/api/artifacts/${a.id}/file`,
     external: !a.storagePath && !!a.sourceUrl,
+    meta,
   };
 }
 

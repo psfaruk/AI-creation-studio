@@ -79,15 +79,22 @@ export const DURATION_LIMITS: Record<ProductionType, DurationLimit> = {
 export const SUPPORTED_FPS = [24, 25, 30] as const;
 export const SUPPORTED_RESOLUTIONS: OutputResolution[] = ['720p', '1080p'];
 export const SUPPORTED_ASPECTS: AspectRatio[] = ['1:1', '4:5', '3:2', '16:9', '9:16'];
+export const SUPPORTED_LANGUAGES = ['bn', 'en'] as const;
+export const SUPPORTED_MOODS = ['sad', 'romantic', 'joyful', 'suspense', 'action', 'peaceful'] as const;
 
-/** প্রতি প্রোডাকশনে সর্বোচ্চ শট-সংখ্যা (খরচ নিয়ন্ত্রণ) */
-export function maxShots(type: ProductionType, quality: CreativeJobSpec['quality']): number {
+/**
+ * প্রতি প্রোডাকশনে সর্বোচ্চ শট-সংখ্যা।
+ * ai_diffusion ইঞ্জিনে প্রতিটি শট CogVideoX-3-এ ২–৪ মিনিট নেয়
+ * (৪২৯-রেট-সীমাসহ ~৩ মিনিট/শট) — তাই AI-শটের সংখ্যা কঠোরভাবে সীমিত।
+ */
+export function maxShots(type: ProductionType, quality: CreativeJobSpec['quality'], engine?: string): number {
+  const ai = engine !== 'cinematic_motion';
   const base: Record<ProductionType, number> = {
     image: 1,
     audio: 0,
-    motion_video: 4,
-    music_video: quality === 'draft' ? 8 : 14,
-    short_film: quality === 'draft' ? 8 : 16,
+    motion_video: ai ? 3 : 4,
+    music_video: ai ? (quality === 'draft' ? 5 : 7) : quality === 'draft' ? 8 : 14,
+    short_film: ai ? (quality === 'draft' ? 6 : 8) : quality === 'draft' ? 8 : 16,
   };
   return base[type];
 }
@@ -116,40 +123,38 @@ export function plannedStepsFor(type: ProductionType): { key: string; title: str
       ];
     case 'audio':
       return [
-        { key: 'prepare', title: 'স্ক্রিপ্ট প্রস্তুত' },
-        { key: 'synthesize', title: 'কণ্ঠ সংশ্লেষণ' },
+        { key: 'prepare', title: 'স্ক্রিপ্ট প্রস্তুত ও ভাষা-শনাক্তকরণ' },
+        { key: 'synthesize', title: 'কণ্ঠ সংশ্লেষণ (ভাষা-নিয়ন্ত্রক)' },
+        { key: 'verify', title: 'ASR ব্যাক-চেক ও ভাষা-রায়' },
         { key: 'master', title: 'মাস্টারিং ও নরমালাইজেশন' },
         { key: 'validate', title: 'গুণমান যাচাই ও রপ্তানি' },
       ];
     case 'motion_video':
       return [
-        { key: 'plan', title: 'দৃশ্য-পরিকল্পনা' },
-        { key: 'storyboard', title: 'স্টোরিবোর্ড ফ্রেম তৈরি' },
-        { key: 'motion', title: 'ক্যামেরা-মোশন ক্লিপ তৈরি' },
+        { key: 'plan', title: 'দৃশ্য-পরিকল্পনা ও ক্যাপাবিলিটি-রাউটিং' },
+        { key: 'generate_shots', title: 'AI ভিডিও-শট জেনারেশন (CogVideoX-3)' },
         { key: 'assemble', title: 'টাইমলাইন অ্যাসেম্বলি ও সাউন্ড' },
-        { key: 'validate', title: 'চূড়ান্ত রেন্ডার ও যাচাই' },
+        { key: 'validate', title: 'চূড়ান্ত যাচাই (মোশন/সমলয়)' },
       ];
     case 'music_video':
       return [
-        { key: 'analyze_song', title: 'গান বিশ্লেষণ (দৈর্ঘ্য/মুড)' },
-        { key: 'brief', title: 'সৃজনশীল ব্রিফ ও শট-তালিকা' },
-        { key: 'characters', title: 'চরিত্র রেফারেন্স' },
-        { key: 'storyboard', title: 'স্টোরিবোর্ড ফ্রেম তৈরি' },
-        { key: 'motion', title: 'মোশন ক্লিপ তৈরি' },
-        { key: 'assemble', title: 'গানের সাথে টাইমলাইন সাজানো' },
-        { key: 'validate', title: 'চূড়ান্ত রেন্ডার ও যাচাই' },
+        { key: 'song_input', title: 'গান ইনপুট ও বিট-বিশ্লেষণ' },
+        { key: 'visual_plan', title: 'ভিজ্যুয়াল পরিকল্পনা (সেকশন-ভিত্তিক শট-তালিকা)' },
+        { key: 'characters', title: 'চরিত্র/পারফরম্যান্স রেফারেন্স' },
+        { key: 'generate_shots', title: 'পারফরম্যান্স ক্লিপ জেনারেশন' },
+        { key: 'timeline', title: 'বিট-মার্কারে টাইমলাইন অ্যাসেম্বলি' },
+        { key: 'final_qc', title: 'চূড়ান্ত গুণমান-যাচাই (সমলয়/দৈর্ঘ্য)' },
       ];
     case 'short_film':
       return [
-        { key: 'script_writer', title: 'চিত্রনাট্য রচনা' },
-        { key: 'scene_breakdown', title: 'দৃশ্য ও শট বিভাজন' },
+        { key: 'script_breakdown', title: 'চিত্রনাট্য ও দৃশ্য-বিভাজন (৮-স্তর §৭)' },
         { key: 'character_bible', title: 'চরিত্র বাইবেল ও পোর্ট্রেট' },
-        { key: 'storyboard', title: 'স্টোরিবোর্ড তৈরি' },
-        { key: 'speech', title: 'সংলাপ/ভয়েসওভার তৈরি' },
-        { key: 'motion', title: 'শট-প্রতি মোশন ক্লিপ' },
-        { key: 'continuity', title: 'ধারাবাহিকতা পরীক্ষা' },
-        { key: 'assemble', title: 'টাইমলাইন অ্যাসেম্বলি ও সাউন্ড ডিজাইন' },
-        { key: 'validate', title: 'চূড়ান্ত রেন্ডার ও যাচাই' },
+        { key: 'acting_plan', title: 'অভিনয়-পরিকল্পনা (প্রতি শটে)' },
+        { key: 'speech', title: 'সংলাপ তৈরি (ভাষা-নিয়ন্ত্রক)' },
+        { key: 'generate_shots', title: 'AI ভিডিও-শট জেনারেশন' },
+        { key: 'sound_design', title: 'সাউন্ড ডিজাইন (A1–A5 স্তর)' },
+        { key: 'continuity', title: 'ধারাবাহিকতা পরীক্ষা (VLM)' },
+        { key: 'final_mix', title: 'টাইমলাইন, সাবটাইটেল ও ফাইনাল মিক্স' },
       ];
   }
 }
@@ -287,14 +292,47 @@ export function validateSpec(raw: unknown): SpecValidationResult {
 
   // --- flags/enums ---
   if (typeof input.subtitles === 'boolean') spec.subtitles = input.subtitles;
-  if (typeof input.voice === 'string' && ['tongtong', 'jam', 'kazi'].includes(input.voice)) {
+  if (typeof input.voice === 'string' && ['tongtong', 'jam', 'kazi', 'chuichui', 'xiaochen', 'douji', 'luodo'].includes(input.voice)) {
     spec.voice = input.voice as CreativeJobSpec['voice'];
   }
-  if (typeof input.audioOperation === 'string' && ['voiceover', 'music_plan', 'process'].includes(input.audioOperation)) {
+  if (typeof input.audioOperation === 'string' && ['voiceover', 'music_plan', 'process', 'instrumental'].includes(input.audioOperation)) {
     spec.audioOperation = input.audioOperation as CreativeJobSpec['audioOperation'];
   }
   if (typeof input.cameraMove === 'string' && ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'].includes(input.cameraMove)) {
     spec.cameraMove = input.cameraMove as CreativeJobSpec['cameraMove'];
+  }
+
+  // --- নতুন মাস্টার প্ল্যানের ফিল্ডগুলো ---
+  if (input.language === 'bn' || input.language === 'en') {
+    spec.language = input.language;
+  } else if (input.language != null) {
+    adjustments.push({ field: 'language', from: String(input.language), to: 'bn', reason: 'শুধু bn/en সমর্থিত — ডিফল্ট বাংলা' });
+    spec.language = 'bn';
+  }
+  if (input.videoEngine === 'ai_diffusion' || input.videoEngine === 'cinematic_motion') {
+    spec.videoEngine = input.videoEngine;
+  }
+  if (['short_film', 'dialogue_scene', 'trailer', 'story'].includes(String(input.filmMode))) {
+    spec.filmMode = input.filmMode as CreativeJobSpec['filmMode'];
+  }
+  if (typeof input.mood === 'string' && SUPPORTED_MOODS.includes(input.mood as any)) {
+    spec.mood = input.mood as CreativeJobSpec['mood'];
+  } else if (typeof input.mood === 'string' && input.mood.trim()) {
+    spec.mood = input.mood.trim().slice(0, 40); // অ-তালিকাভুক্ত মুড-লেবেল
+  }
+  if (typeof input.genre === 'string' && input.genre.trim()) spec.genre = input.genre.trim().slice(0, 60);
+  if (input.tempoBpm != null) {
+    const bpm = Math.round(Number(input.tempoBpm));
+    if (Number.isFinite(bpm) && bpm >= 60 && bpm <= 170) {
+      spec.tempoBpm = bpm;
+    } else {
+      const clamped = Math.max(60, Math.min(170, Number.isFinite(bpm) ? bpm : 100));
+      adjustments.push({ field: 'tempoBpm', from: String(input.tempoBpm), to: String(clamped), reason: 'সমর্থিত সীমা ৬০–১৭০ BPM' });
+      spec.tempoBpm = clamped;
+    }
+  }
+  if (input.musicSource === 'procedural' || input.musicSource === 'uploaded_song' || input.musicSource === 'none') {
+    spec.musicSource = input.musicSource;
   }
 
   // --- resolution ---
@@ -343,21 +381,43 @@ export function validateSpec(raw: unknown): SpecValidationResult {
     if (!spec.aspect) spec.aspect = type === 'short_film' ? '16:9' : '9:16';
     if (!spec.fps) spec.fps = type === 'short_film' ? 24 : 30;
     if (!spec.sound) spec.sound = type === 'music_video' ? 'uploaded_song' : type === 'short_film' ? 'narration' : 'none';
+    if (!spec.videoEngine) spec.videoEngine = 'ai_diffusion';
+    if (!spec.language) spec.language = 'bn';
+    if (type === 'short_film' && !spec.filmMode) spec.filmMode = 'short_film';
   }
   if (type === 'image' && !spec.aspect) spec.aspect = '1:1';
   if (type === 'audio' && !spec.audioOperation) spec.audioOperation = 'voiceover';
+  if (type === 'audio' && !spec.language) spec.language = 'bn';
 
-  // মিউজিক ভিডিও নীতি: গান আবশ্যক (সংগীত-সংশ্লেষণ মডেল লাইসেন্স-গেটেড)
-  if (type === 'music_video' && !spec.songArtifactId) {
-    if (spec.sound === 'uploaded_song') {
-      spec.sound = 'none';
-      notes.push('আপলোড করা গান পাওয়া যায়নি — ভিডিওটি নীরব থাকবে; চাইলে গানের অডিও আপলোড করে আবার চালাও।');
+  // মিউজিক ভিডিওর গান-নীতি (§৬ + §৩): আপলোড না থাকলে প্রসিডিউরাল ইনস্ট্রুমেন্টাল
+  if (type === 'music_video') {
+    if (spec.songArtifactId) {
+      spec.musicSource = 'uploaded_song';
+    } else if (spec.musicSource !== 'none') {
+      spec.musicSource = 'procedural';
+      notes.push(
+        'আপলোড করা গান নেই — প্রসিডিউরাল ইনস্ট্রুমেন্টাল (পরীক্ষামূলক, নিউরাল মিউজিক-মডেল নয়) তৈরি হবে; নিজের গান আপলোড করলে সেটিই ব্যবহৃত হবে।'
+      );
     }
   }
 
-  // সততার নোট (§৬ — অতিরঞ্জিত প্রতিশ্রুতি নয়)
+  // সততার নোট (§৪, §৫ — ইঞ্জিন-সচেতন)
   if (type === 'motion_video' || type === 'music_video' || type === 'short_film') {
-    notes.push('ভিডিও তৈরি হয় AI স্টোরিবোর্ড + সিনেম্যাটিক ক্যামেরা-মোশন পাইপলাইনে (ডিফিউশন ভিডিও-মডেল নয়)।');
+    if (spec.videoEngine === 'cinematic_motion') {
+      notes.push(
+        'cinematic_motion ইঞ্জিন: AI স্টোরিবোর্ড + ক্যামেরা-মোশন পাইপলাইন — প্রকৃত ডিফিউশন ভিডিও নয় (সৎ লেবেল)।'
+      );
+    } else {
+      notes.push(
+        'প্রকৃত AI ভিডিও: CogVideoX-3 ডিফিউশন মডেল। প্রতিটি শটে ~২–৪ মিনিট জেনারেশন-সময় লাগে; শট-সংখ্যা সীমিত।'
+      );
+    }
+    notes.push('লিপ-সিঙ্ক মডেল নেই — চরিত্রের মুখের নড়াচড়ার দাবি করা হয় না (§৫ সৎ-অবস্থা)।');
+  }
+  if (spec.language === 'bn') {
+    notes.push(
+      'বাংলা কণ্ঠ: কোনো TTS কণ্ঠই বাংলা-প্রশিক্ষিত নয় — যাচাই-রায় "সতর্কতা" হবে; অডিও প্রিভিউ শুনে নিশ্চিত করুন (§২)।'
+    );
   }
   if (spec.quality === 'high' && (type === 'music_video' || type === 'short_film')) {
     notes.push("'high' মানে বেশি সময় লাগবে — দ্রুত দেখতে চাইলে 'draft' ব্যবহার করো।");

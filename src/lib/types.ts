@@ -72,6 +72,20 @@ export const TOOL_CATALOG: ToolInfo[] = [
     category: 'audio',
   },
   {
+    name: 'speech_synthesis',
+    title: 'ভাষা-নিশ্চিত কণ্ঠ (যাচাইসহ)',
+    description: 'ভাষা শনাক্ত করে সঠিক কণ্ঠে TTS + ASR ব্যাক-চেক দিয়ে যাচাই করে',
+    icon: 'Languages',
+    category: 'audio',
+  },
+  {
+    name: 'analyze_audio',
+    title: 'অডিও বিশ্লেষণ',
+    description: 'গান/অডিওর বিট-মার্কার, এনার্জি-বিভাগ ও টেম্পো বের করে',
+    icon: 'AudioWaveform',
+    category: 'audio_studio',
+  },
+  {
     name: 'transcribe_audio',
     title: 'অডিও লিপিবদ্ধকরণ',
     description: 'অডিও শুনে লেখিত রূপে রূপান্তর করে',
@@ -176,7 +190,7 @@ export const TOOL_CATALOG: ToolInfo[] = [
   {
     name: 'generate_instrumental',
     title: 'ইনস্ট্রুমেন্টাল (পরীক্ষামূলক)',
-    description: 'সংগীত-সংশ্লেষণ মডেল — লাইসেন্স-নীতির কারণে এখন অবরুদ্ধ',
+    description: 'মুড/টেম্পো-সচেতন প্রসিডিউরাল সংগীত-সংশ্লেষণ + বিট-মার্কার',
     icon: 'Piano',
     category: 'audio_studio',
   },
@@ -233,9 +247,16 @@ export const TOOL_CATALOG: ToolInfo[] = [
   },
   {
     name: 'generate_video',
-    title: 'মোশন ভিডিও তৈরি',
-    description: 'আইডিয়া থেকে স্টোরিবোর্ড + সিনেম্যাটিক মোশন দিয়ে ছোট ভিডিও বানায়',
+    title: 'রিয়েল AI ভিডিও',
+    description: 'CogVideoX-3 ডিফিউশন মডেলে লেখা থেকে প্রকৃত চলমান দৃশ্য',
     icon: 'Film',
+    category: 'video_studio',
+  },
+  {
+    name: 'image_to_video',
+    title: 'ছবি → রিয়েল AI ভিডিও',
+    description: 'রেফারেন্স ছবি থেকে CogVideoX-3 দিয়ে চলমান দৃশ্য তৈরি',
+    icon: 'ImagePlay',
     category: 'video_studio',
   },
   {
@@ -324,6 +345,8 @@ export interface ArtifactMeta {
   size: number; // bytes (0 if external)
   url: string; // always /api/artifacts/{id}/file (redirects if external)
   external: boolean; // true → url redirects to a remote image
+  /** মিডিয়া-মেটাডেটা (যাচাই-রায়, ইঞ্জিন-লেবেল, বিট-মার্কার ইত্যাদি) — §২.৩ প্রিভিউ-কার্ডের জন্য */
+  meta?: Record<string, unknown>;
 }
 
 export interface AttachmentView {
@@ -433,8 +456,13 @@ export type QualityPreset = 'draft' | 'standard' | 'high';
 export type AspectRatio = '1:1' | '4:5' | '3:2' | '16:9' | '9:16';
 export type OutputResolution = '720p' | '1080p';
 export type VideoSound = 'none' | 'ambient' | 'narration' | 'uploaded_song';
-export type VoicePreset = 'tongtong' | 'jam' | 'kazi';
+export type VoicePreset = 'tongtong' | 'jam' | 'kazi' | 'chuichui' | 'xiaochen' | 'douji' | 'luodo';
 export type CameraMove = 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'static';
+export type SpeechLanguage = 'bn' | 'en';
+export type VideoEngine = 'ai_diffusion' | 'cinematic_motion';
+export type FilmMode = 'short_film' | 'dialogue_scene' | 'trailer' | 'story';
+export type MusicMood = 'sad' | 'romantic' | 'joyful' | 'suspense' | 'action' | 'peaceful';
+export type MusicSource = 'procedural' | 'uploaded_song' | 'none';
 
 export interface CreativeJobSpec {
   type: ProductionType;
@@ -447,7 +475,7 @@ export interface CreativeJobSpec {
   aspect?: AspectRatio;
   format?: 'png' | 'jpeg' | 'webp';
   // --- audio ---
-  audioOperation?: 'voiceover' | 'music_plan' | 'process';
+  audioOperation?: 'voiceover' | 'music_plan' | 'process' | 'instrumental';
   text?: string; // ভয়েসওভার স্ক্রিপ্ট / গানের কথা
   voice?: VoicePreset;
   sourceAudioArtifactIds?: string[]; // প্রসেসিং-এর ইনপুট
@@ -462,6 +490,14 @@ export interface CreativeJobSpec {
   sourceImageArtifactId?: string; // image-to-video উৎস
   cameraMove?: CameraMove;
   style?: string; // ভিজ্যুয়াল স্টাইল
+  // --- নতুন মাস্টার প্ল্যান §২,৪,৩,১০ ---
+  language?: SpeechLanguage; // সংলাপ/ভয়েসওভারের ভাষা (ডিফল্ট bn)
+  videoEngine?: VideoEngine; // ai_diffusion (প্রকৃত CogVideoX-3) | cinematic_motion (স্টোরিবোর্ড+ক্যামেরা-মোশন)
+  filmMode?: FilmMode; // শর্টফিলম | সংলাপ-দৃশ্য | ট্রেইলার | গল্প
+  mood?: MusicMood | string; // আবেগ (স্কোর/মিউজিক নির্বাচনে)
+  genre?: string; // গান/ভিডিওর ধরন
+  tempoBpm?: number; // ৬০–১৭০
+  musicSource?: MusicSource; // মিউজিক ভিডিওর গান: আপলোড না করলে প্রসিডিউরাল ইনস্ট্রুমেন্টাল
 }
 
 export interface SpecAdjustment {
@@ -598,4 +634,4 @@ export interface ModelEntryView {
 // UI view switching (শেল)
 // ------------------------------------------------------------
 
-export type AppView = 'chat' | 'gallery' | 'productions' | 'registry' | 'guide';
+export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'guide';

@@ -1,31 +1,43 @@
 'use client';
 
 // ============================================================
-// RegistryView — Model & License Registry (মাস্টার প্ল্যান §৮)।
+// RegistryView — Model & License Registry (মাস্টার প্ল্যান §৮, §৯.১)।
+// - শীর্ষে "সিস্টেম" প্যানেল: হার্ডওয়্যার-চিপস + টুল-স্বাস্থ্য +
+//   "পুনঃচেক" বোতাম (POST /api/system — use-system হুক, §৯)
 // - অবস্থা-ভিত্তিক ভাঁজযোগ্য সেকশন: চালু/পরীক্ষামূলক/অবরুদ্ধ/পরিকল্পিত
-// - শীর্ষ সারাংশ-স্ট্রিপ + নীতি-নোট, নাম/লাইসেন্স অনুসন্ধান
-// - প্রতি এন্ট্রিতে: ক্যাটাগরি ও বাণিজ্যিক-ব্যবহার ব্যাজ, সক্ষমতা-চিপ,
-//   হার্ডওয়্যার-নোট ও টীকা
+// - প্রতি এন্ট্রিতে §৯.১ মেটাডেটা: task_type, supported_languages,
+//   requires_gpu, max_duration_sec, fallback_tool, generation_time
+//   — বাংলা লেবেলসহ সারি; বাকি capability-রা চিপ হিসেবে।
 // ============================================================
 
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  BadgeCheck,
   ChevronDown,
+  Clock3,
   Cpu,
   ExternalLink,
+  HardDrive,
   Info,
+  Loader2,
+  MemoryStick,
+  MonitorCog,
   RefreshCcw,
   Search,
   ShieldCheck,
+  Wrench,
 } from 'lucide-react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-import { toBnDigits } from '@/components/chat/bn-format';
+import { relativeTimeBn, toBnDigits } from '@/components/chat/bn-format';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { RecheckError, useRecheckSystem, useSystemInfo, type SystemToolStatus } from '@/hooks/use-system';
+import { toast } from '@/hooks/use-toast';
 import type { ModelEntryView, ModelStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -93,12 +105,111 @@ function stringifyCapability(value: unknown): string {
 }
 
 // ------------------------------------------------------------
+// §৯.১ মেটাডেটা-কী — বাংলা লেবেলসহ সারি হিসেবে রেন্ডার
+// ------------------------------------------------------------
+
+/** supported_languages অবজেক্টের কোড → বাংলা নাম */
+const LANG_CODE_LABEL: Record<string, string> = {
+  bn: 'বাংলা',
+  en: 'ইংরেজি',
+  prompt: 'প্রম্পট',
+  instrumental: 'ইনস্ট্রুমেন্টাল',
+};
+
+interface HighlightedCap {
+  key: string;
+  render: () => { label: string; value: string; tone?: 'ok' | 'warn' };
+}
+
+/** চেনা capability-কীগুলো — বাংলা লেবেলে সুন্দরভাবে */
+function buildHighlightedCaps(caps: Record<string, unknown>): HighlightedCap[] {
+  const out: HighlightedCap[] = [];
+
+  if (typeof caps.task_type === 'string' && caps.task_type) {
+    out.push({
+      key: 'task_type',
+      render: () => ({ label: 'কাজের ধরন', value: caps.task_type as string }),
+    });
+  }
+
+  const langs = caps.supported_languages;
+  if (langs && typeof langs === 'object' && !Array.isArray(langs)) {
+    for (const [code, val] of Object.entries(langs as Record<string, unknown>)) {
+      out.push({
+        key: `lang-${code}`,
+        render: () => ({
+          label: LANG_CODE_LABEL[code] ?? code,
+          value: String(val),
+          tone: String(val).includes('দুর্বল') || String(val).includes('আংশিক') ? 'warn' : 'ok',
+        }),
+      });
+    }
+  } else if (typeof langs === 'string' && langs) {
+    out.push({
+      key: 'supported_languages',
+      render: () => ({ label: 'ভাষা', value: langs }),
+    });
+  }
+
+  if (typeof caps.requires_gpu === 'boolean') {
+    out.push({
+      key: 'requires_gpu',
+      render: () => ({
+        label: 'GPU',
+        value: caps.requires_gpu ? 'প্রয়োজন' : 'লাগে না',
+        tone: caps.requires_gpu ? 'warn' : 'ok',
+      }),
+    });
+  }
+
+  if (typeof caps.max_duration_sec === 'number') {
+    out.push({
+      key: 'max_duration_sec',
+      render: () => ({ label: 'সর্বোচ্চ দৈর্ঘ্য', value: `${toBnDigits(caps.max_duration_sec as number)} সেকেন্ড` }),
+    });
+  }
+
+  if (typeof caps.generation_time === 'string' && caps.generation_time) {
+    out.push({
+      key: 'generation_time',
+      render: () => ({ label: 'উৎপাদন-সময়', value: caps.generation_time as string }),
+    });
+  }
+
+  if (typeof caps.fallback_tool === 'string' && caps.fallback_tool) {
+    out.push({
+      key: 'fallback_tool',
+      render: () => ({ label: 'বিকল্প-টুল', value: caps.fallback_tool as string }),
+    });
+  }
+
+  return out;
+}
+
+const HIGHLIGHTED_KEYS = new Set([
+  'task_type',
+  'supported_languages',
+  'requires_gpu',
+  'max_duration_sec',
+  'generation_time',
+  'fallback_tool',
+]);
+
+// ------------------------------------------------------------
 // একটি এন্ট্রি কার্ড
 // ------------------------------------------------------------
 
 function ModelEntryCard({ entry }: { entry: ModelEntryView }) {
   const commercial = COMMERCIAL_META[entry.commercialUse] ?? COMMERCIAL_META.unknown;
-  const capabilities = Object.entries(entry.capabilities ?? {});
+
+  const highlighted = useMemo(
+    () => buildHighlightedCaps(entry.capabilities ?? {}),
+    [entry.capabilities],
+  );
+  const restCaps = useMemo(
+    () => Object.entries(entry.capabilities ?? {}).filter(([k]) => !HIGHLIGHTED_KEYS.has(k)),
+    [entry.capabilities],
+  );
 
   return (
     <li className="rounded-xl border bg-card px-4 py-3 shadow-sm">
@@ -130,9 +241,31 @@ function ModelEntryCard({ entry }: { entry: ModelEntryView }) {
         )}
       </p>
 
-      {capabilities.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5" aria-label="সক্ষমতা">
-          {capabilities.map(([k, v]) => {
+      {/* §৯.১ মেটাডেটা — বাংলা লেবেলসহ সারি */}
+      {highlighted.length > 0 && (
+        <dl className="mt-2 space-y-1" aria-label="মডেল-মেটাডেটা">
+          {highlighted.map(cap => {
+            const { label, value, tone } = cap.render();
+            return (
+              <div key={cap.key} className="flex items-start gap-1.5 text-xs leading-relaxed">
+                <dt className="shrink-0 text-muted-foreground">{label}:</dt>
+                <dd
+                  className={cn(
+                    'min-w-0 flex-1',
+                    tone === 'warn' ? 'text-amber-700 dark:text-amber-400' : 'text-foreground/90',
+                  )}
+                >
+                  {value}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      )}
+
+      {restCaps.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5" aria-label="অন্যান্য সক্ষমতা">
+          {restCaps.map(([k, v]) => {
             const full = `${k}: ${Array.isArray(v) ? v.map(String).join(', ') : String(v)}`;
             return (
               <span
@@ -160,6 +293,202 @@ function ModelEntryCard({ entry }: { entry: ModelEntryView }) {
         </p>
       )}
     </li>
+  );
+}
+
+// ------------------------------------------------------------
+// সিস্টেম প্যানেল (§৯) — হার্ডওয়্যার + টুল-স্বাস্থ্য + পুনঃচেক
+// ------------------------------------------------------------
+
+const TOOL_STATUS_META: Record<SystemToolStatus, { label: string; dot: string; badge: string }> = {
+  ok: {
+    label: 'সচল',
+    dot: 'bg-emerald-500',
+    badge: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+  },
+  degraded: {
+    label: 'অবনত',
+    dot: 'bg-amber-500',
+    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  },
+  down: {
+    label: 'বন্ধ',
+    dot: 'bg-red-500',
+    badge: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
+  },
+  unknown: {
+    label: 'অজানা',
+    dot: 'bg-muted-foreground/50',
+    badge: 'border-muted bg-muted text-muted-foreground',
+  },
+};
+
+function HardwareChip({ icon: Icon, label, value }: { icon: typeof Cpu; label: string; value: string }) {
+  return (
+    <span
+      className="inline-flex min-h-9 items-center gap-1.5 rounded-full border bg-card px-3 text-xs shadow-sm"
+      title={`${label}: ${value}`}
+    >
+      <Icon className="size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+      <span className="text-muted-foreground">{label}:</span>
+      <span className="max-w-44 truncate font-medium">{value}</span>
+    </span>
+  );
+}
+
+function SystemPanel() {
+  const { data, isLoading, isError, refetch, isFetching } = useSystemInfo();
+  const recheck = useRecheckSystem();
+
+  const handleRecheck = () => {
+    recheck.mutate(undefined, {
+      onError: (error) => {
+        if (error instanceof RecheckError && error.status === 429) {
+          toast({
+            title: 'রেট-সীমা — কিছুক্ষণ পরে চেষ্টা করুন',
+            description: 'স্বাস্থ্য-চেক খরচবহুল, তাই ঘন ঘন চালানো সীমিত।',
+            variant: 'destructive',
+          });
+        } else {
+          toast({ title: 'পুনঃচেক ব্যর্থ হয়েছে', variant: 'destructive' });
+        }
+      },
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="rounded-xl border bg-card px-4 py-4 shadow-sm">
+        <p className="mb-3 flex items-center gap-2 text-sm font-semibold">
+          <MonitorCog className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+          সিস্টেম
+        </p>
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-3/4" />
+          <Skeleton className="h-8 w-1/2" />
+        </div>
+      </div>
+    );
+  }
+
+  if (isError || !data) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <AlertCircle className="size-4 shrink-0 text-red-500" aria-hidden="true" />
+          সিস্টেম-তথ্য লোড করা যায়নি।
+        </p>
+        <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={() => void refetch()}>
+          <RefreshCcw className="size-4" aria-hidden="true" />
+          আবার
+        </Button>
+      </div>
+    );
+  }
+
+  const hw = data.hardware;
+
+  return (
+    <section className="rounded-xl border bg-card px-4 py-4 shadow-sm" aria-labelledby="system-panel-title">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 id="system-panel-title" className="flex items-center gap-2 text-sm font-semibold">
+          <MonitorCog className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+          সিস্টেম
+          <span className="text-xs font-normal text-muted-foreground">
+            (শেষ চেক: {relativeTimeBn(data.checkedAt)})
+          </span>
+        </h2>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="min-h-11 border-emerald-600/40 text-emerald-700 hover:bg-emerald-600/10 dark:text-emerald-400"
+          onClick={handleRecheck}
+          disabled={recheck.isPending || isFetching}
+        >
+          {recheck.isPending ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCcw className="size-4" aria-hidden="true" />
+          )}
+          {recheck.isPending ? 'চেক হচ্ছে… (মাইক্রো-কল)' : 'পুনঃচেক'}
+        </Button>
+      </div>
+
+      {/* হার্ডওয়্যার-চিপস */}
+      <div className="flex flex-wrap gap-2" aria-label="হার্ডওয়্যার">
+        <HardwareChip icon={Cpu} label="CPU" value={`${toBnDigits(hw.cpuCores)} কোর`} />
+        <HardwareChip icon={MemoryStick} label="RAM" value={`${toBnDigits(hw.totalMemGb)}GB মোট · ${toBnDigits(hw.freeMemGb)}GB খালি`} />
+        <HardwareChip icon={HardDrive} label="ডিস্ক" value={`${toBnDigits(hw.diskFreeGb)}GB খালি / ${toBnDigits(hw.diskTotalGb)}GB`} />
+        <HardwareChip icon={Cpu} label="GPU" value={hw.gpu.present ? 'আছে' : hw.gpu.note ?? 'নেই'} />
+        <HardwareChip icon={Wrench} label="FFmpeg" value={hw.ffmpeg.split('-')[0]} />
+        <HardwareChip icon={Info} label="Node" value={hw.nodeVersion} />
+      </div>
+
+      {/* টুল-স্বাস্থ্য তালিকা */}
+      <ul className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1" aria-label="টুল-স্বাস্থ্য">
+        {data.tools.map((tool) => {
+          const meta = TOOL_STATUS_META[tool.status] ?? TOOL_STATUS_META.unknown;
+          return (
+            <li
+              key={tool.key}
+              className="flex items-start gap-2.5 rounded-lg border bg-muted/30 px-3 py-2"
+            >
+              <span className={cn('mt-1.5 size-2 shrink-0 rounded-full', meta.dot)} aria-hidden="true" />
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-medium">
+                  {tool.label}
+                  <Badge variant="outline" className={cn('h-auto px-1.5 py-0 text-[10px]', meta.badge)}>
+                    {meta.label}
+                  </Badge>
+                  {typeof tool.latencyMs === 'number' && tool.latencyMs > 0 && (
+                    <span className="inline-flex items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground">
+                      <Clock3 className="size-3" aria-hidden="true" />
+                      {toBnDigits(tool.latencyMs)} মি.সে.
+                    </span>
+                  )}
+                  {tool.checkedAt && (
+                    <span className="text-[10px] text-muted-foreground/80">
+                      ({relativeTimeBn(tool.checkedAt)})
+                    </span>
+                  )}
+                </span>
+                {tool.note && (
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+                    {tool.note}
+                  </span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+
+      {data.note && (
+        <p className="mt-2.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          {data.note}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** লোকাল QueryClient-প্রভাইডার — use-system-এর useQuery-এর জন্য */
+function SystemPanelWithProvider() {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: { staleTime: 5 * 60 * 1000, retry: 1, refetchOnWindowFocus: false },
+        },
+      }),
+  );
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <SystemPanel />
+    </QueryClientProvider>
   );
 }
 
@@ -237,6 +566,9 @@ export function RegistryView() {
         <p className="text-sm text-muted-foreground">কোন মডেল কী লাইসেন্সে চালু — স্বচ্ছতার সর্বজনীন তালিকা</p>
       </header>
 
+      {/* সিস্টেম-প্যানেল (§৯) */}
+      <SystemPanelWithProvider />
+
       {/* সারাংশ-স্ট্রিপ + নীতি-নোট */}
       <div className="rounded-xl border border-emerald-600/30 bg-emerald-600/5 px-4 py-3">
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium" aria-label="অবস্থা অনুযায়ী গণনা">
@@ -257,7 +589,7 @@ export function RegistryView() {
           </span>
         </p>
         <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
-          <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+          <BadgeCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
           অযাচাইকৃত বা নন-কমার্শিয়াল মডেল উৎপাদনে ব্যবহৃত হয় না।
         </p>
       </div>

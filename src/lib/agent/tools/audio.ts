@@ -24,6 +24,21 @@ import {
   makeTempDir,
   cleanupWorkingDir,
 } from '@/lib/media/ffmpeg';
+import {
+  synthesizeInstrumental,
+  validateInstrumental,
+  analyzeAudioEnergy,
+  moodLabel,
+  type MusicMood,
+} from '../audio/music_engine';
+import {
+  synthesizeVerifiedSpeech,
+  detectLanguage,
+  LANGUAGE_PROFILES,
+  verdictLabel,
+  type SpeechLanguage,
+} from '../audio/language_controller';
+import type { TtsVoice, TTS_VOICES } from '../sdk-helpers';
 
 // ------------------------------------------------------------
 // শেয়ার্ড টেক্সট-হেল্পার (পাইপলাইনেও ব্যবহৃত)
@@ -375,30 +390,189 @@ const planMusicSpec: ToolSpec<{
 };
 
 // ------------------------------------------------------------
-// ২–৪. লাইসেন্স-নীতিতে অবরুদ্ধ মডেল-টুল (সৎ structured error)
+// speech_synthesis — ভাষা-নিশ্চিত কণ্ঠ (নতুন মাস্টার প্ল্যান §২)
+// সম্পূর্ণ পাইপলাইন: ভাষা-শনাক্তকরণ → কণ্ঠ-নির্বাচন → TTS →
+// দৈর্ঘ্য/স্তর-যাচাই → ASR ব্যাক-চেক → রায় (pass/warn/fail)
 // ------------------------------------------------------------
 
-const GATE_INSTRUMENTAL =
-  'ইনস্ট্রুমেন্টাল সংগীত-সংশ্লেষণ মডেল (MusicGen) এখন লাইসেন্স-নীতির কারণে চালু নেই (ওয়েট-লাইসেন্স non-commercial)। বিকল্প: plan_music দিয়ে গানের কাঠামো-পরিকল্পনা, বা নিজের গান আপলোড করে মিউজিক ভিডিও।';
-const GATE_SINGING =
-  'গান গাওয়ার (singing) মডেল এখন লাইসেন্স-নীতি যাচাই না হওয়ায় চালু নেই (license unverified)। বিকল্প: plan_music দিয়ে গানের কাঠামো ও লিরিক্স-পরিকল্পনা, অথবা text_to_speech দিয়ে আবৃত্তিধর্মী কণ্ঠ।';
-const GATE_STEMS =
-  'স্টেম-পৃথকীকরণ মডেল (Demucs) এই সার্ভারে স্থাপন করা নেই — এখন অবরুদ্ধ। বিকল্প: mix_audio বা process_audio দিয়ে উপলব্ধ ট্র্যাক মিক্স/প্রসেস করা যায়।';
-
-const generateInstrumentalSpec: ToolSpec<{ prompt: string; durationSec?: number }> = {
-  name: 'generate_instrumental',
+const speechSynthesisSpec: ToolSpec<{
+  script: string;
+  language?: 'bn' | 'en';
+  voice?: string;
+  speed?: number;
+  verify?: boolean;
+}> = {
+  name: 'speech_synthesis',
   parameters: z.object({
-    prompt: z.string().min(1).max(2000),
-    durationSec: z.number().int().min(5).max(300).optional(),
+    script: z.string().min(1).max(2000),
+    language: z.enum(['bn', 'en']).optional(),
+    voice: z.string().max(20).optional(),
+    speed: z.number().min(0.5).max(2).optional(),
+    verify: z.boolean().optional().default(true),
   }),
-  timeoutMs: 5_000,
+  timeoutMs: 300_000,
   usage:
-    'generate_instrumental — ইনস্ট্রুমেন্টাল সংগীত-সংশ্লেষণ (পরীক্ষামূলক, এখন অবরুদ্ধ — MusicGen-এর ওয়েট-লাইসেন্স non-commercial)। কল করলে ব্যাখ্যাসহ ব্যর্থ হবে; গান দরকার হলে plan_music ব্যবহার করো। arguments: {"prompt": string, "durationSec"?: number}',
-  inputSummary: i => `ইনস্ট্রুমেন্টাল (অবরুদ্ধ): ${i.prompt.length > 60 ? i.prompt.slice(0, 59) + '…' : i.prompt}`,
-  execute: async () => {
-    throw new Error(GATE_INSTRUMENTAL);
+    'speech_synthesis — ভাষা-নিশ্চিত কণ্ঠ তৈরি (§২ ভাষা-নিয়ন্ত্রক): স্ক্রিপ্টের ভাষা শনাক্ত করে সেই ভাষার উপযোগী কণ্ঠ বাছে, TTS চালায়, তারপর ASR ব্যাক-চেক ও দৈর্ঘ্য-যাচাই করে রায় দেয় (যাচাইকৃত/সতর্কতা/ব্যর্থ)। বাংলা লেখা বা ইংরেজি লেখা — দুটোই চলে; ভাষা মিললে স্পষ্ট ত্রুটি দেয়। ট্রান্সক্রিপ্ট ও রায়-নোটসহ প্রিভিউ-মেটাডেটা ফেরত আসে। arguments: {"script": string (১–২০০০ অক্ষর), "language"?: "bn"|"en" (না দিলে স্বয়ংক্রিয় শনাক্ত), "voice"?: string (bn: jam/douji, en: jam/tongtong/kazi/xiaochen), "speed"?: number (০.৫–২), "verify"?: boolean (ডিফল্ট true)}',
+  inputSummary: i => {
+    const det = detectLanguage(i.script);
+    const lang = i.language ?? det.language;
+    return `ভাষা-নিশ্চিত কণ্ঠ: ${lang === 'bn' ? 'বাংলা' : lang === 'en' ? 'ইংরেজি' : 'অজানা ভাষা'} — ${i.script.length > 60 ? i.script.slice(0, 59) + '…' : i.script}`;
+  },
+  execute: async (input, ctx) => {
+    // ভাষা নির্ধারণ: নির্বাচিত না থাকলে স্ক্রিপ্ট থেকে শনাক্ত
+    let language: SpeechLanguage;
+    if (input.language === 'bn' || input.language === 'en') {
+      language = input.language;
+    } else {
+      const det = detectLanguage(input.script);
+      if (det.language === 'bn' || det.language === 'en') {
+        language = det.language;
+      } else if (det.language === 'mixed') {
+        language = det.bnRatio >= det.latinRatio ? 'bn' : 'en';
+      } else {
+        throw new Error('স্ক্রিপ্টের ভাষা শনাক্ত করা যায়নি — "language" যুক্তি দিয়ে bn বা en নির্দিষ্ট করো।');
+      }
+    }
+    const result = await synthesizeVerifiedSpeech(
+      {
+        task: 'speech',
+        language,
+        script: input.script,
+        voiceId: (input.voice as TtsVoice) ?? LANGUAGE_PROFILES[language].voices[0],
+        outputFormat: 'wav',
+        sampleRate: 24000,
+        speed: input.speed,
+      },
+      { verify: input.verify !== false }
+    );
+    const { storagePath } = await saveArtifactFile(result.buffer, result.ext);
+    const meta = await createToolArtifact({
+      conversationId: ctx.conversationId,
+      runId: ctx.runId,
+      kind: 'audio',
+      mimeType: result.mimeType,
+      fileName: `speech-${language}-${result.verification.voice}.${result.ext}`,
+      size: result.buffer.length,
+      storagePath,
+      metaJson: {
+        verification: result.verification,
+        languageLabel: language === 'bn' ? 'বাংলা' : 'ইংরেজি',
+        voice: result.verification.voice,
+        audioType: 'Speech',
+      },
+    });
+    const v = result.verification;
+    const notesBn = v.notes.length > 0 ? ` নোট: ${v.notes.join(' ')}` : '';
+    return {
+      summary: `${language === 'bn' ? 'বাংলা' : 'ইংরেজি'} কণ্ঠ তৈরি (কণ্ঠ=${result.verification.voice}, দৈর্ঘ্য=${toBn(v.durationSec)} সে., রায়=${verdictLabel(v.verdict)}${v.detectedLanguage && v.detectedLanguage !== 'silence' ? `, ASR-ভাষা=${v.detectedLanguage}` : ''}).${notesBn}`,
+      resultJson: JSON.stringify({
+        artifactId: meta.id,
+        language,
+        voice: v.voice,
+        audioType: 'Speech',
+        verdict: v.verdict,
+        transcript: v.transcript.slice(0, 600),
+        detectedLanguage: v.detectedLanguage,
+        similarity: v.similarity,
+        durationSec: v.durationSec,
+        expectedSec: v.expectedSec,
+        notes: v.notes,
+      }).slice(0, 3000),
+      artifacts: [meta],
+    };
   },
 };
+
+// ------------------------------------------------------------
+// analyze_audio — বিট-বিশ্লেষণ ও এনার্জি-বিভাগ (নতুন মাস্টার প্ল্যান §৬.১)
+// ------------------------------------------------------------
+
+const analyzeAudioSpec: ToolSpec<{ audio: string }> = {
+  name: 'analyze_audio',
+  parameters: z.object({ audio: z.string().min(1) }),
+  timeoutMs: 120_000,
+  usage:
+    'analyze_audio — আপলোড/তৈরি করা অডিওর বিট-মার্কার, এনার্জি-বিভাগ (quiet/medium/loud) ও আনুমানিক টেম্পো (BPM) বের করে (মিউজিক ভিডিওর শট-টাইমিং পরিকল্পনায় দরকার)। সৎ নোট: এনার্জি-ভিত্তিক সরলীকৃত বিশ্লেষণ — নিখুঁত বিট-ট্র্যাকিং নয়। arguments: {"audio": string (artifact আইডি)}',
+  inputSummary: i => `অডিও বিশ্লেষণ: ${i.audio.slice(0, 14)}`,
+  execute: async input => {
+    const { path } = await artifactFilePath(input.audio);
+    const analysis = await analyzeAudioEnergy(path);
+    return {
+      summary: `অডিও বিশ্লেষণ: ${toBn(analysis.durationSec)} সে., ${toBn(analysis.beatsSec.length)}টি বিট-মার্কার, আনুমানিক ${toBn(analysis.estimatedBpm)} BPM, ${toBn(analysis.sections.length)}টি এনার্জি-বিভাগ — ${analysis.honestLabel}`,
+      resultJson: JSON.stringify(analysis).slice(0, 5000),
+    };
+  },
+};
+
+// ------------------------------------------------------------
+// ২. generate_instrumental — প্রসিডিউরাল সংগীত-সংশ্লেষণ (§৩)
+//    সৎ লেবেল: প্রকৃত অডিও, কিন্তু নিউরাল মিউজিক-মডেল নয়
+// ------------------------------------------------------------
+
+const INSTRUMENTAL_MOODS = ['sad', 'romantic', 'joyful', 'suspense', 'action', 'peaceful'] as const;
+
+const generateInstrumentalSpec: ToolSpec<{
+  mood: MusicMood;
+  durationSec?: number;
+  tempoBpm?: number;
+  genre?: string;
+}> = {
+  name: 'generate_instrumental',
+  parameters: z.object({
+    mood: z.enum(INSTRUMENTAL_MOODS),
+    durationSec: z.number().int().min(8).max(120).optional().default(30),
+    tempoBpm: z.number().int().min(60).max(170).optional(),
+    genre: z.string().max(60).optional(),
+  }),
+  timeoutMs: 240_000,
+  usage:
+    'generate_instrumental — মুড-সচেতন প্রসিডিউরাল ইনস্ট্রুমেন্টাল সংগীত তৈরি করে (সৎ লেবেল: পরীক্ষামূলক প্রসিডিউরাল সংশ্লেষণ — MusicGen/YuE-ধর্মী নিউরাল মডেল নয়)। আউটপুটে বিট-মার্কার ও সেকশন-তালিকাও থাকে (মিউজিক ভিডিওর টাইমলাইনে কাজে লাগে)। গান গাওয়া কণ্ঠ এটি তৈরি করে না। arguments: {"mood": "sad"|"romantic"|"joyful"|"suspense"|"action"|"peaceful", "durationSec"?: number (৮–১২০, ডিফল্ট ৩০), "tempoBpm"?: number (৬০–১৭০), "genre"?: string}',
+  inputSummary: i =>
+    `ইনস্ট্রুমেন্টাল: মুড=${moodLabel(i.mood)}, ${toBn(i.durationSec ?? 30)} সে.${i.tempoBpm ? `, ${toBn(i.tempoBpm)} BPM` : ''}`,
+  execute: async (input, ctx) => {
+    const result = await synthesizeInstrumental({
+      mood: input.mood,
+      durationSec: input.durationSec ?? 30,
+      tempoBpm: input.tempoBpm,
+      genre: input.genre,
+    });
+    const validation = await validateInstrumental(result.buffer, result.meta);
+    const { storagePath } = await saveArtifactFile(result.buffer, 'wav');
+    const meta = await createToolArtifact({
+      conversationId: ctx.conversationId,
+      runId: ctx.runId,
+      kind: 'audio',
+      mimeType: 'audio/wav',
+      fileName: `instrumental-${input.mood}-${result.meta.tempoBpm}bpm.wav`,
+      size: result.buffer.length,
+      storagePath,
+      metaJson: {
+        ...result.meta,
+        validation: { ok: validation.ok, issues: validation.issues },
+        honestLabel: result.meta.honestLabel,
+      },
+    });
+    return {
+      summary: `${moodLabel(input.mood)} মুডের ইনস্ট্রুমেন্টাল তৈরি (${toBn(result.meta.durationSec)} সে., ${toBn(result.meta.tempoBpm)} BPM, ${result.meta.keyLabel}) — ${result.meta.honestLabel}${validation.ok ? '' : `; যাচাই-সতর্কতা: ${validation.issues.join(', ')}`}`,
+      resultJson: JSON.stringify({
+        artifactId: meta.id,
+        ...result.meta,
+        validation,
+      }).slice(0, 4000),
+      artifacts: [meta],
+    };
+  },
+};
+
+// ------------------------------------------------------------
+// ৩–৪. লাইসেন্স-নীতিতে অবরুদ্ধ মডেল-টুল (সৎ structured error) —
+// গাওয়া-গান ও স্টেম-পৃথকীকরণ এই পরিবেশে মডেল-নেই
+// ------------------------------------------------------------
+
+const GATE_SINGING =
+  'গান গাওয়ার (singing) মডেল এখন লাইসেন্স-নীতি যাচাই না হওয়ায় চালু নেই (license unverified)। বিকল্প: plan_music দিয়ে গানের কাঠামো ও লিরিক্স-পরিকল্পনা, অথবা speech_synthesis/text_to_speech দিয়ে আবৃত্তিধর্মী কণ্ঠ (সেটি গাওয়া গান নয় — সৎ লেবেল)।';
+const GATE_STEMS =
+  'স্টেম-পৃথকীকরণ মডেল (Demucs) এই সার্ভারে স্থাপন করা নেই — এখন অবরুদ্ধ। বিকল্প: mix_audio বা process_audio দিয়ে উপলব্ধ ট্র্যাক মিক্স/প্রসেস করা যায়।';
 
 const generateSingingSpec: ToolSpec<{ lyrics: string; style?: string }> = {
   name: 'generate_singing',
@@ -867,6 +1041,8 @@ export const AUDIO_TOOLS: ToolSpec[] = [
   generateInstrumentalSpec,
   generateSingingSpec,
   separateStemsSpec,
+  speechSynthesisSpec,
+  analyzeAudioSpec,
   processAudioSpec,
   mixAudioSpec,
   validateAudioSpec,

@@ -1,7 +1,16 @@
 'use client';
 
 import { useMemo } from 'react';
-import { BookOpen, Factory, Images, MessageSquare, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import {
+  BookOpen,
+  Factory,
+  Images,
+  LayoutGrid,
+  MessageSquare,
+  Plus,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
 
 import {
   AlertDialog,
@@ -54,6 +63,7 @@ const CATEGORY_ORDER: ToolCategory[] = [
 
 const VIEWS: { key: AppView; label: string; icon: typeof MessageSquare }[] = [
   { key: 'chat', label: 'চ্যাট', icon: MessageSquare },
+  { key: 'studio', label: 'স্টুডিও', icon: LayoutGrid },
   { key: 'gallery', label: 'গ্যালারি', icon: Images },
   { key: 'productions', label: 'প্রোডাকশন', icon: Factory },
   { key: 'registry', label: 'রেজিস্ট্রি', icon: ShieldCheck },
@@ -180,7 +190,7 @@ function ViewNav({ onAfterSelect }: { onAfterSelect?: () => void }) {
   const setActiveView = useUiView(s => s.setActiveView);
 
   return (
-    <nav aria-label="ভিউ নেভিগেশন" className="grid grid-cols-5 gap-1">
+    <nav aria-label="ভিউ নেভিগেশন" className="grid grid-cols-3 gap-1">
       {VIEWS.map(({ key, label, icon: Icon }) => (
         <Tooltip key={key}>
           <TooltipTrigger asChild>

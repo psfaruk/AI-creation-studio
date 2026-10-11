@@ -24,6 +24,7 @@ model Conversation {
   runs        AgentRun[]
   artifacts   Artifact[]
   productions Production[]
+  characters  Character[]
 }
 
 model Message {
@@ -155,6 +156,30 @@ model ProductionStep {
   finishedAt   DateTime?
 
   @@index([productionId, seq])
+}
+
+// ------------------------------------------------------------
+// Character Bible — নতুন মাস্টার প্ল্যান §৭.২
+// স্থায়ী character ID + রেফারেন্স পোর্ট্রেট — একই কথোপকথনের
+// বিভিন্ন প্রোডাকশনে চরিত্রের পরিচয় ধরে রাখতে ব্যবহৃত।
+// ------------------------------------------------------------
+
+model Character {
+  id                 String       @id @default(cuid())
+  conversationId     String
+  conversation       Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  name               String
+  role               String       @default("প্রধান চরিত্র") // ভূমিকা
+  description        String // ব্যক্তিত্ব/পরিচয়
+  appearanceJson     String? // বয়স/চুল/পোশাক ইত্যাদি
+  language           String       @default("bn") // সংলাপের ভাষা
+  voice              String       @default("jam") // TTS কণ্ঠ
+  portraitArtifactId String? // রেফারেন্স পোর্ট্রেট (artifact)
+  continuityNotesJson String? // দৃশ্য-অনুযায়ী ধারাবাহিকতা-নোট
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@unique([conversationId, name])
 }
 
 // ------------------------------------------------------------

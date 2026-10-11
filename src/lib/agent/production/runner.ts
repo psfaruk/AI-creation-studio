@@ -21,6 +21,40 @@ import { cleanupWorkingDir, makeWorkingDir } from '@/lib/media/ffmpeg';
 import { validateSpec } from '../capabilities';
 
 const STALE_PRODUCTION_MS = 20 * 60 * 1000; // ২০ মিনিট
+/** AI-ভিডিও প্রোডাকশন (CogVideoX-3) প্রতি শটে মিনিট নেয় — দীর্ঘ সময়সীমা */
+const STALE_AI_VIDEO_MS = 60 * 60 * 1000; // ৬০ মিনিট
+/** সর্বোচ্চ সমান্তরাল চলমান প্রোডাকশন (§১২ ধাপ ৮ — কনকারেন্সি সীমা) */
+const MAX_CONCURRENT = 2;
+
+const g = globalThis as any;
+interface ProductionQueueState {
+  running: Set<string>;
+  queue: string[];
+}
+function queueState(): ProductionQueueState {
+  if (!g.__productionQueue) g.__productionQueue = { running: new Set(), queue: [] } as ProductionQueueState;
+  return g.__productionQueue;
+}
+
+/** সারি থেকে খালি স্লটে পরের প্রোডাকশন চালু করা */
+function drainQueue(): void {
+  const state = queueState();
+  while (state.running.size < MAX_CONCURRENT && state.queue.length > 0) {
+    const nextId = state.queue.shift()!;
+    if (state.running.has(nextId)) continue;
+    state.running.add(nextId);
+    console.log(`[production] ${nextId.slice(-6)} সারি থেকে চালু (${state.running.size}/${MAX_CONCURRENT})`);
+    runProduction(nextId).catch(async err => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[production] ${nextId.slice(-6)} fatal:`, message);
+      try {
+        await failProduction(nextId, message);
+      } catch (failErr) {
+        console.error(`[production] ${nextId.slice(-6)} fail error:`, failErr);
+      }
+    });
+  }
+}
 
 export class CancelledError extends Error {
   constructor() {
@@ -80,8 +114,16 @@ import { PIPELINES } from './pipelines';
 // Runner
 // ------------------------------------------------------------
 
-/** confirm API থেকে ডাকা হয় — fire-and-forget শুরু */
+/** confirm API থেকে ডাকা হয় — fire-and-forget শুরু (কনকারেন্সি-সীমাসহ) */
 export function startProduction(productionId: string): void {
+  const state = queueState();
+  if (state.running.has(productionId)) return;
+  if (state.running.size >= MAX_CONCURRENT) {
+    state.queue.push(productionId);
+    console.log(`[production] ${productionId.slice(-6)} সারিতে যোগ (চলমান ${state.running.size}/${MAX_CONCURRENT})`);
+    return;
+  }
+  state.running.add(productionId);
   setImmediate(() => {
     runProduction(productionId).catch(async err => {
       const message = err instanceof Error ? err.message : String(err);
@@ -247,71 +289,77 @@ function extOf(mimeType: string, fileName: string): string {
 }
 
 async function runProduction(productionId: string): Promise<void> {
-  const loaded = await loadCtx(productionId);
-  if (!loaded) return;
-  const { ctx, pipeline } = loaded;
-
-  const startedAt = new Date();
-  await db.production.update({
-    where: { id: productionId },
-    data: { status: 'running', startedAt, progress: 1 },
-  });
-  emitProduction(productionId, { type: 'production_started', productionId });
-  console.log(`[production] ${productionId.slice(-6)} started (${ctx.spec.type})`);
-
-  let finalStatus: 'completed' | 'failed' | 'partial' | 'cancelled' = 'completed';
-  let errorMessage: string | undefined;
-  let result: Record<string, unknown> = {};
-
+  const state = queueState();
   try {
-    const pipelineResult = await pipeline(ctx);
-    result = pipelineResult.result;
-    if (pipelineResult.statusOverride === 'partial' || ctx.partialNotes.length > 0) {
-      finalStatus = 'partial';
-      result = { ...result, partialNotes: ctx.partialNotes };
-    }
-  } catch (err) {
-    if (err instanceof CancelledError) {
-      finalStatus = 'cancelled';
-    } else {
-      errorMessage = err instanceof Error ? err.message : String(err);
-      finalStatus = 'failed';
-      // কিছু আর্টিফ্যাক্ট তৈরি হয়ে থাকলে partial
-      const produced = await db.artifact.count({ where: { productionId } });
-      if (produced > 0) {
-        finalStatus = 'partial';
-        result = { partialNotes: [...ctx.partialNotes, `ত্রুটি: ${errorMessage.slice(0, 300)}`] };
-      }
-    }
-  }
+    const loaded = await loadCtx(productionId);
+    if (!loaded) return;
+    const { ctx, pipeline } = loaded;
 
-  // validating অবস্থা দেখিয়ে চূড়ান্ত নিবন্ধন
-  try {
-    await db.production.update({ where: { id: productionId }, data: { status: 'validating' } });
-    emitProduction(productionId, {
-      type: 'production_progress',
-      productionId,
-      progress: 98,
-      currentStepKey: 'finalizing',
-    });
-
+    const startedAt = new Date();
     await db.production.update({
       where: { id: productionId },
-      data: {
-        status: finalStatus,
-        progress: finalStatus === 'failed' ? undefined : 100,
-        error: errorMessage?.slice(0, 1000),
-        resultJson: Object.keys(result).length > 0 ? JSON.stringify(result).slice(0, 8000) : undefined,
-        finishedAt: new Date(),
-      },
+      data: { status: 'running', startedAt, progress: 1 },
     });
-  } catch (err) {
-    console.error(`[production] ${productionId.slice(-6)} finalize error:`, err);
-  }
+    emitProduction(productionId, { type: 'production_started', productionId });
+    console.log(`[production] ${productionId.slice(-6)} started (${ctx.spec.type})`);
 
-  await cleanupWorkingDir(ctx.workingDir);
-  emitProduction(productionId, { type: 'production_finished', productionId, status: finalStatus, error: errorMessage?.slice(0, 400) });
-  console.log(`[production] ${productionId.slice(-6)} finished: ${finalStatus}`);
+    let finalStatus: 'completed' | 'failed' | 'partial' | 'cancelled' = 'completed';
+    let errorMessage: string | undefined;
+    let result: Record<string, unknown> = {};
+
+    try {
+      const pipelineResult = await pipeline(ctx);
+      result = pipelineResult.result;
+      if (pipelineResult.statusOverride === 'partial' || ctx.partialNotes.length > 0) {
+        finalStatus = 'partial';
+        result = { ...result, partialNotes: ctx.partialNotes };
+      }
+    } catch (err) {
+      if (err instanceof CancelledError) {
+        finalStatus = 'cancelled';
+      } else {
+        errorMessage = err instanceof Error ? err.message : String(err);
+        finalStatus = 'failed';
+        // কিছু আর্টিফ্যাক্ট তৈরি হয়ে থাকলে partial
+        const produced = await db.artifact.count({ where: { productionId } });
+        if (produced > 0) {
+          finalStatus = 'partial';
+          result = { partialNotes: [...ctx.partialNotes, `ত্রুটি: ${errorMessage.slice(0, 300)}`] };
+        }
+      }
+    }
+
+    // validating অবস্থা দেখিয়ে চূড়ান্ত নিবন্ধন
+    try {
+      await db.production.update({ where: { id: productionId }, data: { status: 'validating' } });
+      emitProduction(productionId, {
+        type: 'production_progress',
+        productionId,
+        progress: 98,
+        currentStepKey: 'finalizing',
+      });
+
+      await db.production.update({
+        where: { id: productionId },
+        data: {
+          status: finalStatus,
+          progress: finalStatus === 'failed' ? undefined : 100,
+          error: errorMessage?.slice(0, 1000),
+          resultJson: Object.keys(result).length > 0 ? JSON.stringify(result).slice(0, 8000) : undefined,
+          finishedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      console.error(`[production] ${productionId.slice(-6)} finalize error:`, err);
+    }
+
+    await cleanupWorkingDir(ctx.workingDir);
+    emitProduction(productionId, { type: 'production_finished', productionId, status: finalStatus, error: errorMessage?.slice(0, 400) });
+    console.log(`[production] ${productionId.slice(-6)} finished: ${finalStatus}`);
+  } finally {
+    state.running.delete(productionId);
+    setImmediate(drainQueue);
+  }
 }
 
 async function failProduction(productionId: string, message: string): Promise<void> {
@@ -326,16 +374,23 @@ async function failProduction(productionId: string, message: string): Promise<vo
   }
 }
 
-/** >২০ মিনিট ধরে চলমান প্রোডাকশন → failed (GET /api/productions-এ ডাকা হয়) */
+/** >সময়সীমা-অতিক্রম চলমান প্রোডাকশন → failed (AI-ভিডিওতে দীর্ঘ সীমা) */
 export async function sweepStaleProductions(): Promise<void> {
   try {
-    const cutoff = new Date(Date.now() - STALE_PRODUCTION_MS);
-    const res = await db.production.updateMany({
-      where: { status: { in: ['running', 'validating'] }, startedAt: { lt: cutoff } },
-      data: { status: 'failed', error: 'সময়সীমা অতিক্রম করেছে (stale sweep)', finishedAt: new Date() },
-    });
-    if (res.count > 0) {
-      console.log(`[production] sweep: ${res.count} টি stale প্রোডাকশন failed`);
+    const aiVideoTypes = ['motion_video', 'music_video', 'short_film'];
+    const now = Date.now();
+    for (const [staleMs, types] of [
+      [STALE_AI_VIDEO_MS, aiVideoTypes],
+      [STALE_PRODUCTION_MS, ['image', 'audio'] as string[]],
+    ] as [number, string[]][]) {
+      const cutoff = new Date(now - staleMs);
+      const res = await db.production.updateMany({
+        where: { status: { in: ['running', 'validating'] }, type: { in: types }, startedAt: { lt: cutoff } },
+        data: { status: 'failed', error: 'সময়সীমা অতিক্রম করেছে (stale sweep)', finishedAt: new Date() },
+      });
+      if (res.count > 0) {
+        console.log(`[production] sweep: ${res.count} টি stale প্রোডাকশন failed (${types.join(',')})`);
+      }
     }
   } catch (err) {
     console.error('[production] sweep error', err);

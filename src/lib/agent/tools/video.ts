@@ -1,9 +1,10 @@
 // ============================================================
-// Video Studio tools — মাস্টার প্ল্যান §৫-এর বাস্তবায়ন।
-// সৎ সত্য: এই পরিবেশে ডিফিউশন ভিডিও-মডেল নেই — ভিডিও তৈরি হয়
-// AI স্টোরিবোর্ড ফ্রেম + সিনেম্যাটিক ক্যামেরা-মোশন (zoompan/Ken
-// Burns) + FFmpeg অ্যাসেম্বলি দিয়ে। ব্যবহার-নির্দেশিকাও (usage)
-// তা-ই বলে।
+// Video Studio tools — নতুন মাস্টার প্ল্যান §৪–§৫।
+// §৪: প্রকৃত AI ভিডিও-জেনারেশন (CogVideoX-3 ক্লাউড ডিফিউশন) —
+//     text-to-video ও image-to-video দুটোই (২০২৬-১০-১১ প্রোব-যাচাইকৃত)।
+//     cinematic_motion ইঞ্জিন (AI স্টোরিবোর্ড + Ken Burns) সৎ-ফলব্যাক/
+//     বিকল্প হিসেবে আছে — কখনো AI-ভিডিও বলে দেখানো হয় না।
+// §৫: lip_sync — মডেল নেই, সৎ অবরুদ্ধ।
 // ============================================================
 
 import { z } from 'zod';
@@ -11,11 +12,13 @@ import path from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import type { ArtifactMeta } from '@/lib/types';
 import { saveArtifactFile } from '../storage';
-import { createToolArtifact, artifactFilePath } from '../registry-helpers';
+import { createToolArtifact, artifactFilePath, artifactToDataUrl } from '../registry-helpers';
 import type { ToolContext, ToolSpec } from '../registry-helpers';
 import { runFfmpeg, mediaInfo, makeTempDir, cleanupWorkingDir } from '@/lib/media/ffmpeg';
 import { generateImageBuffer } from '../sdk-helpers';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots, SHOT_DURATION_HINT } from '../capabilities';
+import { generateVideoClip, AI_VIDEO_MODEL } from '../video/ai_video';
+import { lipSyncCapabilityReport, LIP_SYNC_STATUS } from '../video/lip_sync_module';
 import {
   kenBurnsClip,
   concatClips,
@@ -131,8 +134,9 @@ const planVideoSpec: ToolSpec<{
 };
 
 // ------------------------------------------------------------
-// ২. generate_video — আইডিয়া → ছোট ভিডিও (ইনলাইন মিনি-পাইপলাইন)
-// সৎ পদ্ধতি: AI স্টোরিবোর্ড ফ্রেম + Ken Burns মোশন + FFmpeg
+// ২. generate_video — আইডিয়া → ছোট ভিডিও (নতুন মাস্টার প্ল্যান §৪)
+//    প্রাইমারি ইঞ্জিন: প্রকৃত AI ডিফিউশন (CogVideoX-3, ক্লাউড)
+//    বিকল্প/ফলব্যাক: cinematic_motion (স্টোরিবোর্ড + Ken Burns — সৎ লেবেল)
 // ------------------------------------------------------------
 
 const generateVideoSpec: ToolSpec<{
@@ -142,6 +146,7 @@ const generateVideoSpec: ToolSpec<{
   cameraMove?: (typeof MOVES)[number];
   sound: 'none' | 'ambient';
   style?: string;
+  engine: 'ai_diffusion' | 'cinematic_motion';
 }> = {
   name: 'generate_video',
   parameters: z.object({
@@ -151,65 +156,123 @@ const generateVideoSpec: ToolSpec<{
     cameraMove: z.enum(MOVES).optional(),
     sound: z.enum(['none', 'ambient']).default('none'),
     style: z.string().max(300).optional(),
+    engine: z.enum(['ai_diffusion', 'cinematic_motion']).default('ai_diffusion'),
   }),
-  timeoutMs: 420_000,
+  timeoutMs: 900_000,
   usage:
-    '- generate_video: আইডিয়া থেকে ছোট ভিডিও (৫-২০ সেকেন্ড) তৈরি — পদ্ধতি: AI স্টোরিবোর্ড ফ্রেম + সিনেম্যাটিক ক্যামেরা-মোশন (Ken Burns zoompan) + FFmpeg অ্যাসেম্বলি (ডিফিউশন ভিডিও-মডেল নয়)। arguments: {idea: "আইডিয়া", durationSec: 5-20, aspect: "9:16"|"16:9"|"1:1"|"4:5"|"3:2" (ডিফল্ট "16:9"), cameraMove?: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static" (সব শটে জোর করে), sound: "none"|"ambient" (ডিফল্ট "none", ambient = সৎ সংশ্লেষিত হালকা পরিবেশ-শব্দ), style?: "ভিজ্যুয়াল স্টাইল"}. বড়/দীর্ঘ ভিডিও (২০ সেকেন্ড+) বা মিউজিক ভিডিও/শর্টফিল্মের জন্য এটি নয় — propose_job ব্যবহার করো।',
-  inputSummary: i => `${truncate(i.idea, 50)} — ${i.durationSec}s ${i.aspect}`,
+    `- generate_video: আইডিয়া থেকে ছোট ভিডিও (৫–২০ সে.)। ইঞ্জিন: (ক) "ai_diffusion" (ডিফল্ট) — প্রকৃত AI ভিডিও-জেনারেশন ${AI_VIDEO_MODEL} ক্লাউড ডিফিউশন মডেলে; প্রতি শটে ~২–৪ মিনিট লাগে, শট সীমিত (২০ সে.-এ ৩টির বেশি নয়); (খ) "cinematic_motion" — AI স্টোরিবোর্ড ফ্রেম + ক্যামেরা-মোশন (ডিফিউশন নয়, দ্রুত)। AI-শট ব্যর্থ হলে সেই শট সৎ-ফলব্যাকে (ক্যামেরা-মোশন) যায় এবং সারাংশে স্পষ্ট লেবেল হয়। arguments: {idea: "আইডিয়া", durationSec: 5-20, aspect: "9:16"|"16:9"|"1:1"|"4:5"|"3:2" (ডিফল্ট "16:9"), cameraMove?: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static", sound: "none"|"ambient", style?: "ভিজ্যুয়াল স্টাইল", engine?: "ai_diffusion"|"cinematic_motion"}. মিউজিক ভিডিও/শর্টফিল্মের জন্য propose_job ব্যবহার করো।`,
+  inputSummary: i =>
+    `রিয়েল AI ভিডিও (${i.engine === 'cinematic_motion' ? 'ক্যামেরা-মোশন' : 'CogVideoX-3'}): ${truncate(i.idea, 50)} — ${i.durationSec}s ${i.aspect}`,
   execute: async (input, ctx) => {
     const aspect = input.aspect;
     const dims = outputDims(aspect, '720p');
     const fps: 24 | 25 | 30 = 30;
-    const shotCount = Math.max(1, Math.min(3, Math.round(input.durationSec / 6)));
+    const engine = input.engine;
+    const shotCount = Math.max(1, Math.min(engine === 'ai_diffusion' ? 3 : 4, Math.round(input.durationSec / 6)));
     const tempDir = await makeTempDir('gen-video-');
+    const shotEngineLabels: string[] = [];
     try {
-      // ১) শট-প্ল্যান
+      // ১) শট-প্ল্যান (উভয় ইঞ্জিনেই দৃশ্য-পরিকল্পনা)
       let shots = await shotPlanFromLLM(input.idea, {
         count: shotCount,
         durationHintSec: SHOT_DURATION_HINT.motion_video,
-        maxCount: Math.min(shotCount, maxShots('motion_video', 'standard')),
+        maxCount: Math.min(shotCount, maxShots('motion_video', 'standard', engine)),
         aspect,
         totalDurationSec: input.durationSec,
         context: `মোট ${input.durationSec} সেকেন্ড, ${shotCount}টি শট`,
       });
-      shots = shots.slice(0, Math.max(1, Math.min(3, shots.length)));
-      // দৈর্ঘ্য মোট টার্গেটে মানানসই
+      shots = shots.slice(0, Math.max(1, Math.min(shotCount, shots.length)));
       const totalPlanned = shots.reduce((a, s) => a + s.durationSec, 0);
       if (Math.abs(totalPlanned - input.durationSec) > 0.5 && shots.length > 0) {
         const scale = input.durationSec / Math.max(0.1, totalPlanned);
-        shots.forEach(s => (s.durationSec = Math.round(Math.max(1.5, Math.min(6, s.durationSec * scale)) * 10) / 10));
+        shots.forEach(s => (s.durationSec = Math.round(Math.max(1.5, Math.min(10, s.durationSec * scale)) * 10) / 10));
       }
 
-      // ২) স্টোরিবোর্ড ফ্রেম
-      const frames: string[] = [];
-      for (let i = 0; i < shots.length; i++) {
-        const prompt = imagePromptForShot(shots[i], input.style);
-        const { buffer } = await generateImageBuffer(prompt, ASPECT_TO_GEN_SIZE[aspect]);
-        const framePath = path.join(tempDir, `frame-${i}.png`);
-        await writeFile(framePath, buffer);
-        frames.push(framePath);
-      }
-
-      // ৩) Ken Burns মোশন ক্লিপ
       const clips: string[] = [];
-      for (let i = 0; i < frames.length; i++) {
-        const move: CameraMove = input.cameraMove ?? shots[i].cameraMove;
-        const clipPath = path.join(tempDir, `clip-${i}.mp4`);
-        await kenBurnsClip(frames[i], clipPath, {
-          durationSec: shots[i].durationSec,
-          fps,
-          width: dims.w,
-          height: dims.h,
-          move,
-        });
-        clips.push(clipPath);
+
+      if (engine === 'ai_diffusion') {
+        // ২ক) প্রকৃত AI শট-জেনারেশন (CogVideoX-3) — প্রতি শটে সর্বোচ্চ ১ পুনঃচেষ্টা,
+        //     তারপরও ব্যর্থ হলে সৎ-ফলব্যাক: স্টোরিবোর্ড + ক্যামেরা-মোশন (লেবেলসহ)
+        for (let i = 0; i < shots.length; i++) {
+          const shot = shots[i];
+          const clipPath = path.join(tempDir, `aishot-${i}.mp4`);
+          const motionPrompt = buildAiVideoPrompt(shot.description, input.style, shot.cameraMove);
+          let aiOk = false;
+          let lastErr = '';
+          for (let attempt = 0; attempt < 2 && !aiOk; attempt++) {
+            try {
+              const clip = await generateVideoClip({
+                prompt: motionPrompt,
+                durationSec: Math.round(Math.max(5, Math.min(10, shot.durationSec))),
+                quality: 'speed',
+              });
+              await writeFile(path.join(tempDir, `ai-raw-${i}.mp4`), clip.buffer);
+              // লক্ষ্য-মাত্রা/fps-এ স্বাভাবিকীকরণ (কেন্দ্র-ক্রপ)
+              await runFfmpeg(
+                [
+                  '-i', path.join(tempDir, `ai-raw-${i}.mp4`),
+                  '-vf',
+                  `scale=${dims.w}:${dims.h}:force_original_aspect_ratio=increase,crop=${dims.w}:${dims.h},fps=${fps},setsar=1`,
+                  '-an',
+                  '-c:v',
+                  'libx264',
+                  '-preset',
+                  'fast',
+                  '-crf',
+                  '20',
+                  clipPath,
+                ],
+                { timeoutMs: 180_000, label: `AI শট ${i + 1} স্বাভাবিকীকরণ` }
+              );
+              aiOk = true;
+            } catch (err: any) {
+              lastErr = String(err?.message ?? err).slice(0, 160);
+            }
+          }
+          if (aiOk) {
+            clips.push(clipPath);
+            shotEngineLabels.push(`শট ${i + 1}: ${AI_VIDEO_MODEL} AI`);
+          } else {
+            // সৎ-ফলব্যাক (স্পষ্ট লেবেলসহ)
+            const framePath = path.join(tempDir, `fb-frame-${i}.png`);
+            const { buffer } = await generateImageBuffer(imagePromptForShot(shot, input.style), ASPECT_TO_GEN_SIZE[aspect]);
+            await writeFile(framePath, buffer);
+            const fbPath = path.join(tempDir, `fb-clip-${i}.mp4`);
+            await kenBurnsClip(framePath, fbPath, {
+              durationSec: shot.durationSec,
+              fps,
+              width: dims.w,
+              height: dims.h,
+              move: input.cameraMove ?? shot.cameraMove,
+            });
+            clips.push(fbPath);
+            shotEngineLabels.push(`শট ${i + 1}: ক্যামেরা-মোশন ফলব্যাক (AI-ব্যর্থ: ${lastErr})`);
+          }
+        }
+      } else {
+        // ২খ) cinematic_motion ইঞ্জিন (আগের সৎ পাইপলাইন)
+        for (let i = 0; i < shots.length; i++) {
+          const framePath = path.join(tempDir, `frame-${i}.png`);
+          const { buffer } = await generateImageBuffer(imagePromptForShot(shots[i], input.style), ASPECT_TO_GEN_SIZE[aspect]);
+          await writeFile(framePath, buffer);
+          const clipPath = path.join(tempDir, `clip-${i}.mp4`);
+          await kenBurnsClip(framePath, clipPath, {
+            durationSec: shots[i].durationSec,
+            fps,
+            width: dims.w,
+            height: dims.h,
+            move: input.cameraMove ?? shots[i].cameraMove,
+          });
+          clips.push(clipPath);
+          shotEngineLabels.push(`শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`);
+        }
       }
 
-      // ৪) কনক্যাট
+      // ৩) কনক্যাট
       const silentPath = path.join(tempDir, 'silent.mp4');
       await concatClips(clips, silentPath, { transitionSec: 0.6 });
 
-      // ৫) সাউন্ড (ঐচ্ছিক ambient) + চূড়ান্ত
+      // ৪) সাউন্ড (ঐচ্ছিক ambient — সংশ্লেষিত, সৎ লেবেল)
       let finalPath = silentPath;
       if (input.sound === 'ambient') {
         const mixed = await mixAudioTracks({
@@ -229,33 +292,43 @@ const generateVideoSpec: ToolSpec<{
         }
       }
 
-      // ৬) যাচাই
+      // ৫) যাচাই (§১১ স্তর A)
       const info = await mediaInfo(finalPath);
       if (!info.hasVideo || info.durationSec < 1) throw new Error('ভিডিও রেন্ডার সঠিক হয়নি');
 
+      const aiCount = shotEngineLabels.filter(l => l.includes('AI')).length;
       const artifact = await registerVideoArtifact({
         ctx,
         file: finalPath,
         fileName: `${sanitize(input.idea).slice(0, 32) || 'motion'}.mp4`,
         metaJson: {
           tool: 'generate_video',
+          engine,
+          aiModel: engine === 'ai_diffusion' ? AI_VIDEO_MODEL : undefined,
           durationSec: info.durationSec,
           aspect,
           width: info.width,
           height: info.height,
           shots: shots.length,
-          method: 'AI storyboard frames + Ken Burns camera motion + FFmpeg',
+          shotEngineLabels,
+          honestLabel:
+            engine === 'ai_diffusion'
+              ? `${aiCount}/${shots.length} শট প্রকৃত AI (${AI_VIDEO_MODEL}); বাকি ক্যামেরা-মোশন ফলব্যাক`
+              : 'cinematic_motion ইঞ্জিন — AI স্টোরিবোর্ড + ক্যামেরা-মোশন (ডিফিউশন নয়)',
         },
       });
       return {
-        summary: `ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সেকেন্ড, ${info.width}×${info.height}, ${shots.length}টি শট (AI স্টোরিবোর্ড + ক্যামেরা-মোশন)`,
+        summary: `ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সে., ${info.width}×${info.height}, ${shots.length}টি শট [${shotEngineLabels.join('; ')}]`,
         resultJson: JSON.stringify({
           artifactId: artifact.id,
+          engine,
+          aiShots: aiCount,
+          totalShots: shots.length,
           durationSec: info.durationSec,
-          shots: shots.length,
           aspect,
           sound: input.sound,
           hasAudio: info.hasAudio,
+          shotEngineLabels,
         }),
         artifacts: [artifact],
       };
@@ -265,6 +338,23 @@ const generateVideoSpec: ToolSpec<{
   },
 };
 
+/** শট-বর্ণনা → CogVideoX-3 মোশন-প্রম্পট (ক্যামেরা-নির্দেশনা সহ) */
+function buildAiVideoPrompt(description: string, style?: string, cameraMove?: CameraMove): string {
+  const cam: Record<string, string> = {
+    zoom_in: 'slow camera push in',
+    zoom_out: 'slow camera pull back',
+    pan_left: 'smooth pan to the left',
+    pan_right: 'smooth pan to the right',
+    static: 'steady camera, subtle handheld feel',
+  };
+  const parts = [
+    (description ?? '').toString().trim().slice(0, 800),
+    cameraMove ? cam[cameraMove] ?? 'cinematic camera movement' : 'cinematic camera movement',
+    'realistic motion, continuous action, natural lighting, high quality, no text overlay',
+  ];
+  if (style) parts.push((style ?? '').toString().trim().slice(0, 150));
+  return parts.filter(Boolean).join(', ');
+}
 // ------------------------------------------------------------
 // ৩. animate_image — স্থির ছবি → Ken Burns মোশন ভিডিও
 // ------------------------------------------------------------
@@ -774,27 +864,135 @@ const validateVideoSpec: ToolSpec<{
 };
 
 // ------------------------------------------------------------
-// ৯. lip_sync — GATED (লাইসেন্স/সম্মতি-নীতি)
+// ২খ. image_to_video — রেফারেন্স ছবি → প্রকৃত AI ভিডিও (§৪.১-B)
+//     CogVideoX-3 image-to-video: ছবির পরিচয়/পোশাক যতটা সম্ভব ধরে
+//     রেখে নতুন মোশন তৈরি হয় (প্রোব-যাচাইকৃত)।
+// ------------------------------------------------------------
+
+const imageToVideoSpec: ToolSpec<{
+  image: string;
+  motionPrompt: string;
+  durationSec: number;
+}> = {
+  name: 'image_to_video',
+  parameters: z.object({
+    image: z.string().min(1).max(120),
+    motionPrompt: z.string().min(3).max(1200),
+    durationSec: z.number().int().min(5).max(10).default(5),
+  }),
+  timeoutMs: 900_000,
+  usage:
+    `- image_to_video: রেফারেন্স ছবি থেকে প্রকৃত AI ভিডিও (CogVideoX-3 image-to-video ডিফিউশন) — ছবির পরিচয়/পোশাক/পরিবেশ যতটা সম্ভব ধরে রেখে motionPrompt-এ বর্ণিত নড়াচড়া তৈরি হয়। প্রতিটি ক্লিপে ~২–৪ মিনিট লাগে। এটি animate_image-এর চেয়ে ভিন্ন — animate_image শুধু ক্যামেরা-মুভমেন্ট (Ken Burns) যোগ করে, নতুন মোশন তৈরি করে না। arguments: {image: "<ছবির artifact আইডি>", motionPrompt: "কী নড়াচড়া হবে — যেমন: এই চরিত্রটি বৃষ্টিতে হাঁটছে, ছাতা খুলছে, পেছনে তাকাচ্ছে", durationSec: 5|10 (ডিফল্ট 5)}`,
+  inputSummary: i => `ছবি→AI ভিডিও: ${truncate(i.motionPrompt, 50)} — ${i.durationSec}s`,
+  execute: async (input, ctx) => {
+    const src = await artifactFilePath(input.image);
+    if (src.kind !== 'image') throw new Error('image_to_video-র উৎস অবশ্যই ছবি artifact হতে হবে');
+    const { dataUrl } = await artifactToDataUrl(input.image);
+
+    const tempDir = await makeTempDir('i2v-');
+    try {
+      let clip;
+      let lastErr = '';
+      let ok = false;
+      for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+        try {
+          clip = await generateVideoClip({
+            prompt: `${input.motionPrompt}. Keep the person, clothing and scene consistent with the reference image, realistic motion, cinematic quality, no text overlay`,
+            durationSec: input.durationSec,
+            imageUrl: dataUrl,
+            quality: 'speed',
+          });
+          ok = true;
+        } catch (err: any) {
+          lastErr = String(err?.message ?? err).slice(0, 160);
+        }
+      }
+      if (!ok || !clip) {
+        throw new Error(
+          `AI image-to-video দুইবার ব্যর্থ (${lastErr})। সৎ বিকল্প: animate_image (ক্যামেরা-মোশন — নতুন মোশন তৈরি হয় না, তবে নির্ভরযোগ্য)।`
+        );
+      }
+      // লক্ষ্য-মাত্রায় স্বাভাবিকীকরণ (কেন্দ্র-ক্রপ)
+      const aspect = nearestAspect(clip.info.width ?? 720, clip.info.height ?? 1280);
+      const dims = outputDims(aspect, '720p');
+      const rawPath = path.join(tempDir, 'raw.mp4');
+      await writeFile(rawPath, clip.buffer);
+      const finalPath = path.join(tempDir, 'final.mp4');
+      await runFfmpeg(
+        [
+          '-i', rawPath,
+          '-vf',
+          `scale=${dims.w}:${dims.h}:force_original_aspect_ratio=increase,crop=${dims.w}:${dims.h},fps=30,setsar=1`,
+          '-c:v',
+          'libx264',
+          '-preset',
+          'fast',
+          '-crf',
+          '20',
+          finalPath,
+        ],
+        { timeoutMs: 180_000, label: 'i2v স্বাভাবিকীকরণ' }
+      );
+      const info = await mediaInfo(finalPath);
+      const artifact = await registerVideoArtifact({
+        ctx,
+        file: finalPath,
+        fileName: `${sanitize(input.motionPrompt).slice(0, 32) || 'i2v'}.mp4`,
+        metaJson: {
+          tool: 'image_to_video',
+          aiModel: AI_VIDEO_MODEL,
+          sourceImage: input.image,
+          durationSec: info.durationSec,
+          width: info.width,
+          height: info.height,
+          honestLabel: `প্রকৃত AI image-to-video (${AI_VIDEO_MODEL})`,
+        },
+      });
+      return {
+        summary: `ছবি থেকে AI ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সে., ${info.width}×${info.height} (${AI_VIDEO_MODEL}, রেফারেন্স: ${src.fileName})`,
+        resultJson: JSON.stringify({
+          artifactId: artifact.id,
+          aiModel: AI_VIDEO_MODEL,
+          sourceImage: input.image,
+          durationSec: info.durationSec,
+          width: info.width,
+          height: info.height,
+        }),
+        artifacts: [artifact],
+      };
+    } finally {
+      await cleanupWorkingDir(tempDir);
+    }
+  },
+};
+
+// ------------------------------------------------------------
+// ৯. lip_sync — §৫ সৎ-অবরুদ্ধ (মডেল নেই; কর্মপ্রবাহ-স্থাপত্যসহ)
 // ------------------------------------------------------------
 
 const lipSyncSpec: ToolSpec<{
   video?: string;
   image?: string;
   audio?: string;
+  isSinging?: boolean;
 }> = {
   name: 'lip_sync',
   parameters: z.object({
     video: z.string().max(80).optional(),
     image: z.string().max(80).optional(),
     audio: z.string().max(80).optional(),
+    isSinging: z.boolean().optional(),
   }),
   timeoutMs: 10_000,
   usage:
-    '- lip_sync: [অবরুদ্ধ] ঠোঁট-মিলানো (lip-sync) মডেল — লাইসেন্স ও সম্মতি-নীতির কারণে এখন চালু নেই; ডাকলে সৎ ব্যাখ্যা পাবে। বিকল্প: ভিডিওতে সংলাপ-সাবটাইটেল (শর্টফিল্ম পাইপলাইন বা generate_subtitles) ব্যবহার করো।',
-  inputSummary: () => 'লিপ-সিঙ্ক অনুরোধ (অবরুদ্ধ)',
+    '- lip_sync: [অবরুদ্ধ — §৫] ঠোঁট-মিলানো মডেল এই পরিবেশে স্থাপিত নেই (GPU-বিহীন সার্ভার)। ডাকলে সৎ ক্ষমতা-প্রতিবেদন পাবে: পরিকল্পিত ৭-ধাপ ওয়ার্কফ্লো, গান-গাওয়ার জন্য অতিরিক্ত প্রয়োজনীয়তা, সম্মতি-নিয়ম ও প্রার্থী মডেল (MuseTalk)। বিকল্প: শর্টফিল্ম পাইপলাইন (সংলাপ-অডিও + সাবটাইটেলসহ AI ভিডিও), অথবা generate_subtitles। গায়কের মুখ নড়ছে — এমন দাবি কখনো করা হয় না। arguments: {image?: "চরিত্রের ছবি artifact", audio?: "সংলাপ-অডিও artifact", isSinging?: boolean}',
+  inputSummary: i =>
+    `লিপ-সিঙ্ক অনুরোধ (অবরুদ্ধ${i.isSinging ? ' — গান-গাওয়া' : ''})`,
   execute: async () => {
+    // মিথ্যা সফলতা নয় — §৫-এর সৎ ক্ষমতা-প্রতিবেদন
+    const report = lipSyncCapabilityReport();
     throw new Error(
-      'লিপ-সিঙ্ক মডেল লাইসেন্স/সম্মতি-নীতির কারণে এখন চালু নেই। বিকল্প: ভিডিওতে সংলাপ-সাবটাইটেল ব্যবহার করো (শর্টফিল্ম পাইপলাইন সাবটাইটেল বার্ন করে, অথবা generate_subtitles দিয়ে SRT বানিয়ে নিজে বসাতে পারো)।'
+      `লিপ-সিঙ্ক এখন অবরুদ্ধ। কারণ: ${report.reason} প্রার্থী মডেল: ${report.candidate.name} (${report.candidate.url}) — ${report.candidate.note} বিকল্প: শর্টফিল্ম পাইপলাইন (সংলাপ-অডিও + বাংলা সাবটাইটেলসহ AI ভিডিও) ব্যবহার করো।`
     );
   },
 };
@@ -802,6 +1000,7 @@ const lipSyncSpec: ToolSpec<{
 export const VIDEO_TOOLS: ToolSpec[] = [
   planVideoSpec,
   generateVideoSpec,
+  imageToVideoSpec,
   animateImageSpec,
   processVideoSpec,
   enhanceVideoSpec,

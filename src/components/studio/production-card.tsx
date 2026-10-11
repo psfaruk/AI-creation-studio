@@ -7,6 +7,8 @@
 // - completed/partial/failed/cancelled → ফলাফল + সংশোধন
 // [Task 2-a, Creative Studio upgrade] পলিশ: দৈর্ঘ্য/ফরম্যাট Select,
 // সততার অ্যাম্বার নোট, ধাপ-পালস + বাংলা সময়, গ্যালারি-লিংক।
+// [Task 9] SpecEditor-এ নতুন ফিল্ড (§২/§৪/§১০): ভাষা, ভিডিও-ইঞ্জিন,
+// filmMode, mood, সাবটাইটেল-সুইচ + ৭ কণ্ঠ + ইঞ্জিন-সচেতন সততা-নোট।
 // ============================================================
 
 import { useEffect, useState } from 'react';
@@ -38,13 +40,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ArtifactList } from '@/components/chat/artifact-view';
 import { toBnDigits } from '@/components/chat/bn-format';
 import { useProductions } from '@/hooks/use-productions';
 import { toast } from '@/hooks/use-toast';
 import { useUiView } from '@/hooks/use-ui-view';
-import type { CreativeJobSpec, ProductionStatus, ProductionView } from '@/lib/types';
+import type {
+  CreativeJobSpec,
+  FilmMode,
+  MusicMood,
+  ProductionStatus,
+  ProductionView,
+  SpeechLanguage,
+  VideoEngine,
+  VoicePreset,
+} from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 // ------------------------------------------------------------
@@ -89,13 +101,21 @@ const IMAGE_FORMAT_LABELS: Record<NonNullable<CreativeJobSpec['format']>, string
   webp: 'WebP',
 };
 
-/** ভিডিও পাইপলাইনের সততার নোট (ডিফিউশন ভিডিও-মডেল নয়) */
-const VIDEO_PIPELINE_NOTE =
-  'ভিডিও তৈরি হয় AI স্টোরিবোর্ড + সিনেম্যাটিক ক্যামেরা-মোশন পাইপলাইনে — ডিফিউশন ভিডিও-মডেল নয়; ফটোরিয়ালিস্টিক অভিনয়ের নিশ্চয়তা নেই।';
+/** ভিডিও-ইঞ্জিন-সচেতন সততা-নোট (§৪) — ডিফল্ট এখন প্রকৃত AI ডিফিউশন */
+const VIDEO_ENGINE_NOTES: Record<VideoEngine, string> = {
+  ai_diffusion:
+    'প্রতিটি শট CogVideoX-3 ক্লাউড-ডিফিউশনে প্রকৃতভাবে তৈরি হয় — প্রতি শটে ২–৪ মিনিট সময় লাগে; রেট-সীমায় ধৈর্যশীল ব্যাকঅফ হয়, তাই অপেক্ষার সময় বাড়তে পারে।',
+  cinematic_motion:
+    'ভিডিও তৈরি হয় AI স্টোরিবোর্ড + সিনেম্যাটিক ক্যামেরা-মোশন পাইপলাইনে — ডিফিউশন ভিডিও-মডেল নয়; ফটোরিয়ালিস্টিক অভিনয়ের নিশ্চয়তা নেই।',
+};
 
-/** গান ছাড়া মিউজিক ভিডিওর নোট */
+/** প্রসিডিউরাল-স্কোরের সৎ নোট (গান ছাড়া মিউজিক ভিডিও) */
+const PROCEDURAL_SCORE_NOTE =
+  'গান আপলোড করা হয়নি — প্রসিডিউরাল ইনস্ট্রুমেন্টাল স্কোর বসবে (নিউরাল মিউজিক-মডেল নয়)। নিজের গান অ্যাটাচ করলে সেটিই ব্যবহৃত হবে।';
+
+/** গান ছাড়া ও স্কোর-নিষ্ক্রিয় মিউজিক ভিডিওর নোট */
 const NO_SONG_NOTE =
-  'গান আপলোড করা হয়নি — ভিডিও নীরব থাকবে। চাইলে গানের অডিও আপলোড করে আবার অনুরোধ করুন।';
+  'গান আপলোড করা হয়নি এবং সংগীত-স্কোর বন্ধ রাখা হয়েছে — ভিডিও নীরব থাকবে। চাইলে গানের অডিও আপলোড করে আবার অনুরোধ করুন।';
 
 /** ছোট অ্যাম্বার সতর্কতা-নোট */
 function AmberNote({ text }: { text: string }) {
@@ -108,12 +128,61 @@ function AmberNote({ text }: { text: string }) {
 }
 
 // ------------------------------------------------------------
+// নতুন ফিল্ডের লেবেল-ম্যাপ (§২/§৪/§১০)
+// ------------------------------------------------------------
+
+const LANGUAGE_LABELS: Record<SpeechLanguage, string> = {
+  bn: 'বাংলা',
+  en: 'ইংরেজি',
+};
+
+const VIDEO_ENGINE_LABELS: Record<VideoEngine, string> = {
+  ai_diffusion: 'প্রকৃত AI (CogVideoX-3)',
+  cinematic_motion: 'স্টোরিবোর্ড+ক্যামেরা-মোশন (দ্রুত)',
+};
+
+const FILM_MODE_LABELS: Record<FilmMode, string> = {
+  short_film: 'শর্টফিল্ম',
+  dialogue_scene: 'সংলাপ-দৃশ্য',
+  trailer: 'ট্রেইলার',
+  story: 'গল্প',
+};
+
+const MOOD_LABELS: Record<MusicMood, string> = {
+  sad: 'বিষণ্ণ',
+  romantic: 'রোমান্টিক',
+  joyful: 'আনন্দময়',
+  suspense: 'রহস্যময়',
+  action: 'অ্যাকশন',
+  peaceful: 'শান্ত',
+};
+
+/** ৭টি বৈধ কণ্ঠ (§২ ভাষা-প্রোব-যাচাইকৃত) */
+const VOICE_OPTIONS: VoicePreset[] = [
+  'tongtong',
+  'chuichui',
+  'xiaochen',
+  'jam',
+  'kazi',
+  'douji',
+  'luodo',
+];
+
+const MOOD_OPTIONS: MusicMood[] = ['sad', 'romantic', 'joyful', 'suspense', 'action', 'peaceful'];
+
+// ------------------------------------------------------------
 // সেটিংস সারাংশ (নিশ্চিতকরণের আগে দেখানো)
 // ------------------------------------------------------------
 
 function specSummaryText(spec: CreativeJobSpec): string[] {
   const bits: string[] = [];
   bits.push(`মান: ${spec.quality === 'draft' ? 'ড্রাফট (দ্রুত)' : spec.quality === 'high' ? 'উচ্চ' : 'স্ট্যান্ডার্ড'}`);
+  if (spec.language) bits.push(`ভাষা: ${LANGUAGE_LABELS[spec.language] ?? spec.language}`);
+  if (spec.videoEngine) bits.push(`ইঞ্জিন: ${spec.videoEngine === 'ai_diffusion' ? 'AI (CogVideoX-3)' : 'ক্যামেরা-মোশন'}`);
+  if (spec.filmMode) bits.push(`ফিল্ম-মোড: ${FILM_MODE_LABELS[spec.filmMode] ?? spec.filmMode}`);
+  if (spec.mood && MOOD_LABELS[spec.mood as MusicMood]) bits.push(`মুড: ${MOOD_LABELS[spec.mood as MusicMood]}`);
+  else if (spec.mood) bits.push(`মুড: ${String(spec.mood)}`);
+  if (typeof spec.tempoBpm === 'number') bits.push(`টেম্পো: ${toBnDigits(spec.tempoBpm)} BPM`);
   if (spec.aspect) bits.push(`অনুপাত: ${toBnDigits(spec.aspect)}`);
   if (spec.durationSec) bits.push(`দৈর্ঘ্য: ${toBnDigits(spec.durationSec)} সেকেন্ড`);
   if (spec.fps) bits.push(`FPS: ${toBnDigits(spec.fps)}`);
@@ -138,6 +207,13 @@ function SpecEditor({
   const isVideo = isVideoType(spec.type);
   const patch = (p: Partial<CreativeJobSpec>) => onChange({ ...spec, ...p });
 
+  const showsLanguage = isVideo || spec.type === 'audio';
+  const showsVideoEngine = isVideo;
+  const showsFilmMode = spec.type === 'short_film';
+  const showsMood =
+    spec.type === 'music_video' ||
+    (spec.type === 'audio' && spec.audioOperation === 'instrumental');
+
   // দৈর্ঘ্যের অপশন — বর্তমান মান তালিকায় না থাকলেও দেখাও (রিসেট/পুরোনো স্পেকের জন্য)
   const durationBase = DURATION_OPTIONS[spec.type] ?? [];
   const durationOptions =
@@ -160,6 +236,81 @@ function SpecEditor({
           </SelectContent>
         </Select>
       </div>
+
+      {showsLanguage && (
+        <div className="col-span-1 space-y-1.5">
+          <Label className="text-xs text-muted-foreground">ভাষা</Label>
+          <Select
+            value={spec.language ?? 'bn'}
+            onValueChange={v => patch({ language: v as SpeechLanguage })}
+          >
+            <SelectTrigger className="h-9 bg-background text-sm" aria-label="ভাষা">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bn">বাংলা</SelectItem>
+              <SelectItem value="en">ইংরেজি</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {showsVideoEngine && (
+        <div className="col-span-1 space-y-1.5">
+          <Label className="text-xs text-muted-foreground">ভিডিও-ইঞ্জিন</Label>
+          <Select
+            value={spec.videoEngine ?? 'ai_diffusion'}
+            onValueChange={v => patch({ videoEngine: v as VideoEngine })}
+          >
+            <SelectTrigger className="h-9 bg-background text-sm" aria-label="ভিডিও-ইঞ্জিন">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ai_diffusion">{VIDEO_ENGINE_LABELS.ai_diffusion}</SelectItem>
+              <SelectItem value="cinematic_motion">{VIDEO_ENGINE_LABELS.cinematic_motion}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {showsFilmMode && (
+        <div className="col-span-1 space-y-1.5">
+          <Label className="text-xs text-muted-foreground">ফিল্ম-মোড</Label>
+          <Select
+            value={spec.filmMode ?? 'short_film'}
+            onValueChange={v => patch({ filmMode: v as FilmMode })}
+          >
+            <SelectTrigger className="h-9 bg-background text-sm" aria-label="ফিল্ম-মোড">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="short_film">শর্টফিল্ম</SelectItem>
+              <SelectItem value="dialogue_scene">সংলাপ-দৃশ্য</SelectItem>
+              <SelectItem value="trailer">ট্রেইলার</SelectItem>
+              <SelectItem value="story">গল্প</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {showsMood && (
+        <div className="col-span-1 space-y-1.5">
+          <Label className="text-xs text-muted-foreground">মুড</Label>
+          <Select
+            value={spec.mood && MOOD_LABELS[spec.mood as MusicMood] ? (spec.mood as MusicMood) : undefined}
+            onValueChange={v => patch({ mood: v as MusicMood })}
+          >
+            <SelectTrigger className="h-9 bg-background text-sm" aria-label="মুড">
+              <SelectValue placeholder="স্বয়ংক্রিয়" />
+            </SelectTrigger>
+            <SelectContent>
+              {MOOD_OPTIONS.map(m => (
+                <SelectItem key={m} value={m}>{MOOD_LABELS[m]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       {(isVideo || spec.type === 'image') && (
         <div className="col-span-1 space-y-1.5">
@@ -240,11 +391,25 @@ function SpecEditor({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="tongtong">tongtong</SelectItem>
-              <SelectItem value="jam">jam</SelectItem>
-              <SelectItem value="kazi">kazi</SelectItem>
+              {VOICE_OPTIONS.map(voice => (
+                <SelectItem key={voice} value={voice}>{voice}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
+        </div>
+      )}
+
+      {spec.type === 'short_film' && (
+        <div className="col-span-2 flex min-h-14 items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 sm:col-span-1">
+          <Label htmlFor="spec-subtitles" className="text-xs leading-snug text-muted-foreground">
+            সাবটাইটেল বার্ন-ইন
+          </Label>
+          <Switch
+            id="spec-subtitles"
+            checked={spec.subtitles ?? true}
+            onCheckedChange={checked => patch({ subtitles: checked })}
+            className="data-[state=checked]:bg-emerald-600"
+          />
         </div>
       )}
 
@@ -406,10 +571,16 @@ export function ProductionCard({ productionId }: { productionId: string }) {
               ))}
             </div>
             <SpecEditor spec={spec} onChange={next => setEditedSpec(next)} />
-            {isVideoType(spec.type) && <AmberNote text={VIDEO_PIPELINE_NOTE} />}
+            {isVideoType(spec.type) && (
+              <AmberNote text={VIDEO_ENGINE_NOTES[spec.videoEngine ?? 'ai_diffusion']} />
+            )}
             {spec.type === 'music_video' &&
               spec.songArtifactId === undefined &&
-              spec.sound !== 'uploaded_song' && <AmberNote text={NO_SONG_NOTE} />}
+              spec.sound !== 'uploaded_song' && (
+                <AmberNote
+                  text={spec.musicSource === 'none' ? NO_SONG_NOTE : PROCEDURAL_SCORE_NOTE}
+                />
+              )}
             <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
               <PencilRuler className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
               সেটিংস বদলে নিশ্চিত করতে পারেন — নিশ্চিত করার পরেই প্রকৃত জেনারেশন শুরু হবে।

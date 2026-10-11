@@ -30,6 +30,7 @@ export interface DailyQuotaResult {
 export const RATE_LIMITS = {
   chat: { limit: 15, windowMs: 60_000 },
   confirm: { limit: 12, windowMs: 60 * 60_000 },
+  systemCheck: { limit: 4, windowMs: 10 * 60_000 },
 } as const;
 
 // HMR-নিরাপদ গ্লোবাল ক্যাশ: key → উইন্ডোর ভেতরের টাইমস্ট্যাম্পগুলো
