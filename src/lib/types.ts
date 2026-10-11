@@ -609,10 +609,33 @@ export type ProductionEvent =
   | { type: 'ping' };
 
 // ------------------------------------------------------------
-// Model & License Registry (§৮)
+// Model & License Registry (§৮) + Availability Matrix (নতুন পরিকল্পনা §২/§৫)
 // ------------------------------------------------------------
 
 export type ModelStatus = 'enabled' | 'experimental' | 'blocked' | 'planned';
+
+/** §২ — লাইসেন্স-মাত্রা (ব্যবহারের ধরন: Z.ai স্যান্ডবক্স, ব্যক্তিগত/অ-বাণিজ্যিক) */
+export type LicenseStatus =
+  | 'allowed'
+  | 'allowed_noncommercial'
+  | 'allowed_with_conditions'
+  | 'provider_api_only'
+  | 'needs_review'
+  | 'blocked_by_license';
+
+/** §২/§৪ — প্রোভাইডার-মাত্রা: স্যান্ডবক্স SDK এই মডেলের API প্রকাশ করে কি না; local_engine = বাইরের প্রোভাইডার লাগে না */
+export type ProviderStatus = 'exposed_by_sdk' | 'not_exposed_by_sdk' | 'local_engine' | 'unknown';
+
+/** §২ — ইন্টিগ্রেশন-মাত্রা: অ্যাপে অ্যাডাপ্টার/পাইপলাইন কতটা তৈরি */
+export type IntegrationStatus = 'integrated' | 'partial' | 'not_integrated';
+
+/** §২ — রানটাইম-মাত্রা: এই হার্ডওয়্যারে এখন চলছে কি না */
+export type RuntimeStatus =
+  | 'healthy'
+  | 'degraded'
+  | 'temporarily_unavailable'
+  | 'unavailable_hardware'
+  | 'not_applicable';
 
 export interface ModelEntryView {
   id: string;
@@ -624,10 +647,68 @@ export interface ModelEntryView {
   licenseUrl?: string;
   commercialUse: 'allowed' | 'restricted' | 'unknown' | 'not_applicable';
   status: ModelStatus;
+  licenseStatus?: LicenseStatus;
+  providerStatus?: ProviderStatus;
+  integrationStatus?: IntegrationStatus;
+  runtimeStatus?: RuntimeStatus;
+  apiEndpoint?: string;
+  apiModelId?: string;
+  lastTestedAt?: string;
+  lastTestNote?: string;
+  errorReason?: string;
+  tools?: string[];
   capabilities: Record<string, unknown>;
   hardwareNotes?: string;
   notes?: string;
   verifiedAt?: string;
+}
+
+// ------------------------------------------------------------
+// Model & Tool Availability Matrix (§১৫-এর প্রথম Deliverable)
+// ------------------------------------------------------------
+
+/** ম্যাট্রিক্স-সারির সামগ্রিক রায় */
+export type MatrixOverall = 'available' | 'available_with_limits' | 'experimental' | 'unavailable_here' | 'future';
+
+export interface AvailabilityMatrixRow {
+  /** ক্ষমতার স্থিতিশীল কী */
+  key: string;
+  /** বাংলা নাম */
+  capability: string;
+  /** §৫-এর টাস্ক-শ্রেণি */
+  taskType: string;
+  /** কোন কোন টুল/পাইপলাইন এই ক্ষমতা ব্যবহার করে */
+  tools: string[];
+  /** রেজিস্ট্রি-মডেলের কী */
+  modelKey: string;
+  model: string;
+  license: LicenseStatus;
+  provider: ProviderStatus;
+  integration: IntegrationStatus;
+  runtime: RuntimeStatus;
+  apiEndpoint?: string;
+  apiModelId?: string;
+  lastTestedAt?: string;
+  lastTestNote?: string;
+  /** অনুপলব্ধ হলে প্রকৃত কারণ — লাইসেন্স/প্রোভাইডার/হার্ডওয়্যার/ইন্টিগ্রেশন আলাদা করে */
+  errorReason?: string;
+  overall: MatrixOverall;
+  /** সৎ নোট (যেমন: প্রসিডিউরাল ≠ নিউরাল) */
+  honestNote?: string;
+  /** অনুপলব্ধ ক্ষমতার বিকল্প-পথ */
+  fallback?: string;
+}
+
+export interface AvailabilityMatrixResponse {
+  matrix: AvailabilityMatrixRow[];
+  generatedAt: string;
+  usageMode: {
+    /** এই অ্যাপের ঘোষিত ব্যবহার-ধরন — লাইসেন্স-যাচাই এই ভিত্তিতে */
+    environment: string;
+    usage: string;
+    note: string;
+  };
+  legend: Record<string, string>;
 }
 
 // ------------------------------------------------------------

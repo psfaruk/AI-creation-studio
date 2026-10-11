@@ -16,23 +16,131 @@ const execFileAsync = promisify(execFileCb);
 
 // ------------------------------------------------------------
 // টুল-হেল্পার: ৪২৯/৫xx-সহনশীল পুনঃচেষ্টা (সব SDK কলের জন্য)
+// §১০ রিট্রাই-নীতি (Sprint-2):
+//  - Retry-After থাকলে সেটিই মানের ভিত্তি (সেকেন্ড বা HTTP-date)
+//  - না থাকলে full-jitter এক্সপোনেনশিয়াল ব্যাকঅফ:
+//    delay = random(baseMs/2, baseMs * 2^attempt), সর্বোচ্চ ৯০ সে.
+//  - সর্বোচ্চ চেষ্টা কনফিগারযোগ্য (ডিফল্ট ৪)
+//  - ৪২৯/রেট-লিমিটে পুনঃচেষ্টা শেষ হলে TemporarilyUnavailableError —
+//    ৪২৯ কখনোই লাইসেন্স/অনুমতির সমস্যা নয়, "সাময়িকভাবে অনুপলব্ধ"
 // ------------------------------------------------------------
 
-/** ৪২৯/৫xx হলে ব্যাকঅফ-সহ পুনঃচেষ্টা — TTS/ASR-এর ক্ষেত্রে খুব দরকার */
-async function withRetry<T>(fn: () => Promise<T>, label: string, attempts = 4, baseMs = 4000): Promise<T> {
+/**
+ * সাময়িক অনুপলব্ধতা (রেট-লিমিট/৪২৯-নিঃশেষ)। বার্তার শুরুতেই
+ * `TEMPORARILY_UNAVAILABLE:` — কলার/UI এটি দেখে লাইসেন্স-সমস্যার
+ * বদলে "সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট)" দেখায়।
+ */
+export class TemporarilyUnavailableError extends Error {
+  constructor(message: string) {
+    super(`TEMPORARILY_UNAVAILABLE: ${message}`);
+    this.name = 'TemporarilyUnavailableError';
+  }
+}
+
+/** বার্তাটি রেট-লিমিট/৪২৯ কি না (লাইসেন্স-সমস্যা কখনোই নয়) */
+export function isRateLimitErrorText(msg: string): boolean {
+  return /429|rate.?limit|too many/i.test(msg);
+}
+
+/** পুনঃচেষ্টা-যোগ্য (৪২৯/রেট-লিমিট/৫xx/টাইমআউট) কি না */
+function isRetryableErrorText(msg: string): boolean {
+  return /429|rate.?limit|too many|\b5\d{2}\b|timeout/i.test(msg);
+}
+
+/** একক-মান থেকে মিলিসেকেন্ড ("30" / "30s" / 30 / HTTP-date) — না বুঝলে null */
+function coerceRetryAfterMs(raw: unknown): number | null {
+  if (raw == null) return null;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+    // ≤১০০০ হলে সেকেন্ড-অনুমান, নয়তো মিলিসেকেন্ড
+    return raw <= 1000 ? Math.round(raw * 1000) : Math.round(raw);
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  const withUnit = s.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|seconds?)$/i);
+  if (withUnit) {
+    const v = Number(withUnit[1]);
+    return /^ms$/i.test(withUnit[2]) ? Math.round(v) : Math.round(v * 1000);
+  }
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const sec = Number(s);
+    return sec <= 1000 ? Math.round(sec * 1000) : Math.round(sec);
+  }
+  const asDate = Date.parse(s); // HTTP-date (যেমন: Fri, 11 Oct 2026 18:00:00 GMT)
+  if (!Number.isNaN(asDate)) {
+    return Math.max(0, asDate - Date.now());
+  }
+  return null;
+}
+
+/**
+ * §১০: ত্রুটি-বস্তু থেকে Retry-After বের করা। ক্রমানুসারে দেখা হয়:
+ * err.retryAfter / err.retry_after → err.headers['retry-after'] (বা Headers.get)
+ * → বার্তা-টেক্সটে "Retry-After: …"। মান সেকেন্ড বা HTTP-date হতে পারে।
+ */
+export function parseRetryAfterMs(err: unknown): number | null {
+  const e = err as any;
+  const fromProp = coerceRetryAfterMs(e?.retryAfter ?? e?.retry_after);
+  if (fromProp != null) return fromProp;
+  const h = e?.headers;
+  const headerRaw =
+    typeof h?.get === 'function' ? h.get('retry-after') : (h?.['retry-after'] ?? h?.['Retry-After']);
+  const fromHeader = coerceRetryAfterMs(headerRaw);
+  if (fromHeader != null) return fromHeader;
+  const msg = String(e?.message ?? e ?? '');
+  const m = msg.match(/retry[- ]after\s*[:=]?\s*([^\n;]{1,40})/i);
+  if (m) return coerceRetryAfterMs(m[1]);
+  return null;
+}
+
+/**
+ * Full-jitter এক্সপোনেনশিয়াল ব্যাকঅফ (§১০):
+ * delay = random(baseMs/2, min(maxDelayMs, baseMs * 2^attempt))
+ */
+export function fullJitterDelayMs(baseMs: number, attempt: number, maxDelayMs: number): number {
+  const ceiling = Math.max(1, Math.min(maxDelayMs, baseMs * Math.pow(2, attempt)));
+  const floor = Math.min(baseMs / 2, ceiling);
+  return Math.round(floor + Math.random() * (ceiling - floor));
+}
+
+/**
+ * ৪২৯/৫xx হলে ব্যাকঅফ-সহ পুনঃচেষ্টা — TTS/ASR/ছবি-সার্চ সবখানে ব্যবহৃত।
+ * ৪২৯-নিঃশেষে TemporarilyUnavailableError (লাইসেন্স-সমস্যা নয়),
+ * ৫xx/টাইমআউট-নিঃশেষে সাধারণ সৎ-ব্যর্থতা।
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  attempts = 4,
+  baseMs = 4000,
+  opts?: { maxDelayMs?: number }
+): Promise<T> {
+  const maxAttempts = Math.max(1, Math.floor(attempts));
+  const maxDelayMs = opts?.maxDelayMs ?? 90_000;
   let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
+  for (let i = 0; i < maxAttempts; i++) {
     try {
       return await fn();
     } catch (err: any) {
-      const msg = String(err?.message ?? err);
       lastErr = err;
-      if (i === attempts - 1) break;
-      if (!/429|Too many|\b5\d{2}\b|timeout/i.test(msg)) throw err;
-      await new Promise(r => setTimeout(r, baseMs * (i + 1)));
+      const msg = String(err?.message ?? err);
+      if (i === maxAttempts - 1) break;
+      if (!isRetryableErrorText(msg)) throw err;
+      // §১০: Retry-After থাকলে সেটিই (৯০ সে.-ছাদে সীমিত), নয়তো full-jitter
+      const ra = parseRetryAfterMs(err);
+      const delayMs =
+        ra != null
+          ? Math.max(0, Math.min(maxDelayMs, ra))
+          : fullJitterDelayMs(baseMs, i, maxDelayMs);
+      await new Promise(r => setTimeout(r, delayMs));
     }
   }
-  throw new Error(`${label} — সব পুনঃচেষ্টা ব্যর্থ: ${String((lastErr as any)?.message ?? lastErr).slice(0, 200)}`);
+  const finalMsg = String((lastErr as any)?.message ?? lastErr).slice(0, 200);
+  if (isRateLimitErrorText(finalMsg)) {
+    throw new TemporarilyUnavailableError(
+      `${label} — সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট): ${finalMsg}`
+    );
+  }
+  throw new Error(`${label} — সব পুনঃচেষ্টা ব্যর্থ: ${finalMsg}`);
 }
 
 /** ছবি জেনারেশনের সমর্থিত মাপ */
@@ -308,6 +416,107 @@ export function extractJson<T>(text: string): T | null {
     }
   }
   return null;
+}
+
+// ------------------------------------------------------------
+// ওয়েব-ছবি অনুসন্ধান — SDK-প্রথম, CLI-ফলব্যাক (Sprint-2, §১০)
+// প্রোব-যাচাইকৃত (২০২৬-১০-১১): zai.images.search.create কাজ করে
+// (৩ ফলাফল ৯.৫ সে.-এ) — এখন প্রাথমিক পথ; CLI কেবল ফলব্যাক।
+// ------------------------------------------------------------
+
+export interface ImageSearchHit {
+  url: string;
+  caption: string;
+  source: string;
+  width?: number;
+  height?: number;
+}
+
+export interface ImageSearchOutcome {
+  results: ImageSearchHit[];
+  /** কোন পথ থেকে এল — SDK-মেথড নাকি CLI */
+  via: 'sdk' | 'cli';
+}
+
+/** SDK/CLI-উভয় পথের সাড়া একই স্বাভাবিক-আকৃতিতে */
+function normalizeImageSearchResults(raw: any): ImageSearchHit[] {
+  const list: any[] = Array.isArray(raw?.results) ? raw.results : [];
+  const hits: ImageSearchHit[] = [];
+  for (const r of list) {
+    if (!r?.original_url) continue;
+    const w = Number(r.original_width);
+    const h = Number(r.original_height);
+    hits.push({
+      url: String(r.original_url),
+      caption: String(r.caption ?? ''),
+      source: String(r.source ?? ''),
+      ...(Number.isFinite(w) && w > 0 ? { width: Math.round(w) } : {}),
+      ...(Number.isFinite(h) && h > 0 ? { height: Math.round(h) } : {}),
+    });
+  }
+  return hits;
+}
+
+/**
+ * ওয়েব-ছবি অনুসন্ধান — প্রাথমিক পথ SDK-মেথড
+ * (`zai.images.search.create({query, count, gl:'us', rank:false})`),
+ * ব্যর্থ হলে CLI-ফলব্যাক (`z-ai image-search -q … -c … --gl us --no-rank`,
+ * ≥১৫০ সে. টাইমআউট, stdout থেকে JSON বের করা)।
+ * ৪২৯/রেট-লিমিটে সৎ-রায়: TemporarilyUnavailableError (লাইসেন্স-সমস্যা নয়)।
+ */
+export async function imageSearchSdkFirst(query: string, count = 4): Promise<ImageSearchOutcome> {
+  const q = query.trim().slice(0, 400);
+  if (!q) throw new Error('ছবি-সার্চের প্রশ্ন খালি');
+
+  // ১) SDK-পথ (প্রাথমিক) — হালকা পুনঃচেষ্টাসহ
+  let sdkNote = '';
+  try {
+    const zai = await getZAI();
+    const hits = await withRetry(
+      async () => {
+        const r = await zai.images.search.create({ query: q, count, gl: 'us', rank: false } as any);
+        const normalized = normalizeImageSearchResults(r);
+        if (normalized.length === 0) {
+          throw new Error(`SDK-ফলাফলে কোনো ছবি নেই${r?.error ? ` (${String(r.error).slice(0, 160)})` : ''}`);
+        }
+        return normalized;
+      },
+      `ছবি-সার্চ SDK (${q.slice(0, 40)})`,
+      3,
+      5000
+    );
+    return { results: hits, via: 'sdk' };
+  } catch (sdkErr) {
+    sdkNote = (sdkErr instanceof Error ? sdkErr.message : String(sdkErr)).slice(0, 160);
+  }
+
+  // ২) CLI-ফলব্যাক — একই পরিষেবা, ভিন্ন ট্রান্সপোর্ট
+  const cliPath = path.join(process.cwd(), 'node_modules', '.bin', 'z-ai');
+  try {
+    const res = await execFileAsync(
+      cliPath,
+      ['image-search', '-q', q, '-c', String(count), '--gl', 'us', '--no-rank'],
+      { timeout: 150_000, maxBuffer: 10 * 1024 * 1024 }
+    );
+    const first = res.stdout.indexOf('{');
+    const last = res.stdout.lastIndexOf('}');
+    if (first === -1 || last <= first) throw new Error('CLI-আউটপুটে JSON পাওয়া যায়নি');
+    const parsed = JSON.parse(res.stdout.slice(first, last + 1));
+    const hits = normalizeImageSearchResults(parsed);
+    if (hits.length === 0) {
+      throw new Error(`CLI-ফলাফলে কোনো ছবি নেই${parsed?.error ? ` (${String(parsed.error).slice(0, 160)})` : ''}`);
+    }
+    return { results: hits, via: 'cli' };
+  } catch (cliErr: any) {
+    const cliMsg = String(cliErr?.stderr || cliErr?.stdout || cliErr?.message || cliErr).slice(0, 200);
+    // ৪২৯/রেট-লিমিট সাময়িক-অনুপলব্ধতা — কখনোই লাইসেন্স-সমস্যা নয় (§১০)
+    if (isRateLimitErrorText(cliMsg) || /TEMPORARILY_UNAVAILABLE/.test(sdkNote)) {
+      throw new TemporarilyUnavailableError(
+        `ছবি-সার্চ সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট) — SDK: ${sdkNote} | CLI: ${cliMsg}`
+      );
+    }
+    throw new Error(`ছবি সার্চ ব্যর্থ (SDK: ${sdkNote} | CLI: ${cliMsg})`);
+  }
 }
 
 /** সাধারণ টেক্সট সম্পূর্ণতা (chatComplete-এর সরাসরি ব্যবহার) */

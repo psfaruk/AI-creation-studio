@@ -736,6 +736,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               workingDir: wd,
               // i2v — চরিত্রের পোর্ট্রেট রেফারেন্স, পরিচয়-ধারাবাহিকতার জন্য
               imageUrl: matching?.portraitDataUrl,
+              // §১০ আইডেম্পোটেন্সি: এই প্রোডাকশনের এই শট = একই request_id
+              requestKey: `sf-${ctx.productionId}-shot-${i + 1}`,
               fallbackImagePrompt: imagePromptForShot(shot, spec.style),
               fallbackGenSize: genSize,
               fallbackReferenceUrl: matching?.portraitDataUrl,

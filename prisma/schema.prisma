@@ -187,19 +187,30 @@ model Character {
 // ------------------------------------------------------------
 
 model ModelEntry {
-  id               String   @id @default(cuid())
-  key              String   @unique
-  name             String
-  category         String // llm | image | audio | video | utility | infrastructure
-  provider         String
-  license          String
-  licenseUrl       String?
-  commercialUse    String // allowed | restricted | unknown | not_applicable
-  status           String // enabled | experimental | blocked | planned
-  capabilitiesJson String // সমর্থিত মাত্রা/সময়/ফরম্যাট ইত্যাদি
-  hardwareNotes    String?
-  notes            String?
-  verifiedAt       DateTime?
-  sortOrder        Int      @default(100)
-  createdAt        DateTime @default(now())
+  id                String    @id @default(cuid())
+  key               String    @unique
+  name              String
+  category          String // llm | image | audio | video | utility | infrastructure
+  provider          String
+  license           String
+  licenseUrl        String?
+  commercialUse     String // allowed | restricted | unknown | not_applicable
+  status            String // enabled | experimental | blocked | planned (সামগ্রিক; নিচের ৪টি আলাদা মাত্রা)
+  // ---- নতুন মাস্টার প্ল্যান §২: ৪টি আলাদা স্ট্যাটাস-মাত্রা ----
+  licenseStatus     String? // allowed | allowed_noncommercial | allowed_with_conditions | provider_api_only | needs_review | blocked_by_license
+  providerStatus    String? // exposed_by_sdk | not_exposed_by_sdk | unknown
+  integrationStatus String? // integrated | partial | not_integrated
+  runtimeStatus     String? // healthy | degraded | temporarily_unavailable | unavailable_hardware | not_applicable
+  apiEndpoint       String? // যেমন: zai.video.generations.create
+  apiModelId        String? // যেমন: cogvideox-3
+  lastTestedAt      DateTime? // শেষ সফল/ব্যর্থ বাস্তব API-পরীক্ষার সময়
+  lastTestNote      String? // পরীক্ষার ফলাফল-সারাংশ
+  errorReason       String? // অনুপলব্ধ হলে প্রকৃত কারণ (লাইসেন্স/প্রোভাইডার/হার্ডওয়্যার/ইন্টিগ্রেশন)
+  toolsJson         String? // এই মডেলটি কোন কোন টুলে ব্যবহৃত
+  capabilitiesJson  String // সমর্থিত মাত্রা/সময়/ফরম্যাট ইত্যাদি
+  hardwareNotes     String?
+  notes             String?
+  verifiedAt        DateTime?
+  sortOrder         Int       @default(100)
+  createdAt         DateTime  @default(now())
 }

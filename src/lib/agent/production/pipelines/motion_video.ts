@@ -97,6 +97,8 @@ export interface AiShotRequest {
   workingDir: string;
   /** i2v রেফারেন্স (চরিত্রের পোর্ট্রেট data-URL) */
   imageUrl?: string;
+  /** §১০ আইডেম্পোটেন্সি-চাবি (productionId + শট-সূচি) — একই লজিক্যাল শটের পুনঃসাবমিটে একই request_id */
+  requestKey?: string;
   /** AI ব্যর্থ হলে ফলব্যাক-ফ্রেমের প্রম্পট */
   fallbackImagePrompt: string;
   /** ফলব্যাক-ফ্রেমের জেনারেশন সাইজ */
@@ -142,6 +144,8 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
           durationSec: duration,
           quality: 'speed',
           ...(req.imageUrl ? { imageUrl: req.imageUrl } : {}),
+          // §১০: লজিক্যাল শটের আইডেম্পোটেন্সি-চাবি — পুনঃচেষ্টায়ও একই request_id
+          ...(req.requestKey ? { requestKey: req.requestKey } : {}),
         },
         { onStatus: note => void req.onStatus?.(note) }
       );
@@ -300,6 +304,8 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
               height: dims.h,
               workingDir: wd,
               imageUrl: sourceDataUrl,
+              // §১০ আইডেম্পোটেন্সি: এই প্রোডাকশনের এই শট = একই request_id
+              requestKey: `${ctx.productionId}-shot-${i + 1}`,
               fallbackImagePrompt: imagePromptForShot(shot, spec.style),
               fallbackGenSize: genSize,
               fallbackMove: spec.cameraMove ?? shot.cameraMove,

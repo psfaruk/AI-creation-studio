@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import path from 'path';
-import { readFile, writeFile } from 'fs/promises';
+import { copyFile, readFile, writeFile } from 'fs/promises';
 import type { ArtifactMeta } from '@/lib/types';
 import { saveArtifactFile } from '../storage';
 import { createToolArtifact, artifactFilePath, artifactToDataUrl } from '../registry-helpers';
@@ -144,7 +144,7 @@ const generateVideoSpec: ToolSpec<{
   durationSec: number;
   aspect: (typeof ASPECTS)[number];
   cameraMove?: (typeof MOVES)[number];
-  sound: 'none' | 'ambient';
+  sound: 'none' | 'ambient' | 'native_ai';
   style?: string;
   engine: 'ai_diffusion' | 'cinematic_motion';
 }> = {
@@ -154,13 +154,13 @@ const generateVideoSpec: ToolSpec<{
     durationSec: z.number().int().min(5).max(20),
     aspect: z.enum(ASPECTS).default('16:9'),
     cameraMove: z.enum(MOVES).optional(),
-    sound: z.enum(['none', 'ambient']).default('none'),
+    sound: z.enum(['none', 'ambient', 'native_ai']).default('none'),
     style: z.string().max(300).optional(),
     engine: z.enum(['ai_diffusion', 'cinematic_motion']).default('ai_diffusion'),
   }),
   timeoutMs: 900_000,
   usage:
-    `- generate_video: আইডিয়া থেকে ছোট ভিডিও (৫–২০ সে.)। ইঞ্জিন: (ক) "ai_diffusion" (ডিফল্ট) — প্রকৃত AI ভিডিও-জেনারেশন ${AI_VIDEO_MODEL} ক্লাউড ডিফিউশন মডেলে; প্রতি শটে ~২–৪ মিনিট লাগে, শট সীমিত (২০ সে.-এ ৩টির বেশি নয়); (খ) "cinematic_motion" — AI স্টোরিবোর্ড ফ্রেম + ক্যামেরা-মোশন (ডিফিউশন নয়, দ্রুত)। AI-শট ব্যর্থ হলে সেই শট সৎ-ফলব্যাকে (ক্যামেরা-মোশন) যায় এবং সারাংশে স্পষ্ট লেবেল হয়। arguments: {idea: "আইডিয়া", durationSec: 5-20, aspect: "9:16"|"16:9"|"1:1"|"4:5"|"3:2" (ডিফল্ট "16:9"), cameraMove?: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static", sound: "none"|"ambient", style?: "ভিজ্যুয়াল স্টাইল", engine?: "ai_diffusion"|"cinematic_motion"}. মিউজিক ভিডিও/শর্টফিল্মের জন্য propose_job ব্যবহার করো।`,
+    `- generate_video: আইডিয়া থেকে ছোট ভিডিও (৫–২০ সে.)। ইঞ্জিন: (ক) "ai_diffusion" (ডিফল্ট) — প্রকৃত AI ভিডিও-জেনারেশন ${AI_VIDEO_MODEL} ক্লাউড ডিফিউশন মডেলে; প্রতি শটে ~২–৪ মিনিট লাগে, শট সীমিত (২০ সে.-এ ৩টির বেশি নয়); (খ) "cinematic_motion" — AI স্টোরিবোর্ড ফ্রেম + ক্যামেরা-মোশন (ডিফিউশন নয়, দ্রুত)। সাউন্ড: "none" (নীরব) | "ambient" (সংশ্লেষিত পরিবেশ-শব্দ) | "native_ai" (ai_diffusion-এর সাথে — মডেল-নির্মিত প্রকৃত AI-অডিও, প্রোব-যাচাইকৃত AAC; এই মোডে ক্লিপ-ট্রানজিশন থাকে না)। AI-শট ব্যর্থ হলে সেই শট সৎ-ফলব্যাকে (ক্যামেরা-মোশন) যায় এবং সারাংশে স্পষ্ট লেবেল হয়। arguments: {idea: "আইডিয়া", durationSec: 5-20, aspect: "9:16"|"16:9"|"1:1"|"4:5"|"3:2" (ডিফল্ট "16:9"), cameraMove?: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static", sound: "none"|"ambient"|"native_ai", style?: "ভিজ্যুয়াল স্টাইল", engine?: "ai_diffusion"|"cinematic_motion"}. মিউজিক ভিডিও/শর্টফিল্মের জন্য propose_job ব্যবহার করো।`,
   inputSummary: i =>
     `রিয়েল AI ভিডিও (${i.engine === 'cinematic_motion' ? 'ক্যামেরা-মোশন' : 'CogVideoX-3'}): ${truncate(i.idea, 50)} — ${i.durationSec}s ${i.aspect}`,
   execute: async (input, ctx) => {
@@ -189,6 +189,8 @@ const generateVideoSpec: ToolSpec<{
       }
 
       const clips: string[] = [];
+      const nativeAudio = input.sound === 'native_ai' && engine === 'ai_diffusion';
+      let nativeAudioShots = 0;
 
       if (engine === 'ai_diffusion') {
         // ২ক) প্রকৃত AI শট-জেনারেশন (CogVideoX-3) — প্রতি শটে সর্বোচ্চ ১ পুনঃচেষ্টা,
@@ -198,6 +200,7 @@ const generateVideoSpec: ToolSpec<{
           const clipPath = path.join(tempDir, `aishot-${i}.mp4`);
           const motionPrompt = buildAiVideoPrompt(shot.description, input.style, shot.cameraMove);
           let aiOk = false;
+          let shotNativeAudio = false;
           let lastErr = '';
           for (let attempt = 0; attempt < 2 && !aiOk; attempt++) {
             try {
@@ -205,25 +208,25 @@ const generateVideoSpec: ToolSpec<{
                 prompt: motionPrompt,
                 durationSec: Math.round(Math.max(5, Math.min(10, shot.durationSec))),
                 quality: 'speed',
+                withAudio: nativeAudio,
+                requestKey: `gen-video-shot-${i}`,
               });
               await writeFile(path.join(tempDir, `ai-raw-${i}.mp4`), clip.buffer);
+              shotNativeAudio = nativeAudio && clip.nativeAudio;
               // লক্ষ্য-মাত্রা/fps-এ স্বাভাবিকীকরণ (কেন্দ্র-ক্রপ)
-              await runFfmpeg(
-                [
-                  '-i', path.join(tempDir, `ai-raw-${i}.mp4`),
-                  '-vf',
-                  `scale=${dims.w}:${dims.h}:force_original_aspect_ratio=increase,crop=${dims.w}:${dims.h},fps=${fps},setsar=1`,
-                  '-an',
-                  '-c:v',
-                  'libx264',
-                  '-preset',
-                  'fast',
-                  '-crf',
-                  '20',
-                  clipPath,
-                ],
-                { timeoutMs: 180_000, label: `AI শট ${i + 1} স্বাভাবিকীকরণ` }
-              );
+              // native_ai-মোডে মডেল-নির্মিত অডিও-স্ট্রিম সংরক্ষিত থাকে
+              const normArgs = [
+                '-i', path.join(tempDir, `ai-raw-${i}.mp4`),
+                '-vf',
+                `scale=${dims.w}:${dims.h}:force_original_aspect_ratio=increase,crop=${dims.w}:${dims.h},fps=${fps},setsar=1`,
+              ];
+              if (shotNativeAudio) {
+                normArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2');
+              } else {
+                normArgs.push('-an', '-c:v', 'libx264', '-preset', 'fast', '-crf', '20');
+              }
+              normArgs.push(clipPath);
+              await runFfmpeg(normArgs, { timeoutMs: 180_000, label: `AI শট ${i + 1} স্বাভাবিকীকরণ` });
               aiOk = true;
             } catch (err: any) {
               lastErr = String(err?.message ?? err).slice(0, 160);
@@ -231,7 +234,10 @@ const generateVideoSpec: ToolSpec<{
           }
           if (aiOk) {
             clips.push(clipPath);
-            shotEngineLabels.push(`শট ${i + 1}: ${AI_VIDEO_MODEL} AI`);
+            if (shotNativeAudio) nativeAudioShots++;
+            shotEngineLabels.push(
+              `শট ${i + 1}: ${AI_VIDEO_MODEL} AI${shotNativeAudio ? ' + নেটিভ-অডিও' : ''}`
+            );
           } else {
             // সৎ-ফলব্যাক (স্পষ্ট লেবেলসহ)
             const framePath = path.join(tempDir, `fb-frame-${i}.png`);
@@ -268,11 +274,17 @@ const generateVideoSpec: ToolSpec<{
         }
       }
 
-      // ৩) কনক্যাট
+      // ৩) কনক্যাট — native_ai-মোডে অডিও-সংরক্ষী পথ (কোনো ট্রানজিশন নেই, সৎ নোট);
+      //    বাকি মোডে আগের xfade/ফেড-পথ (নীরব)
       const silentPath = path.join(tempDir, 'silent.mp4');
-      await concatClips(clips, silentPath, { transitionSec: 0.6 });
+      if (nativeAudio && clips.length > 1) {
+        await concatClipsKeepAudio(clips, silentPath, tempDir);
+      } else {
+        await concatClips(clips, silentPath, { transitionSec: 0.6 });
+      }
 
-      // ৪) সাউন্ড (ঐচ্ছিক ambient — সংশ্লেষিত, সৎ লেবেল)
+      // ৪) সাউন্ড — native_ai-মোডে মডেল-নির্মিত অডিও এমনিতেই আছে;
+      //    'ambient' হলে সংশ্লেষিত পরিবেশ-শব্দ (সৎ লেবেল)
       let finalPath = silentPath;
       if (input.sound === 'ambient') {
         const mixed = await mixAudioTracks({
@@ -297,6 +309,7 @@ const generateVideoSpec: ToolSpec<{
       if (!info.hasVideo || info.durationSec < 1) throw new Error('ভিডিও রেন্ডার সঠিক হয়নি');
 
       const aiCount = shotEngineLabels.filter(l => l.includes('AI')).length;
+      const nativeAudioOk = nativeAudio ? nativeAudioShots > 0 : undefined;
       const artifact = await registerVideoArtifact({
         ctx,
         file: finalPath,
@@ -311,14 +324,25 @@ const generateVideoSpec: ToolSpec<{
           height: info.height,
           shots: shots.length,
           shotEngineLabels,
+          nativeAudioShots: nativeAudio ? nativeAudioShots : undefined,
           honestLabel:
             engine === 'ai_diffusion'
-              ? `${aiCount}/${shots.length} শট প্রকৃত AI (${AI_VIDEO_MODEL}); বাকি ক্যামেরা-মোশন ফলব্যাক`
+              ? `${aiCount}/${shots.length} শট প্রকৃত AI (${AI_VIDEO_MODEL}); বাকি ক্যামেরা-মোশন ফলব্যাক` +
+                (nativeAudio
+                  ? nativeAudioOk
+                    ? `; ${nativeAudioShots}/${shots.length} শটে মডেল-নির্মিত নেটিভ-অডিও`
+                    : '; নেটিভ-অডিও আসেনি (সৎ-তথ্য)'
+                  : '')
               : 'cinematic_motion ইঞ্জিন — AI স্টোরিবোর্ড + ক্যামেরা-মোশন (ডিফিউশন নয়)',
         },
       });
       return {
-        summary: `ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সে., ${info.width}×${info.height}, ${shots.length}টি শট [${shotEngineLabels.join('; ')}]`,
+        summary: `ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সে., ${info.width}×${info.height}, ${shots.length}টি শট [${shotEngineLabels.join('; ')}]` +
+          (nativeAudio
+            ? nativeAudioOk
+              ? `; নেটিভ AI-অডিও ${nativeAudioShots} শটে`
+              : '; নেটিভ-অডিও আসেনি (সৎ-তথ্য)'
+            : ''),
         resultJson: JSON.stringify({
           artifactId: artifact.id,
           engine,
@@ -328,6 +352,7 @@ const generateVideoSpec: ToolSpec<{
           aspect,
           sound: input.sound,
           hasAudio: info.hasAudio,
+          nativeAudioShots: nativeAudio ? nativeAudioShots : undefined,
           shotEngineLabels,
         }),
         artifacts: [artifact],
@@ -354,6 +379,66 @@ function buildAiVideoPrompt(description: string, style?: string, cameraMove?: Ca
   ];
   if (style) parts.push((style ?? '').toString().trim().slice(0, 150));
   return parts.filter(Boolean).join(', ');
+}
+
+/**
+ * অডিও-সংরক্ষী কনক্যাট (native_ai-মোড) — অডিও-বিহীন ক্লিপে নীরব-ট্র্যাক
+ * যোগ করে সব ক্লিপ অভিন্ন স্ট্রিম-গঠনে এনে concat-demuxer দিয়ে জোড়া হয়।
+ * এই পথে ভিজ্যুয়াল ট্রানজিশন থাকে না (xfade অডিও ফেলে দেয়) — সৎ নোট।
+ */
+async function concatClipsKeepAudio(clips: string[], outputPath: string, tempDir: string): Promise<void> {
+  if (clips.length === 0) throw new Error('কনক্যাট করার মতো কোনো ক্লিপ নেই');
+  const uniform: string[] = [];
+  for (let i = 0; i < clips.length; i++) {
+    const info = await mediaInfo(clips[i]);
+    if (info.hasAudio) {
+      uniform.push(clips[i]);
+      continue;
+    }
+    // নীরব AAC-ট্র্যাক যোগ (৪৪.১kHz স্টেরিও — অন্য ক্লিপের সাথে অভিন্ন)
+    const silentClip = path.join(tempDir, `silentaudio-${i}.mp4`);
+    await runFfmpeg(
+      [
+        '-i', clips[i],
+        '-f', 'lavfi',
+        '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-shortest',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        silentClip,
+      ],
+      { timeoutMs: 120_000, label: `নীরব-ট্র্যাক যোগ (ক্লিপ ${i + 1})` }
+    );
+    uniform.push(silentClip);
+  }
+  if (uniform.length === 1) {
+    await copyFile(uniform[0], outputPath);
+    return;
+  }
+  const listPath = path.join(tempDir, 'concat-list.txt');
+  const listContent = uniform.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+  const { writeFile: wf } = await import('fs/promises');
+  await wf(listPath, listContent, 'utf-8');
+  await runFfmpeg(
+    [
+      '-f', 'concat',
+      '-safe', '0',
+      '-i', listPath,
+      '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '20',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-ar', '44100',
+      '-ac', '2',
+      '-movflags', '+faststart',
+      outputPath,
+    ],
+    { timeoutMs: 300_000, label: 'অডিও-সংরক্ষী কনক্যাট (native_ai)' }
+  );
 }
 // ------------------------------------------------------------
 // ৩. animate_image — স্থির ছবি → Ken Burns মোশন ভিডিও
@@ -873,17 +958,19 @@ const imageToVideoSpec: ToolSpec<{
   image: string;
   motionPrompt: string;
   durationSec: number;
+  withAudio: boolean;
 }> = {
   name: 'image_to_video',
   parameters: z.object({
     image: z.string().min(1).max(120),
     motionPrompt: z.string().min(3).max(1200),
     durationSec: z.number().int().min(5).max(10).default(5),
+    withAudio: z.boolean().default(false),
   }),
   timeoutMs: 900_000,
   usage:
-    `- image_to_video: রেফারেন্স ছবি থেকে প্রকৃত AI ভিডিও (CogVideoX-3 image-to-video ডিফিউশন) — ছবির পরিচয়/পোশাক/পরিবেশ যতটা সম্ভব ধরে রেখে motionPrompt-এ বর্ণিত নড়াচড়া তৈরি হয়। প্রতিটি ক্লিপে ~২–৪ মিনিট লাগে। এটি animate_image-এর চেয়ে ভিন্ন — animate_image শুধু ক্যামেরা-মুভমেন্ট (Ken Burns) যোগ করে, নতুন মোশন তৈরি করে না। arguments: {image: "<ছবির artifact আইডি>", motionPrompt: "কী নড়াচড়া হবে — যেমন: এই চরিত্রটি বৃষ্টিতে হাঁটছে, ছাতা খুলছে, পেছনে তাকাচ্ছে", durationSec: 5|10 (ডিফল্ট 5)}`,
-  inputSummary: i => `ছবি→AI ভিডিও: ${truncate(i.motionPrompt, 50)} — ${i.durationSec}s`,
+    `- image_to_video: রেফারেন্স ছবি থেকে প্রকৃত AI ভিডিও (CogVideoX-3 image-to-video ডিফিউশন) — ছবির পরিচয়/পোশাক/পরিবেশ যতটা সম্ভব ধরে রেখে motionPrompt-এ বর্ণিত নড়াচড়া তৈরি হয়। প্রতিটি ক্লিপে ~২–৪ মিনিট লাগে। withAudio: true হলে মডেল-নির্মিত প্রকৃত AI-অডিওও আসে (প্রোব-যাচাইকৃত AAC স্ট্রিম; পরিবেশ-শব্দ/অ্যাম্বিয়েন্স ধাঁচের)। এটি animate_image-এর চেয়ে ভিন্ন — animate_image শুধু ক্যামেরা-মুভমেন্ট (Ken Burns) যোগ করে, নতুন মোশন তৈরি করে না। arguments: {image: "<ছবির artifact আইডি>", motionPrompt: "কী নড়াচড়া হবে — যেমন: এই চরিত্রটি বৃষ্টিতে হাঁটছে, ছাতা খুলছে, পেছনে তাকাচ্ছে", durationSec: 5|10 (ডিফল্ট 5), withAudio: true|false (ডিফল্ট false)}`,
+  inputSummary: i => `ছবি→AI ভিডিও: ${truncate(i.motionPrompt, 50)} — ${i.durationSec}s${i.withAudio ? ' +নেটিভ-অডিও' : ''}`,
   execute: async (input, ctx) => {
     const src = await artifactFilePath(input.image);
     if (src.kind !== 'image') throw new Error('image_to_video-র উৎস অবশ্যই ছবি artifact হতে হবে');
@@ -901,6 +988,8 @@ const imageToVideoSpec: ToolSpec<{
             durationSec: input.durationSec,
             imageUrl: dataUrl,
             quality: 'speed',
+            withAudio: input.withAudio,
+            requestKey: `i2v-${input.image}`,
           });
           ok = true;
         } catch (err: any) {
@@ -934,6 +1023,7 @@ const imageToVideoSpec: ToolSpec<{
         { timeoutMs: 180_000, label: 'i2v স্বাভাবিকীকরণ' }
       );
       const info = await mediaInfo(finalPath);
+      const nativeAudioCame = input.withAudio && info.hasAudio;
       const artifact = await registerVideoArtifact({
         ctx,
         file: finalPath,
@@ -945,11 +1035,23 @@ const imageToVideoSpec: ToolSpec<{
           durationSec: info.durationSec,
           width: info.width,
           height: info.height,
-          honestLabel: `প্রকৃত AI image-to-video (${AI_VIDEO_MODEL})`,
+          nativeAudio: input.withAudio ? Boolean(nativeAudioCame) : undefined,
+          honestLabel:
+            `প্রকৃত AI image-to-video (${AI_VIDEO_MODEL})` +
+            (input.withAudio
+              ? nativeAudioCame
+                ? ' + মডেল-নির্মিত নেটিভ AI-অডিও'
+                : ' (নেটিভ-অডিও চাওয়া হয়েছিল, আসেনি — সৎ-তথ্য)'
+              : ''),
         },
       });
       return {
-        summary: `ছবি থেকে AI ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সে., ${info.width}×${info.height} (${AI_VIDEO_MODEL}, রেফারেন্স: ${src.fileName})`,
+        summary: `ছবি থেকে AI ভিডিও তৈরি — ${info.durationSec.toFixed(1)} সে., ${info.width}×${info.height} (${AI_VIDEO_MODEL}, রেফারেন্স: ${src.fileName})` +
+          (input.withAudio
+            ? nativeAudioCame
+              ? '; নেটিভ AI-অডিওসহ'
+              : '; নেটিভ-অডিও আসেনি (সৎ-তথ্য)'
+            : ''),
         resultJson: JSON.stringify({
           artifactId: artifact.id,
           aiModel: AI_VIDEO_MODEL,
@@ -957,6 +1059,8 @@ const imageToVideoSpec: ToolSpec<{
           durationSec: info.durationSec,
           width: info.width,
           height: info.height,
+          hasAudio: info.hasAudio,
+          nativeAudio: input.withAudio ? Boolean(nativeAudioCame) : undefined,
         }),
         artifacts: [artifact],
       };

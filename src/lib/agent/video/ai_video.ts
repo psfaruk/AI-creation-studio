@@ -5,14 +5,26 @@
 // ক্লাউড পরিষেবা)। ২০২৬-১০-১১-এর প্রোব-যাচাই:
 //  - t2v: {prompt, duration} → ~১৩৮ সেকেন্ডে ৫ সে.-এর প্রকৃত MP4 ✓
 //  - i2v: image_url ডেটা-URL গ্রহণ করে ✓
-//  - সাবমিটগুলোর মাঝে ≥৯০ সে. ফাঁক না দিলে 429 — ধৈর্যশীল ব্যাকঅফ
+//  - with_audio:true → প্রকৃত AAC অডিও-স্ট্রিম (16kHz mono) ✓
+//  - request_id গৃহীত ও echo-হয় (§১০ idempotency) ✓
+//  - সাবমিটগুলোর মাঝে ≥৩০ সে. ফাঁক না দিলে 429 — ব্যাকঅফ
+//    এখন §১০-অনুযায়ী: Retry-After-সচেতন + এক্সপোনেনশিয়াল+জিটার
+//    (৬০ সে. ভিত্তি → সর্বোচ্চ ৯০ সে.), নিঃশেষে সৎ-রায়:
+//    TEMPORARILY_UNAVAILABLE (রেট-লিমিট — লাইসেন্স-সমস্যা নয়)
 //  - প্রতিটি টাস্ক ২–৪ মিনিট পর্যন্ত চলতে পারে
 //
 // সততার নিয়ম (§৪.৩): FFmpeg-কে কখনো AI ভিডিও-জেনারেশন বলে দেখানো
 // হয় না — এখানে কেবল প্রকৃত ক্লাউড-মডেলের ফলাফলই "AI ভিডিও"।
 // ============================================================
 
+import { createHash } from 'crypto';
 import { getZAI } from '../llm';
+import {
+  TemporarilyUnavailableError,
+  isRateLimitErrorText,
+  parseRetryAfterMs,
+  fullJitterDelayMs,
+} from '../sdk-helpers';
 import { mediaInfo, type MediaInfo } from '@/lib/media/ffmpeg';
 import { writeFile, mkdtemp, rm } from 'fs/promises';
 import path from 'path';
@@ -30,6 +42,8 @@ export const AI_VIDEO_LIMITS = {
   pollIntervalMs: 7000,
   /** সাবমিট-ব্যাকঅফ (৪২৯-এ) — প্রোব-৩: ৪৫ সে.-এও ৬ বার 429 */
   submitBackoffMs: 60_000,
+  /** §১০: ব্যাকঅফের সর্বোচ্চ সীমা (এক্সপোনেনশিয়াল+জিটার) */
+  submitBackoffMaxMs: 90_000,
   submitAttempts: 6,
   /** পরপর সাবমিটের ন্যূনতম ব্যবধান */
   minSubmitGapMs: 30_000,
@@ -47,6 +61,13 @@ export interface AiVideoRequest {
   /** মডেলের নিজস্ব অডিও চাই কি না */
   withAudio?: boolean;
   size?: string;
+  /**
+   * §১০ আইডেম্পোটেন্সি-চাবি — লজিক্যাল শটের পরিচয় (যেমন
+   * `productionId-shot-3`)। থাকলে এখান থেকে নির্ধারক request_id
+   * তৈরি হয়; ৪২৯-পুনঃসাবমিটেও একই id যায় — প্রোভাইডার একই
+   * লজিক্যাল কাজ দুইবার নেয় না।
+   */
+  requestKey?: string;
 }
 
 export interface AiVideoTask {
@@ -71,9 +92,27 @@ export interface AiVideoClip {
   info: MediaInfo;
   coverUrl?: string;
   request: AiVideoRequest;
+  /** §৭.১: ffprobe-যাচাই — ক্লিপে নেটিভ অডিও-স্ট্রিম আছে কি না */
+  nativeAudio: boolean;
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * §১০ আইডেম্পোটেন্সি: requestKey → নির্ধারক request_id
+ * (sanitized চাবি + প্রম্পটের সংক্ষিপ্ত হ্যাশ)। একই লজিক্যাল শট
+ * একই প্রম্পটে পুনঃসাবমিট হলে সবসময় একই id — প্রোভাইডার ডিডুপ্লিকেট করে।
+ */
+export function deriveRequestId(requestKey: string, prompt: string): string {
+  const sanitized =
+    requestKey
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'shot';
+  const promptHash = createHash('sha1').update(prompt).digest('hex').slice(0, 10);
+  return `${sanitized}-${promptHash}`;
+}
 
 /** শেষ সাবমিটের সময় মনে রাখা (গ্লোবাল স্পেসিং — HMR-নিরাপদ) */
 const g = globalThis as any;
@@ -88,10 +127,13 @@ function markSubmit(): void {
 // সাবমিট + পোল + ডাউনলোড
 // ------------------------------------------------------------
 
-/** ভিডিও-টাস্ক সাবমিট — ৪২৯-এ ধৈর্যশীল ব্যাকঅফ, ব্যবধান-স্পেসিং */
+/** ভিডিও-টাস্ক সাবমিট — ৪২৯-এ §১০-ব্যাকঅফ (Retry-After → এক্সপোনেনশিয়াল+জিটার), request_id-আইডেম্পোটেন্সি */
 export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask> {
   const zai = await getZAI();
   const duration = clampDuration(req.durationSec);
+  // §১০: requestKey থাকলে নির্ধারক request_id — চক্রের বাইরে একবারই তৈরি,
+  // ফলে ৪২৯-পুনঃচেষ্টায়ও একই id যায় (প্রোভাইডার ডিডুপ্লিকেট করে)
+  const requestId = req.requestKey ? deriveRequestId(req.requestKey, req.prompt) : undefined;
 
   // ন্যূনতম ব্যবধান মেনে চলি
   const gap = Date.now() - lastSubmitAt();
@@ -100,6 +142,7 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
   }
 
   let lastErr: unknown;
+  let sawRateLimit = false;
   for (let attempt = 1; attempt <= AI_VIDEO_LIMITS.submitAttempts; attempt++) {
     try {
       const body: Record<string, unknown> = {
@@ -111,6 +154,7 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
       if (req.imageUrl) body.image_url = req.imageUrl;
       if (req.withAudio) body.with_audio = true;
       if (req.size) body.size = req.size;
+      if (requestId) body.request_id = requestId;
       const res = await zai.video.generations.create(body as any);
       markSubmit();
       const id = (res as any)?.id;
@@ -119,14 +163,27 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
     } catch (err: any) {
       lastErr = err;
       const msg = String(err?.message ?? err);
-      if (!/429|Too many|timeout|\b5\d{2}\b/i.test(msg)) throw err;
+      if (isRateLimitErrorText(msg)) sawRateLimit = true;
+      if (!/429|rate.?limit|too many|timeout|\b5\d{2}\b/i.test(msg)) throw err;
       if (attempt === AI_VIDEO_LIMITS.submitAttempts) break;
-      await sleep(AI_VIDEO_LIMITS.submitBackoffMs);
+      // §১০: Retry-After থাকলে সেটিই (৯০ সে.-ছাদে), নয়তো এক্সপোনেনশিয়াল+ফুল-জিটার
+      // (৬০ সে. ভিত্তি → সর্বোচ্চ ৯০ সে.)
+      const ra = parseRetryAfterMs(err);
+      const delayMs =
+        ra != null
+          ? Math.max(0, Math.min(AI_VIDEO_LIMITS.submitBackoffMaxMs, ra))
+          : fullJitterDelayMs(AI_VIDEO_LIMITS.submitBackoffMs, attempt - 1, AI_VIDEO_LIMITS.submitBackoffMaxMs);
+      await sleep(delayMs);
     }
   }
-  throw new Error(
-    `ভিডিও-টাস্ক সাবমিট ব্যর্থ (রেট-সীমা/সার্ভার): ${String((lastErr as any)?.message ?? lastErr).slice(0, 200)}`
-  );
+  const detail = String((lastErr as any)?.message ?? lastErr).slice(0, 200);
+  if (sawRateLimit) {
+    // ৪২৯/রেট-লিমিট নিঃশেষ — সাময়িক অনুপলব্ধতা, কখনোই লাইসেন্স-সমস্যা নয় (§১০)
+    throw new TemporarilyUnavailableError(
+      `ভিডিও-টাস্ক সাবমিট সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট): ${detail}`
+    );
+  }
+  throw new Error(`ভিডিও-টাস্ক সাবমিট ব্যর্থ (সার্ভার/টাইমআউট): ${detail}`);
 }
 
 function clampDuration(d?: number): number {
@@ -181,10 +238,24 @@ export async function downloadVideo(url: string): Promise<Buffer> {
   return buf;
 }
 
-/** বাফারের প্রযুক্তি-যাচাই (§১১ স্তর A) */
-export async function validateVideoBuffer(
-  buffer: Buffer
-): Promise<{ ok: boolean; issues: string[]; info?: MediaInfo }> {
+/** বাফারের প্রযুক্তি-যাচাই (§১১ স্তর A) — অডিও-স্ট্রিমের প্রতিবেদনসহ */
+export interface VideoValidation {
+  ok: boolean;
+  issues: string[];
+  info?: MediaInfo;
+  /** §৭.১: ffprobe-অনুযায়ী অডিও-স্ট্রিম আছে কি না */
+  hasAudio: boolean;
+  /** অডিও-স্ট্রিমের কোডেক (যেমন aac) — না থাকলে undefined */
+  audioCodec?: string;
+}
+
+/**
+ * বাফারের প্রযুক্তি-যাচাই (§১১ স্তর A)।
+ * expectAudio:true দিলে (with_audio চাওয়া হয়েছিল) অডিও-স্ট্রিম না
+ * পেলে সৎ-সমস্যা হিসেবে issue ওঠে; অন্যথা অডিও-অনুপস্থিতি
+ * কখনো ব্যর্থতা নয় — শুধু প্রতিবেদনে hasAudio/audioCodec ফেরে।
+ */
+export async function validateVideoBuffer(buffer: Buffer, opts?: { expectAudio?: boolean }): Promise<VideoValidation> {
   const issues: string[] = [];
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'aiv-'));
   try {
@@ -194,12 +265,24 @@ export async function validateVideoBuffer(
     try {
       info = await mediaInfo(f);
     } catch (err: any) {
-      return { ok: false, issues: [`ফাইল খোলা যায়নি (ffprobe): ${String(err?.message ?? err).slice(0, 120)}`] };
+      return {
+        ok: false,
+        issues: [`ফাইল খোলা যায়নি (ffprobe): ${String(err?.message ?? err).slice(0, 120)}`],
+        hasAudio: false,
+      };
     }
     if (!info.hasVideo) issues.push('ভিডিও-স্ট্রিম নেই');
     if (info.durationSec < 3) issues.push(`দৈর্ঘ্য খুব কম (${info.durationSec}s)`);
     if (info.width && info.width < 360) issues.push(`রেজোলিউশন খুব কম (${info.width}x${info.height})`);
-    return { ok: issues.length === 0, issues, info };
+    // §৭.১: নেটিভ-অডিও চাওয়া হয়েছিল কিন্তু স্ট্রিম নেই — কেবল তখনই সমস্যা
+    if (opts?.expectAudio && !info.hasAudio) issues.push('অডিও-স্ট্রিম নেই');
+    return {
+      ok: issues.length === 0,
+      issues,
+      info,
+      hasAudio: info.hasAudio,
+      ...(info.audioCodec ? { audioCodec: info.audioCodec } : {}),
+    };
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
@@ -219,7 +302,8 @@ export async function generateVideoClip(
     throw new Error(`AI ভিডিও-জেনারেশন ব্যর্থ: ${reason}`);
   }
   const buffer = await downloadVideo(outcome.url);
-  const validation = await validateVideoBuffer(buffer);
+  // §৭.১: with_audio চাওয়া হলে অডিও-স্ট্রিমও ffprobe-যাচাই
+  const validation = await validateVideoBuffer(buffer, { expectAudio: req.withAudio === true });
   if (!validation.ok) {
     throw new Error(`AI ভিডিও যাচাই ব্যর্থ: ${validation.issues.join('; ')}`);
   }
@@ -232,6 +316,7 @@ export async function generateVideoClip(
     info: validation.info!,
     coverUrl: outcome.coverUrl,
     request: task.request,
+    nativeAudio: validation.hasAudio,
   };
 }
 
@@ -278,7 +363,8 @@ export async function generateVideoClips(
         continue;
       }
       const buffer = await downloadVideo(outcome.url);
-      const validation = await validateVideoBuffer(buffer);
+      // §৭.১: with_audio চাওয়া হলে অডিও-স্ট্রিমও ffprobe-যাচাই
+      const validation = await validateVideoBuffer(buffer, { expectAudio: task.request.withAudio === true });
       if (!validation.ok) {
         failures.push({ index: i, error: `যাচাই ব্যর্থ: ${validation.issues.join('; ')}` });
         continue;
@@ -295,6 +381,7 @@ export async function generateVideoClips(
           info: validation.info!,
           coverUrl: outcome.coverUrl,
           request: task.request,
+          nativeAudio: validation.hasAudio,
         },
       });
     } catch (err: any) {

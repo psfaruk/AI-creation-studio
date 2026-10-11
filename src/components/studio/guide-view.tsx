@@ -136,9 +136,9 @@ const PHASES: PhaseRow[] = [
   },
   {
     phase: 'Phase 5 — লিপ-সিঙ্ক (§৫)',
-    status: 'অবরুদ্ধ-সৎ',
+    status: 'অনুপলব্ধ-সৎ',
     state: 'blocked-honest',
-    note: '৭-ধাপ ওয়ার্কফ্লো ও সম্মতি-নীতি প্রস্তুত, কিন্তু মডেল স্থাপিত নেই — লিপ-সিঙ্ক ছাড়া কখনো "ঠোঁট নড়ছে" দাবি করা হয় না',
+    note: '৭-ধাপ ওয়ার্কফ্লো ও সম্মতি-নীতি প্রস্তুত, কিন্তু মডেল স্থাপিত নেই — বাধা হার্ডওয়্যার/API/ইন্টিগ্রেশনের (লাইসেন্সে নয়); লিপ-সিঙ্ক ছাড়া কখনো "ঠোঁট নড়ছে" দাবি করা হয় না',
   },
   {
     phase: 'Phase 6 — মিউজিক ভিডিও (§৬)',
@@ -161,7 +161,7 @@ const PHASES: PhaseRow[] = [
 ];
 
 // ------------------------------------------------------------
-// §৪.৩ Capability Router — ৭ সারির টেবিল
+// §৪.৩ Capability Router — ৮ সারির টেবিল (নতুন: ভিডিওর সাথে নেটিভ অডিও)
 // ------------------------------------------------------------
 
 interface RouterRow {
@@ -189,6 +189,12 @@ const ROUTER_ROWS: RouterRow[] = [
     tool: 'generate_video (অভিনয়-নির্দেশিত প্রম্পট)',
     engine: 'CogVideoX-3 (ক্যারেক্টার-মোশন প্রম্পট সহ)',
     status: 'experimental',
+  },
+  {
+    request: 'ভিডিওর সাথে নেটিভ অডিও',
+    tool: 'generate_video (withAudio)',
+    engine: 'CogVideoX-3 with_audio (ক্লাউড)',
+    status: 'ready',
   },
   {
     request: 'কথা বলার ঠোঁট মেলানো',
@@ -219,14 +225,15 @@ const ROUTER_ROWS: RouterRow[] = [
 const ROUTER_STATUS_META: Record<RouterRow['status'], { label: string; className: string }> = {
   ready: { label: 'চালু', className: 'text-emerald-700 dark:text-emerald-400' },
   experimental: { label: 'পরীক্ষামূলক', className: 'text-amber-700 dark:text-amber-400' },
-  unavailable: { label: 'অবরুদ্ধ', className: 'text-stone-600 dark:text-stone-300' },
+  unavailable: { label: 'অনুপলব্ধ', className: 'text-stone-600 dark:text-stone-300' },
 };
 
 // ------------------------------------------------------------
 // §১৪ Definition of Done — ১৫ দফার সৎ অবস্থা
+// (অনুপলব্ধ মানে লাইসেন্স-বাধা নয় — কারণ হার্ডওয়্যার/API/ইন্টিগ্রেশন)
 // ------------------------------------------------------------
 
-type DodStatus = 'active' | 'experimental' | 'blocked';
+type DodStatus = 'active' | 'experimental' | 'unavailable';
 
 interface DodRow {
   item: string;
@@ -240,21 +247,21 @@ const DOD_ROWS: DodRow[] = [
   { item: 'TTS কণ্ঠ তৈরি — সব ভাষায় প্রকৃত AI', status: 'active' },
   { item: 'বাংলা ভয়েসওভার — ভাষা-যাচাই + ASR ব্যাক-চেক (রায় সবসময় "সতর্কতা")', status: 'active' },
   { item: 'ইনস্ট্রুমেন্টাল মিউজিক — প্রসিডিউরাল, নিউরাল-মডেল নয়', status: 'experimental' },
-  { item: 'পূর্ণ গান (কণ্ঠসংগীতসহ) সংশ্লেষণ', status: 'blocked' },
+  { item: 'পূর্ণ গান (কণ্ঠসংগীতসহ) সংশ্লেষণ — বাধা: GPU/API (লাইসেন্স নয়)', status: 'unavailable' },
   { item: 'রিয়েল AI ভিডিও — CogVideoX-3 t2v', status: 'active' },
   { item: 'ছবি → রিয়েল AI ভিডিও — CogVideoX-3 i2v', status: 'active' },
   { item: 'চরিত্র-অ্যানিমেশন — মোশন-প্রম্পট-ভিত্তিক, ফলাফল পরিবর্তনশীল', status: 'experimental' },
-  { item: 'লিপ-সিঙ্ক / কথা-বলা চরিত্র', status: 'blocked' },
+  { item: 'লিপ-সিঙ্ক / কথা-বলা চরিত্র — বাধা: GPU/API/ইন্টিগ্রেশন (লাইসেন্স নয়)', status: 'unavailable' },
   { item: 'মিউজিক ভিডিও — গান-সমলয় বিট-মার্কার কাট', status: 'active' },
   { item: 'শর্টফিল্ম — ৮-স্তর পাইপলাইন + চরিত্র-ধারাবাহিকতা + সাবটাইটেল', status: 'active' },
   { item: 'গুণমান-যাচাই — ffprobe / astats / ebur128 / VLM', status: 'active' },
-  { item: 'সততা-নীতি — অবরুদ্ধ ক্ষমতা কখনো লুকানো হয় না (রেজিস্ট্রি + স্টুডিও-ব্যাজ)', status: 'active' },
+  { item: 'সততা-নীতি — অনুপলব্ধ ক্ষমতা কখনো লুকানো হয় না (রেজিস্ট্রি + স্টুডিও-ব্যাজ + অ্যাভেইলেবিলিটি ম্যাট্রিক্স)', status: 'active' },
 ];
 
 const DOD_STATUS_META: Record<DodStatus, { label: string; className: string }> = {
   active: { label: 'চালু', className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400' },
   experimental: { label: 'পরীক্ষামূলক', className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' },
-  blocked: { label: 'অবরুদ্ধ', className: 'border-stone-400/50 bg-stone-400/15 text-stone-600 dark:text-stone-300' },
+  unavailable: { label: 'অনুপলব্ধ', className: 'border-stone-400/50 bg-stone-400/15 text-stone-600 dark:text-stone-300' },
 };
 
 // ------------------------------------------------------------
@@ -273,7 +280,7 @@ const HOW_IT_WORKS = [
 const CAPABILITIES = [
   'ছবি: তৈরি, এডিট, ইনপেইন্ট, পটভূমি/বস্তু অপসারণ, রিস্টাইল, আপস্কেল, রং, ক্রপ, বাংলা টাইপোগ্রাফি/পোস্টার, ফরম্যাট রপ্তানি।',
   'অডিও: কণ্ঠ তৈরি (৭ কণ্ঠ, ভাষা-নিয়ন্ত্রকসহ যাচাই), লিপিবদ্ধকরণ, ইনস্ট্রুমেন্টাল (প্রসিডিউরাল), ট্রিম/মিক্স/EQ/ফেড, গুণমান যাচাই।',
-  'ভিডিও: রিয়েল AI ভিডিও (CogVideoX-3 t2v/i2v), শট-পরিকল্পনা, সম্পাদনা, সাবটাইটেল, উন্নতকরণ, ফ্রেম-ইন্টারপোলেশন, যাচাই।',
+  'ভিডিও: রিয়েল AI ভিডিও (CogVideoX-3 t2v/i2v), নেটিভ AI-অডিওসহ ভিডিও (with_audio), শট-পরিকল্পনা, সম্পাদনা, সাবটাইটেল, উন্নতকরণ, ফ্রেম-ইন্টারপোলেশন, যাচাই।',
   'ফিল্ম: চিত্রনাট্য → দৃশ্য-বিভাজন → চরিত্র বাইবেল → অভিনয়-পরিকল্পনা → AI শট → সাউন্ড-ডিজাইন → ধারাবাহিকতা → চূড়ান্ত রেন্ডার।',
 ];
 
@@ -281,7 +288,7 @@ const HONESTY = [
   'রিয়েল AI ভিডিও ক্লাউড-ডিফিউশনে (CogVideoX-3) হয় — প্রতি শটে ২–৪ মিনিট এবং রেট-সীমায় অপেক্ষা বাড়তে পারে; ধৈর্য নিয়ে অপেক্ষা করুন।',
   'কোনো TTS কণ্ঠই বাংলা-প্রশিক্ষিত নয় — বাংলা পাঠের রায় সবসময় "সতর্কতা"; প্রিভিউ শুনে যাচাই করুন।',
   'ইনস্ট্রুমেন্টাল মিউজিক প্রসিডিউরাল সংশ্লেষণ — নিউরাল মিউজিক-মডেল নয়।',
-  'গান-গাওয়া মডেল ও লিপ-সিঙ্ক মডেল এই পরিবেশে নেই — এমন অনুরোধ করলে সৎভাবে জানানো হয়, মিথ্যা প্রতিশ্রুতি দেওয়া হয় না।',
+  'গান-গাওয়া মডেল ও লিপ-সিঙ্ক মডেল এই পরিবেশে নেই (বাধা: হার্ডওয়্যার/API/ইন্টিগ্রেশন — লাইসেন্সে নয়) — এমন অনুরোধ করলে সৎভাবে জানানো হয়, মিথ্যা প্রতিশ্রুতি দেওয়া হয় না।',
   'মিউজিক ভিডিওর জন্য নিজের গান আপলোড করা ভালো; গান ছাড়া হলে প্রসিডিউরাল স্কোর বসে।',
   'ফটোরিয়ালিস্টিক অভিনয়/নিখুঁত চরিত্র-ধারাবাহিকতার নিশ্চয়তা নেই — ব্যর্থ শট সংশোধন করে আবার চালানো যায়।',
   'ASR বাংলা অডিওতে দুর্বল — বাংলা ভয়েসওভারের যাচাই-রায় মূলত দৈর্ঘ্য ও ইংরেজি-রাউন্ড-ট্রিপের ওপর নির্ভরশীল।',
@@ -447,6 +454,12 @@ export function GuideView() {
             );
           })}
         </ul>
+        <p className="mt-3 flex items-start gap-1.5 rounded-lg border border-emerald-600/30 bg-emerald-600/5 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+          লাইসেন্স-কারণে অবরুদ্ধ মডেল নেই — “অনুপলব্ধ” ক্ষমতাগুলোর প্রকৃত কারণ হার্ডওয়্যার/API/ইন্টিগ্রেশন।
+          প্রতিটি ক্ষমতার চার-মাত্রিক রায় (লাইসেন্স · প্রোভাইডার · ইন্টিগ্রেশন · রানটাইম) রেজিস্ট্রি ভিউয়ের
+          “অ্যাভেইলেবিলিটি ম্যাট্রিক্স”-এ দেখুন।
+        </p>
       </SectionCard>
 
       {/* সততার সীমাবদ্ধতা */}

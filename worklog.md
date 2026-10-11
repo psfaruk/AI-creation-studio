@@ -429,3 +429,102 @@ Work Log:
 
 Stage Summary:
 - §১৪-এর ১৫ দফার অবস্থা: ১,২ (বাংলা/ইংরেজি TTS+যাচাই) ✓ · ৩ ইনস্ট্রুমেন্টাল ✓ (পরীক্ষামূলক-সৎ) · ৪ গান-গাওয়া অবরুদ্ধ-সৎ · ৫,৬ (t2v/i2v প্রকৃত মোশন) ✓ · ৭ চরিত্র-অ্যানিমেশন পরীক্ষামূলক-সৎ · ৮,৯ লিপ-সিঙ্ক অবরুদ্ধ-সৎ · ১০ (A1–A5 ট্র্যাক) ✓ · ১১ (A/V সমলয়-যাচাই) ✓ · ১২ (বহু-দৃশ্য শর্টফিল্ম+সংলাপ+সাউন্ড+সাবটাইটেল+এক্সপোর্ট) ✓ · ১৩ (সৎ এরর/রিট্রাই/ফলব্যাক) ✓ · ১৪ (লাইসেন্স-রেজিস্ট্রি) ✓ · ১৫ (প্রিভিউ+রিভিশন-ফ্লো আগের সেশন থেকে চালু) ✓
+
+---
+Task ID: S1 (Unlock Master Plan — Sprint 1: Audit + Availability Matrix + False-Block সংশোধন)
+Agent: main (Z.ai Code orchestrator)
+
+Task: নতুন মাস্টার প্ল্যান (Unlock All Permitted AI Tools) §১–§৩ অডিট, চার-মাত্রিক স্ট্যাটাস কাঠামো, ভুল লাইসেন্স-সিদ্ধান্ত সংশোধন, Model & Tool Availability Matrix
+
+Work Log:
+- পূর্ণ অডিট: SDK v0.0.18-র সম্পূর্ণ API surface (index.d.ts) ম্যাপিং — ১০টি প্রকাশিত মেথড: chat.completions.create, createVision, audio.tts.create, audio.asr.create, images.generations.create/edit, images.search.create, video.generations.create, async.result.query, functions.invoke(web_search|page_reader)
+- **লাইভ-প্রোব সফল (tmp-sprint2/probe-sdk-catalog.ts):** (ক) `images.search.create` SDK মেথড কাজ করে — ৩ ফলাফল ৯.৫ সে.-এ (আগে CLI-only ভাবা হত!); (খ) `video.generations.create({with_audio:true})` → ৫.২ সে. MP4-তে **প্রকৃত AAC অডিও-স্ট্রিম (16kHz mono)** ffprobe-নিশ্চিত; (গ) `request_id` প্যারামিটার গৃহীত ও echo-হয়ে ফেরে — **idempotency সমর্থিত**
+- লাইসেন্স-যাচাই (web-search, §২-এর বাধ্যতামূলক নিয়ম): MusicGen ওয়েট CC-BY-NC 4.0 নিশ্চিত (HuggingFace মডেল-কার্ড); YuE ওয়েট CC-BY-NC 4.0; Wan2.2 মূলত Apache-2.0
+- ভুল-সিদ্ধান্ত সংশোধন: MusicGen "blocked"(লাইসেন্স) → `allowed_noncommercial` + প্রকৃত বাধা `unavailable_hardware` + `not_exposed_by_sdk`; singing-tts-ও একই সংশোধন। রেজিস্ট্রিতে এখন কেউই blocked_by_license নয় — কোনো অ-বাণিজ্যিক-মডেল অযথা অবরুদ্ধ নেই
+- prisma/schema.prisma: ModelEntry-তে ১০টি নতুন কলাম (licenseStatus, providerStatus, integrationStatus, runtimeStatus, apiEndpoint, apiModelId, lastTestedAt, lastTestNote, errorReason, toolsJson) + db:push; dev-server daemonize-রিস্টার্ট (পুরোনো Prisma-client ক্যাশ)
+- types.ts: LicenseStatus/ProviderStatus/IntegrationStatus/RuntimeStatus টাইপ + ModelEntryView-সম্প্রসারণ + AvailabilityMatrixRow/Response (MatrixOverall: available|available_with_limits|experimental|unavailable_here|future)
+- model-registry-data.ts: সম্পূর্ণ পুনর্লিখন — ২২ এন্ট্রি (নতুন: platform-image-search, platform-video-audio, platform-functions), প্রতিটিতে ৪-মাত্রিক স্ট্যাটাস + apiEndpoint + lastTestNote + errorReason + tools তালিকা
+- availability-matrix.ts (নতুন): §৫-এর ঐক্য ক্ষমতা-টেবিল — ২৩ সারি (speech থেকে short_film পর্যন্ত), প্রতিটিতে ৪-মাত্রিক রায় + overall + honestNote + fallback; matrixRowForTask() + availabilityMatrixResponse() (usageMode + legend-সহ)
+- /api/availability (নতুন GET): ম্যাট্রিক্স-প্রতিক্রিয়া; /api/registry: নতুন ফিল্ডসহ idempotent upsert (প্রতি কলে রিফ্রেশ) — curl-যাচাই: ২২ এন্ট্রি সব নতুন ফিল্ডসহ ✓, ম্যাট্রিক্স ২৩ সারি ✓
+- capability-শ্রেণির সৎ রায়: TTS=available_with_limits (bn-প্রিভিউ বাধ্যতামূলক), instrumental=experimental (প্রসিডিউরাল-সৎ), full_song/টকিং-পোর্ট্রেট/গান-লিপসিঙ্ক=future/unavailable_here (কারণ-ভাঙনসহ), t2v/i2v/video_native_audio=available (প্রোব-যাচাইকৃত)
+
+Stage Summary:
+- **প্রথম Deliverable তৈরি ও লাইভ:** Model & Tool Availability Matrix (/api/availability) — সব মডেলের license/provider/integration/runtime/hardware/final-status একসাথে
+- তিনটি নতুর আবিষ্কার SDK-তে: images.search SDK-মেথড, with_audio নেটিভ-অডিও, request_id idempotency — এগুলো এখন পাইপলাইনে যুক্ত হবে
+- Task 2-b (backend) ও 2-c (frontend) সাবএজেন্টের জন্য প্রস্তুত; কাজের বিস্তারিত নিচের টাস্ক-বরাদ্দে
+
+---
+Task ID: 2-b (Unlock Master Plan — Backend Hardening)
+Agent: full-stack-developer (backend)
+Task: §১০ রিট্রাই-নীতি ওভারহল (Retry-After + ফুল-জিটার এক্সপোনেনশিয়াল) + SDK-প্রথম ছবি-সার্চ + ভিডিও আইডেম্পোটেন্সি/নেটিভ-অডিও-যাচাই + লিপ-সিঙ্ক ৪-মাত্রিক ভাঙন — সব সৎ-রায়, ৪২৯ কখনো লাইসেন্স-সমস্যা নয়
+
+Work Log:
+- sdk-helpers.ts: withRetry পুনর্লিখন — ত্রুটি-বস্তু থেকে Retry-After পার্স (err.retryAfter / headers['retry-after'] / বার্তা-টেক্সট; সেকেন্ড-সংখ্যা বা HTTP-date), Retry-After না থাকলে ফুল-জিটার এক্সপোনেনশিয়াল ব্যাকঅফ delay=random(baseMs/2, baseMs×2^attempt) ছাদ ৯০ সে., চেষ্টা-সংখ্যা কনফিগারযোগ্য (ডিফল্ট ৪); ৪২৯-নিঃশেষে নতুন এক্সপোর্টেড TemporarilyUnavailableError (বার্তা-প্রিফিক্স `TEMPORARILY_UNAVAILABLE:`) — UI এখন "সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট)" দেখাতে পারবে, ৫xx/টাইমআউট-নিঃশেষে আগের সৎ-বার্তাই; নতুন imageSearchSdkFirst(query,count) — SDK zai.images.search.create প্রাথমিক (প্রোব-যাচাইকৃত), ব্যর্থে CLI ফলব্যাক (z-ai image-search, ১৫০ সে. টাইমআউট), ফলাফল {results:[{url,caption,source,width?,height?}], via:'sdk'|'cli'}; parseRetryAfterMs/fullJitterDelayMs/isRateLimitErrorText-ও এক্সপোর্টেড; সব পুরনো এক্সপোর্ট অক্ষত
+- registry.ts: search_images টুল এখন imageSearchSdkFirst ব্যবহার করে — একই নাম/প্যারামিটার/artifact-আকৃতি, resultJson-এ নতুন via:'sdk'|'cli' (সারাংশেও কোন পথ বলে), টুল-টাইমআউট ২৪০ সে.-এ (SDK+CLI উভয় পথের জন্য)
+- ai_video.ts (§৭.১+§১০): AiVideoRequest-এ requestKey? — deriveRequestId (sanitized চাবি + প্রম্পটের sha1-হ্যাশ) থেকে নির্ধারক request_id, লুপের বাইরে একবারই তৈরি তাই ৪২৯-পুনঃসাবমিটেও একই id (প্রোভাইডার ডিডুপ্লিকেট করে — S1-প্রোবে request_id echo-যাচাইকৃত ছিল); validateVideoBuffer-র VideoValidation {ok, issues, info, hasAudio, audioCodec?} + expectAudio প্যারামিটার — 'অডিও-স্ট্রিম নেই' issue কেবল with_audio চাওয়া হলে, অন্যথা অডিও-অনুপস্থিতি কখনো ব্যর্থতা নয়; AiVideoClip-এ nativeAudio ফিল্ড; সাবমিট-ব্যাকঅফ এখন Retry-After-সচেতন + এক্সপোনেনশিয়াল+জিটার (৬০ সে. ভিত্তি → ৯০ সে. ছাদ), ৪২৯-নিঃশেষে TEMPORARILY_UNAVAILABLE:, ৫xx/টাইমআউটে আলাদা সৎ-বার্তা
+- lip_sync_module.ts (§৮): LIP_SYNC_STATUS-এ ৪+১-মাত্রিক বাধা-ভাঙন — license:'needs_review' (Wav2Lip একাডেমিক-কেবল শর্ত, SadTalker/MuseTalk আলাদা), provider:'not_exposed_by_sdk' (SDK-তে লিপ-সিঙ্ক API নেই), hardware:'unavailable_hardware' (৪–১২GB VRAM, GPU নেই), integration:'not_integrated', benchmark:'not_done' (+গানে আলাদা বেঞ্চমার্ক-নোট) + প্রতি-মাত্রার ব্যাখ্যা LIP_SYNC_BLOCKAGE_NOTES-এ; lipSyncCapabilityReport() পুরনো আকৃতি + নতুন blockageDimensions ফিল্ড; runLipSync-এর সৎ-ত্রুটিতে ৪ মাত্রা + বিকল্প (সংলাপ-অডিও + AI-দৃশ্য আলাদা, মুখ-নড়াচড়ার দাবি নেই)
+- capability_router.ts: নতুন রুট-ধরন video_native_audio — tool 'generate_video/image_to_video (withAudio)', ইঞ্জিন 'CogVideoX-3 with_audio (ক্লাউড ডিফিউশন + নেটিভ অডিও)', ready, নোটে প্রোব-যাচাইকৃত AAC-স্ট্রিম + ffprobe-যাচাই; VideoRequestKind টাইপ ও capabilityRouterTableBn() লেবেলসহ হালনাগাদ
+- system-info.ts: স্ট্যাটিক স্বাস্থ্যে নতুন {image-search: ok, 'SDK-মেথড প্রোব-যাচাইকৃত (২০২৬-১০-১১); CLI-ফলব্যাক আছে'} ও {video-audio: ok, 'প্রোব-যাচাইকৃত: প্রকৃত AAC স্ট্রিম আসে'}; লিপ-সিঙ্ক নোট → '৪-মাত্রিক বাধা: SDK-তে API নেই · GPU নেই · অ্যাডাপ্টার নেই · বাংলা বেঞ্চমার্ক হয়নি'
+- prompts.ts: সততা-অংশে ২টি নতুন নিয়ম — (ক) ভিডিওতে পরিবেশ-শব্দ চাইলে withAudio-তে প্রকৃত নেটিভ AAC অডিও আসে (ffprobe-যাচাইকৃত; নেটিভ বনাম প্রসিডিউরাল সৎভাবে জানাতে), (খ) ৪২৯/রেট-লিমিট = "সাময়িক রেট-লিমিট" — কখনো লাইসেন্স/অনুমতির সমস্যা নয়; TEMPORARILY_UNAVAILABLE দেখলে সেটিই বলতে; বাকি সব সততা-নিয়ম অক্ষত
+- পাইপলাইন (হালকা স্পর্শ, কাঠামো অপরিবর্তিত): motion_video-র AiShotRequest-এ requestKey? (generateVideoClip-এ পাস-থ্রু) + ৩টি কল-সাইটে §১০ চাবি — motion: `${productionId}-shot-${i+1}`, music_video: `mv-…`, short_film: `sf-…` (productionId PipelineContext-এ প্রত্যেক পাইপলাইনের স্কোপে আছে)
+- যাচাই: bunx tsc --noEmit → src/-এ ০ এরর (আগের এরর কেবল examples/, skills/, tmp-task2d/ — অস্পৃষ্ট); bunx eslint (১০টি স্পর্শিত ফাইল) → ০; bun run lint (পুরো প্রজেক্ট) → ০; ধূম-স্ক্রিপ্ট tmp-sprint2/retry-policy-smoke.ts (bun) → ২১/২১ পাস — জিটার-সীমা [floor,ছাদ] ১০০০ নমুনায়, এক্সপোনেনশিয়াল ছাদ-বৃদ্ধি, নিরন্তর ৪২৯→TemporarilyUnavailableError+প্রিফিক্স, নিরন্তর ৫০৩→সাধারণ সৎ-ব্যর্থতা, Retry-After পার্স (সংখ্যা/headers/বার্তা/HTTP-date) ও ব্যাকঅফে সম্মান, বাস্তব imageSearchSdkFirst কল → via:'sdk' ৩ ফলাফল ২.২ সে.-এ; curl: /api/tools ২০০, /api/registry ২০০, /api/availability ২০০, /api/system ২০০ (নতুন image-search/video-audio স্ট্যাটিক এন্ট্রি লাইভ প্রতিক্রিয়ায় দেখা গেছে); dev.log-এ কম্পাইল-এরর নেই; ধূম-স্ক্রিপ্ট DB স্পর্শ করে না — পরিষ্কার করার টেস্ট-ডেটা নেই
+
+Stage Summary:
+- §১০ পুরোণোভাবে বাস্তবায়িত: Retry-After-সচেতন ফুল-জিটার এক্সপোনেনশিয়াল রিট্রাই (৯০ সে. ছাদ) + আইডেম্পোটেন্সি-চাবি (request_id) + ৪২৯-নিঃশেষে TEMPORARILY_UNAVAILABLE সৎ-রায় — ৪২৯ আর কখনো লাইসেন্স-সমস্যা হিসেবে দেখাবে না
+- তিনটি SDK-আবিষ্কার (S1-প্রোব) এখন উৎপাদন-পথে: images.search SDK-মেথড (via:'sdk'|'cli'), with_audio নেটিভ-AAC-যাচাই (expectAudio→hasAudio/nativeAudio), request_id ডিডুপ্লিকেশন — পাইপলাইন-শটে স্বয়ংক্রিয়
+- লিপ-সিঙ্ক এখন ৪-মাত্রিক সৎ-ভাঙনসহ (license/provider/hardware/integration + benchmark) — registry/matrix/UI-তে blockageDimensions থেকে নেওয়া যাবে
+- সীমা: tools/video.ts-এর generate_video/image_to_video স্কিমায় withAudio প্যারামিটার এখনো নেই (সে ফাইল এই টাস্কের স্কোপে ছিল না) — মডিউল/পাইপলাইন স্তরে ক্ষমতাটি চালু ও video_native_audio রুটে বিজ্ঞাপিত; ফ্রন্টএন্ড TEMPORARILY_UNAVAILABLE প্রিফিক্স ধরে নতুন বাংলা বার্তা দেখাতে পারবে (2-c-এর কাজ হতে পারে)
+
+---
+Task ID: 2-c (Unlock Master Plan — Availability Matrix UI)
+Agent: full-stack-developer (frontend)
+Task: মাস্টার প্ল্যান §১৫/§১১ অনুযায়ী Availability Matrix UI — রেজিস্ট্রিতে ২৩-সারির চার-মাত্রিক ম্যাট্রিক্স-প্যানেল, স্টুডিও-মোড-কার্ডে লাইভ ম্যাট্রিক্স-নির্ণীত সৎ স্ট্যাটাস, গাইডে Router+DoD সততা-আপডেট।
+
+Work Log:
+- নতুন `src/hooks/use-availability.ts`: useAvailability() — useQuery (use-system.ts-এর প্যাটার্ন: staleTime ৫ মি., retry ১, refetchOnWindowFocus বন্ধ), type-only import @/lib/types থেকে; ফেরত দেয় { data, isLoading, error, refetch }
+- নতুন `src/components/studio/availability-badges.tsx` (শেয়ার্ড): OVERALL/LICENSE/PROVIDER/INTEGRATION/RUNTIME মেটা-ম্যাপ (emerald=চালু/স্বাস্থ্যবান, amber=সীমা/যাচাই-বাকি/আংশিক, stone=এই-পরিবেশে-অনুপলব্ধ, dashed stone=ভবিষ্যৎ, কেবল blocked_by_license=লাল) + OverallBadge + DimensionChip উপাদান — রেজিস্ট্রি ও স্টুডিও উভয়ে পুনঃব্যবহৃত
+- bn-format.ts-এ নতুন formatDateBn() ("১১ অক্টোবর ২০২৬" — শুধু-তারিখ ISO-তে টাইমজোন-নিরাপে); বাকি সব অপরিবর্তিত
+- registry-view.tsx: শীর্ষে নতুন "মডেল ও টুল অ্যাভেইলেবিলিটি ম্যাট্রিক্স" প্যানেল — usageMode-ঘোষণা (পরিবেশ+ব্যবহার+নোট), ৬টি ফিল্টার-চিপ সংখ্যাসহ (সব ২৩/চালু ১২/সীমাসহ ৪/পরীক্ষামূলক ৩/অনুপলব্ধ ২/ভবিষ্যৎ ২, min-h-11), ডেস্কটপে ৬-কলাম টেবিল-গ্রিড (ক্ষমতা+মডেল+টুল-চিপ | ৪ মাত্রা | সামগ্রিক) বনাম মোবাইলে স্ট্যাকড কার্ড (চিপ-র‍্যাপ), সারি-প্রসারণে (Collapsible) চার-মাত্রিক বিশ্লেষণ (legend-টেক্সটসহ — কোন মাত্রা বাধা স্পষ্ট) + apiEndpoint/apiModelId + শেষ পরীক্ষা (বাংলা তারিখ) + lastTestNote + honestNote + fallback + errorReason (amber সতর্ক-বক্স), max-h-[28rem] কাস্টম-স্ক্রলবার, লেজেন্ড-চিপস (২৪টি); QueryClientProvider রেজিস্ট্রি-ভিউয়ের শীর্ষে উত্তোলিত (use-system + use-availability একই ক্লায়েন্ট)
+- ModelEntryCard-সম্প্রসারণ: চার-মাত্রিক চিপ + tools-চিপ + apiEndpoint/apiModelId (mono) + "শেষ পরীক্ষা: <তারিখ> — নোট" + errorReason (amber, "অনুপলব্ধতার প্রকৃত কারণ:") — §৯.১ কী-রেন্ডার অক্ষুণ্ণ
+- সারাংশ-স্ট্রিপে সৎ নোট: "কোনো মডেল লাইসেন্স-অবরুদ্ধ নয় — অনুপলব্ধতার প্রকৃত কারণ… ম্যাট্রিক্সে দেখুন"; 'অবরুদ্ধ' সেকশন এখন শূন্য-হলে লুকানোই (গণনা-লেবেল "অবরুদ্ধ (লাইসেন্সে)")
+- studio-view.tsx (§১১): ModeStatus সম্প্রসারিত (active/limited/experimental/unavailable/future) — statusFromOverall() ম্যাপ; প্রতিটি মোডে matrixKey (audio→cap-speech/cap-instrumental/cap-full-song; video→cap-t2v/cap-i2v/cap-video-audio/cap-character-motion/cap-talking-portrait/cap-singing-lipsync/cap-video-editing; film→cap-short-film/cap-music-video/cap-motion-video) — ম্যাট্রিক্স লোড হলে overall-রায়ই ব্যাজ (TTS/ভয়েসওভার→"সীমাসহ", পূর্ণ-গান→"ভবিষ্যৎ", লিপ-সিঙ্ক→"অনুপলব্ধ (এখানে)", ফিল্ম→"সীমাসহ"/"চালু"), না লোড হলে হার্ডকোডেড সৎ ফলব্যাক; কার্ডে চার-মাত্রিক চিপ + "শেষ পরীক্ষা: <তারিখ>" চিপ + অফ-মোডে "কারণ: <errorReason>" (stone) ও "বিকল্প: <fallback>" (emerald) নোট; নতুন ৭ম ভিডিও-মোড "নেটিভ-অডিওসহ AI ভিডিও" (cap-video-audio, CogVideoX-3 with_audio — S1-আবিষ্কৃত লাইভ ক্ষমতা, draft-সহ); লোকাল QueryClientProvider-র‍্যাপার
+- guide-view.tsx: §৪.৩ Capability Router ৮ সারি — নতুন "ভিডিওর সাথে নেটিভ অডিও" → generate_video (withAudio) → "CogVideoX-3 with_audio (ক্লাউড)" → চালু; 'অবরুদ্ধ'→'অনুপলব্ধ' শব্দচুক্তি; §১৪ DoD-এ blocked→unavailable ("অনুপলব্ধ") + দুই সারিতে "বাধা: GPU/API (লাইসেন্স নয়)" + নতুন সৎ নোট ("লাইসেন্স-কারণে অবরুদ্ধ মডেল নেই…ম্যাট্রিক্সে দেখুন") + item-১৫-এ ম্যাট্রিক্স-উল্লেখ; Phase 5 'অবরুদ্ধ-সৎ'→'অনুপলব্ধ-সৎ' (কারণ-ভাঙনসহ); CAPABILITIES/HONESTY-তে নেটিভ-অডিও ও লাইসেন্স-স্পষ্টতা
+- যাচাই: bunx tsc --noEmit → src/-এ ০ এরর (examples/skills/tmp-এর পুরোনো এরর অ-সংশ্লিষ্ট); bunx eslint (৬টি স্পর্শিত ফাইল) → ০; agent-browser E2E: ম্যাট্রিক্স ২৩ সারি+ফিল্টার-গণনা সঠিক, "অনুপলব্ধ" ফিল্টার→২ সারি, সারি-প্রসারণে চার-মাত্রিক বিশ্লেষণ+কারণ+বিকল্প ✓, সৎ নোট ✓, ModelEntryCard-চিপ ✓, স্টুডিও ৩ ট্যাবে ম্যাট্রিক্স-নির্ণীত ব্যাজ+চিপ+শেষ-পরীক্ষা+কারণ+বিকল্প ✓, নতুন নেটিভ-অডিও মোড ✓, গাইড ৮-সারি রাউটার+DoD-নোট ✓; মোবাইল ৩৯০×৮৪৪: গাইড/রেজিস্ট্রি/স্টুডিও — কোনো horizontal overflow নেই (390 vs 390); console/page errors শূন্য; dev.log-এ কম্পাইল-এরর নেই (সব API 200)
+
+Stage Summary:
+- পরিবর্তিত ফাইল: src/hooks/use-availability.ts (নতুন), src/components/studio/availability-badges.tsx (নতুন), src/components/studio/registry-view.tsx, src/components/studio/studio-view.tsx, src/components/studio/guide-view.tsx, src/components/chat/bn-format.ts (শুধু নতুন formatDateBn-সংযোজন) — src/lib/**, src/app/api/**, prisma/ স্পর্শ করা হয়নি
+- §১৫-এর প্রথম Deliverable এখন UI-তে লাইভ: প্রতিটি ক্ষমতার license/provider/integration/runtime/overall রঙ-কোডেড, প্রসারণযোগ্য বিস্তারিতসহ; কোনো মডেল "লাইসেন্স-অবরুদ্ধ" দেখায় না — প্রকৃত কারণ মাত্রা-ভিত্তিক
+- স্টুডিও-ব্যাজ এখন হার্ডকোডেড নয় — /api/availability-র overall থেকে নির্ণীত (ফলব্যাকসহ); ১৬→১৭ মোড (নেটিভ-অডিওসহ AI ভিডিও নতুন)
+- বিস্তার নোট: টাস্ক-বর্ণনায় "১৬ মোড-কার্ড" ছিল; cap-video-audio-কে ম্যাপ করতে ৭ম ভিডিও-মোড যোগ করা হয়েছে (S1-প্রোব-যাচাইকৃত লাইভ ক্ষমতা — ব্যবহারকারীর অ্যাক্সেসের জন্য); audio-bn-voiceover→cap-speech ম্যাপ (TTSই মূল ইঞ্জিন, ASR-সীমা honestNote-এ অন্তর্ভুক্ত)
+
+---
+Task ID: S2 (Unlock Master Plan — Sprint 2–7: API Integration, Retry/Idempotency, Native Audio, UI Matrix, ফাইনাল যাচাই)
+Agent: main (Z.ai Code orchestrator) + subagents 2-b (backend), 2-c (frontend)
+
+Task: সাবএজেন্ট-ফল ইন্টিগ্রেশন + tools/video.ts-এ withAudio/native_ai সম্পূর্ণতা + ব্রাউজার-E2E + ফাইনাল রিপোর্ট
+
+Work Log (subagent 2-b, backend):
+- sdk-helpers.ts: withRetry পুনর্লিখন — Retry-After (সেকেন্ড/HTTP-date) সম্মান, full-jitter exponential backoff (90 সে. ক্যাপ), TemporarilyUnavailableError ('TEMPORARILY_UNAVAILABLE:' প্রিফিক্স) — 429 কখনো লাইসেন্স-সমস্যা হিসেবে দেখায় না; imageSearchSdkFirst() (SDK-প্রাথমিক + CLI-ফলব্যাক)
+- registry.ts: search_images এখন SDK-পথে (resultJson-এ via: 'sdk'|'cli')
+- ai_video.ts: requestKey → নির্ধারক request_id (deriveRequestId, রিট্রাই-চক্রের বাইরে একবার তৈরি — ৪২৯-পুনঃসাবমিটে একই id → provider-side ডিডুপ); validateVideoBuffer-এ expectAudio + hasAudio/audioCodec; AiVideoClip.nativeAudio; সাবমিট-ব্যাকঅফ Retry-After-সচেতন
+- lip_sync_module.ts: ৪-মাত্রিক বাধা-ভাঙন (license: needs_review, provider: not_exposed_by_sdk, hardware: unavailable_hardware, integration: not_integrated + benchmark: not_done) — blockageDimensions ফিল্ড
+- capability_router.ts: নতুন video_native_audio রুট (৮ রুট); system-info.ts: image-search/video-audio স্বাস্থ্য + লিপ-সিঙ্ক ৪-মাত্রিক নোট; prompts.ts: withAudio + 429-সততা নিয়ম
+- পাইপলাইন: motion_video/music_video/short_film-এ requestKey থ্রেডিং (${productionId}-shot-N)
+- ধূমপরীক্ষা 21/21 (jitter-বাউন্ড, 429→TemporarilyUnavailableError, 503→সাধারণ সৎ-ত্রুটি, Retry-After পার্সিং, প্রকৃত imageSearchSdkFirst → via:'sdk')
+
+Work Log (subagent 2-c, frontend):
+- use-availability.ts (নতুন hook) + availability-badges.tsx (শেয়ার্ড রং-চুক্তি: emerald=চালু, amber=সীমা/যাচাই, stone=অনুপলব্ধ/ভবিষ্যৎ)
+- registry-view.tsx: ম্যাট্রিক্স প্যানেল (২৩ ক্ষমতা, ৬ ফিল্টার-চিপ, সম্প্রসারিত সারিতে ৪-মাত্রিক বিশ্লেষণ + API + শেষ-পরীক্ষা + কারণ + বিকল্প), ModelEntryCard-এ ৪-মাত্রিক চিপ, খালি 'blocked' গ্রুপ লুকানো + সৎ নোট
+- studio-view.tsx: ১৭টি মোড-কার্ড এখন ম্যাট্রিক্স-চালিত স্ট্যাটাস + শেষ-পরীক্ষা + কারণ/বিকল্প; নতুন ১৭তম কার্ড 'নেটিভ-অডিওসহ AI ভিডিও'
+- guide-view.tsx: ৮-সারির router টেবিল + DoD সৎ-হালনাগাদ
+
+Work Log (main, ইন্টিগ্রেশন):
+- tools/video.ts: generate_video-র sound-এ নতুন 'native_ai' মোড — AI-শটে withAudio+requestKey, অডিও-সংরক্ষী স্বাভাবিকীকরণ (-ar 44100 -ac 2), concatClipsKeepAudio (নতুন হেল্পার: নীরব ক্লিপে নীরব-ট্র্যাক যোগ → concat-demuxer; এই মোডে ট্রানজিশন নেই — সৎ নোট), nativeAudioShots গণনা + সৎ honestLabel/summary ('নেটিভ-অডিও আসেনি' হলে প্রতারণা নয়)
+- image_to_video: withAudio প্যারামিটার + সৎ নেটিভ-অডিও লেবেল + requestKey
+- bunx tsc --noEmit: src/-এ শূন্য (পুরোনো tmp-task2d/examples/skills-এর এরর অপ্রাসঙ্গিক); bun run lint: শূন্য
+- ব্রাউজার-E2E: হোম ✓; রেজিস্ট্রি-ম্যাট্রিক্স (২৩ সারি + ফিল্টার-গণনা + সম্প্রসারিত বিস্তার + 'কোনো মডেল লাইসেন্স-অবরুদ্ধ নয়') ✓; অনুপলব্ধ-ফিল্টারে লিপ-সিঙ্ক ৪-মাত্রিক ভাঙন ✓; স্টুডিও-কার্ড (শেষ-পরীক্ষা ১১ অক্টোবর ২০২৬, কারণ, বিকল্প) ✓; চ্যাট golden path: 'পাহাড়ের ছবি খুঁজে আনো' → search_images SDK-পথে ৩.০ সে. (z-cdn URL) → ৪ artifact + প্রিভিউ ✓; গাইড ৮-সারির রাউটার ✓; মোবাইল ৩৯০×৮৪৪: কোনো overflow নেই, ফুটার ৮৪৪-এ ✓; console/page errors শূন্য ✓; টেস্ট-কথোপকথন মুছে ফেলা ✓
+
+Stage Summary:
+- §১৪-এর ১২ দফা� অবস্থা: (১) ভুল-ব্লক নেই ✓ (২) লাইসেন্স-সিদ্ধান্তে সূত্র ✓ (৩) API-মডেলের বাস্তব endpoint প্রোব-যাচাইকৃত ✓ (৪) হার্ডওয়্যারে-অসম্ভব মডেল 'ready' নয় ✓ (৫) bn-TTS/instrumental/রিয়েল AI-ভিডিও E2E পাস ✓ (৬) full-song/lip-sync/singing পৃথক-সৎ ✓ (৭) সৎ এরর+ফলব্যাক ✓ (৮) 429-হ্যান্ডলিং (Retry-After/jitter/idempotency/TEMPORARILY_UNAVAILABLE) ✓ (৯) কোনো bypass নয় ✓ (১০) UI-তে permission/capability/runtime পৃথক ✓ (১১) generation_mode লেবেল ✓ (১২) কোনো fake success নয় ✓
+- নতুন-চালু ক্ষমতা: SDK ইমেজ-সার্চ (৩ সে.), ভিডিও নেটিভ AI-অডিও (with_audio, প্রোব-যাচাইকৃত AAC), request_id idempotency
+- মিথ্যা-ব্লক সংশোধিত: MusicGen ও YuE এখন allowed_noncommercial — প্রকৃত বাধা হার্ডওয়্যার/API, UI-তে স্পষ্ট

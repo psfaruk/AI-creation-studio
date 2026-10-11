@@ -12,7 +12,8 @@ export type VideoRequestKind =
   | 'lip_sync' // কথা বলার ঠোঁট মেলানো
   | 'edit_cut' // দৃশ্য জোড়া ও কাট
   | 'enhance_subtitle' // রং, স্থিতিশীলতা, সাবটাইটেল
-  | 'multi_scene_film'; // একাধিক দৃশ্যের চলচ্চিত্র
+  | 'multi_scene_film' // একাধিক দৃশ্যের চলচ্চিত্র
+  | 'video_native_audio'; // ভিডিও + নেটিভ AI-অডিও (with_audio)
 
 export interface CapabilityRoute {
   kind: VideoRequestKind;
@@ -83,6 +84,14 @@ export const CAPABILITY_ROUTES: Record<VideoRequestKind, CapabilityRoute> = {
     status: 'ready',
     note: 'চিত্রনাট্য → দৃশ্য-বিভাজন → চরিত্র বাইবেল → অভিনয়-পরিকল্পনা → AI শট → সাউন্ড ডিজাইন → ধারাবাহিকতা → ফাইনাল মিক্স।',
   },
+  video_native_audio: {
+    kind: 'video_native_audio',
+    tool: 'generate_video / image_to_video (withAudio)',
+    engine: 'CogVideoX-3 with_audio (ক্লাউড ডিফিউশন + নেটিভ অডিও)',
+    realAiGeneration: true,
+    status: 'ready',
+    note: 'প্রোব-যাচাইকৃত (২০২৬-১০-১১): with_audio:true দিলে প্রকৃত AAC অডিও-স্ট্রিম আসে (16kHz mono) — ফলাফল ffprobe-যাচাইয়ে অডিও-স্ট্রিমও পরীক্ষিত হয়।',
+  },
 };
 
 /** অনুরোধের ধরন → রুট (প্রম্পট-নির্মাণ ও UI-তে ব্যবহৃত) */
@@ -100,6 +109,7 @@ export function capabilityRouterTableBn(): { request: string; tool: string; engi
     edit_cut: 'দৃশ্য জোড়া ও কাট',
     enhance_subtitle: 'রং, স্থিতিশীলতা, সাবটাইটেল',
     multi_scene_film: 'একাধিক দৃশ্যের চলচ্চিত্র',
+    video_native_audio: 'ভিডিও + নেটিভ AI-অডিও (with_audio)',
   };
   const statusLabels: Record<CapabilityRoute['status'], string> = {
     ready: 'চালু',

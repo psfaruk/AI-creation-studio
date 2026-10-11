@@ -190,11 +190,28 @@ export async function runToolHealthChecks(opts?: { force?: boolean }): Promise<T
   const statics: ToolHealth[] = [
     { key: 'imagegen', label: 'ছবি-জেনারেশন (SDK)', status: 'ok', note: 'কনফিগারকৃত — ব্যয়ের কারণে প্রতি-চেকে মাইক্রো-চেক নয়' },
     { key: 'videogen', label: 'CogVideoX-3 ভিডিও-জেনারেশন (ক্লাউড)', status: 'ok', note: 'কনফিগারকৃত — ২০২৬-১০-১১ প্রোব-যাচাইকৃত; প্রতি-চেকে চালানো ব্যয়বহুল' },
+    {
+      key: 'image-search',
+      label: 'ওয়েব-ছবি অনুসন্ধান (SDK)',
+      status: 'ok',
+      note: 'SDK-মেথড প্রোব-যাচাইকৃত (২০২৬-১০-১১); CLI-ফলব্যাক আছে',
+    },
+    {
+      key: 'video-audio',
+      label: 'ভিডিও নেটিভ-অডিও (with_audio)',
+      status: 'ok',
+      note: 'প্রোব-যাচাইকৃত: প্রকৃত AAC স্ট্রিম আসে',
+    },
     { key: 'asr', label: 'ASR (লিপিবদ্ধকরণ)', status: 'ok', note: 'কনফিগারকৃত; বাংলা-সমর্থন দুর্বল' },
     { key: 'vlm', label: 'VLM (ছবি-বোঝা)', status: 'ok', note: 'কনফিগারকৃত' },
     { key: 'music-engine', label: 'প্রসিডিউরাল মিউজিক-ইঞ্জিন', status: 'ok', note: 'স্থানীয় সংশ্লেষণ — নির্ভরযোগ্য' },
     { key: 'sound-design', label: 'সাউন্ড-ডিজাইন ইঞ্জিন', status: 'ok', note: 'স্থানীয় সংশ্লেষণ — নির্ভরযোগ্য' },
-    { key: 'lip-sync', label: 'লিপ-সিঙ্ক মডেল', status: 'down', note: 'এই পরিবেশে মডেল স্থাপিত নেই (§৫ সৎ-অবস্থা)' },
+    {
+      key: 'lip-sync',
+      label: 'লিপ-সিঙ্ক মডেল',
+      status: 'down',
+      note: '৪-মাত্রিক বাধা: SDK-তে API নেই · GPU নেই · অ্যাডাপ্টার নেই · বাংলা বেঞ্চমার্ক হয়নি',
+    },
     { key: 'singing', label: 'গান-গাওয়া মডেল', status: 'down', note: 'লাইসেন্স-অযাচাইকৃত/অস্থাপিত (§৩ সৎ-অবস্থা)' },
   ];
 

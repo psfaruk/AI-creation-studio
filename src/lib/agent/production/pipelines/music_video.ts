@@ -359,6 +359,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               workingDir: wd,
               // i2v — শিল্পীর পোর্ট্রেট রেফারেন্স, চেহারা ধরে রাখতে
               imageUrl: artist?.portraitDataUrl,
+              // §১০ আইডেম্পোটেন্সি: এই প্রোডাকশনের এই শট = একই request_id
+              requestKey: `mv-${ctx.productionId}-shot-${i + 1}`,
               fallbackImagePrompt: imagePromptForShot(shot, visualStyle || spec.style),
               fallbackGenSize: genSize,
               fallbackReferenceUrl: artist?.portraitDataUrl,

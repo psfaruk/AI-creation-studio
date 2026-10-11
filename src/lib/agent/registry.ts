@@ -7,12 +7,10 @@
 // error বানিয়ে LLM-কে ফেরত দেয় (কখনো uncaught নয়)।
 // ============================================================
 
-import { execFile as execFileCb } from 'child_process';
-import { promisify } from 'util';
-import path from 'path';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { getZAI } from './llm';
+import { imageSearchSdkFirst } from './sdk-helpers';
 import { readArtifactFile, saveArtifactFile } from './storage';
 import { toArtifactMeta } from './serialize';
 import { createToolArtifact } from './registry-helpers';
@@ -24,8 +22,6 @@ import { PRODUCTION_TOOLS } from './tools/production';
 
 export type { ToolContext, ToolOutput, ToolSpec, ToolValidation } from './registry-helpers';
 export { createToolArtifact, artifactToDataUrl, artifactFilePath } from './registry-helpers';
-
-const execFileAsync = promisify(execFileCb);
 
 // ------------------------------------------------------------
 // Helpers
@@ -172,63 +168,44 @@ const generateImageSpec: ToolSpec<{ prompt: string; size?: '1024x1024' | '1344x7
 };
 
 // ------------------------------------------------------------
-// ৪. search_images (CLI-only — z-ai image-search)
+// ৪. search_images — SDK-প্রথম (zai.images.search, প্রোব-যাচাইকৃত
+//    ২০২৬-১০-১১), ব্যর্থ হলে CLI ফলব্যাক (z-ai image-search)।
+//    resultJson-এ via: 'sdk'|'cli' — কোন পথ ব্যবহৃত হলো।
 // ------------------------------------------------------------
 const searchImagesSpec: ToolSpec<{ query: string }> = {
   name: 'search_images',
   parameters: z.object({ query: z.string().min(1).max(400) }),
-  timeoutMs: 150_000,
+  timeoutMs: 240_000,
   usage: 'search_images — ওয়েব থেকে প্রাসঙ্গিক বাস্তব ছবি খুঁজে আনে। arguments: {"query": string}',
   inputSummary: i => `খোঁজ: ${i.query}`,
   execute: async (input, ctx) => {
-    const cliPath = path.join(process.cwd(), 'node_modules', '.bin', 'z-ai');
-    let stdout = '';
-    try {
-      const res = await execFileAsync(
-        cliPath,
-        ['image-search', '-q', input.query, '-c', '4', '--gl', 'us', '--no-rank'],
-        { timeout: 150_000, maxBuffer: 10 * 1024 * 1024 }
-      );
-      stdout = res.stdout;
-    } catch (err: any) {
-      const detail = String(err?.stderr || err?.stdout || err?.message || '').slice(0, 300);
-      throw new Error(`ছবি সার্চ CLI ব্যর্থ: ${detail}`);
-    }
-    const first = stdout.indexOf('{');
-    const last = stdout.lastIndexOf('}');
-    if (first === -1 || last <= first) throw new Error('ছবি সার্চের ফলাফল পার্স করা যায়নি');
-    let parsed: any;
-    try {
-      parsed = JSON.parse(stdout.slice(first, last + 1));
-    } catch {
-      throw new Error('ছবি সার্চের ফলাফল পার্স করা যায়নি');
-    }
-    if (!parsed?.success || !Array.isArray(parsed.results) || parsed.results.length === 0) {
-      throw new Error(`কোনো ছবি পাওয়া যায়নি${parsed?.error ? ` (${String(parsed.error).slice(0, 200)})` : ''}`);
-    }
+    const outcome = await imageSearchSdkFirst(input.query, 4);
     const metas: any[] = [];
-    const resultItems: { url: string; caption: string; source: string }[] = [];
-    for (const r of parsed.results) {
-      if (!r?.original_url) continue;
-      const caption = String(r.caption ?? '');
-      const source = String(r.source ?? '');
+    const resultItems: { url: string; caption: string; source: string; width?: number; height?: number }[] = [];
+    for (const r of outcome.results) {
       const meta = await createToolArtifact({
         conversationId: ctx.conversationId,
         runId: ctx.runId,
         kind: 'image',
         mimeType: 'image/jpeg',
-        fileName: truncate(caption || 'external image', 120),
+        fileName: truncate(r.caption || 'external image', 120),
         size: 0,
         storagePath: null,
-        sourceUrl: String(r.original_url),
+        sourceUrl: r.url,
       });
       metas.push(meta);
-      resultItems.push({ url: String(r.original_url), caption, source });
+      resultItems.push({
+        url: r.url,
+        caption: r.caption,
+        source: r.source,
+        ...(r.width ? { width: r.width } : {}),
+        ...(r.height ? { height: r.height } : {}),
+      });
     }
     if (metas.length === 0) throw new Error('কোনো ব্যবহারযোগ্য ছবি পাওয়া যায়নি');
     return {
-      summary: `${metas.length} টি ছবি পাওয়া গেছে`,
-      resultJson: JSON.stringify(resultItems),
+      summary: `${metas.length} টি ছবি পাওয়া গেছে (${outcome.via === 'sdk' ? 'SDK-মেথড' : 'CLI-ফলব্যাক'})`,
+      resultJson: JSON.stringify({ via: outcome.via, results: resultItems }),
       artifacts: metas,
     };
   },

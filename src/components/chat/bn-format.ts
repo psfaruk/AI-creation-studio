@@ -6,9 +6,36 @@ import type { RunStats } from '@/lib/types';
 
 const BN_DIGITS = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
 
+const BN_MONTHS = [
+  'জানুয়ারি',
+  'ফেব্রুয়ারি',
+  'মার্চ',
+  'এপ্রিল',
+  'মে',
+  'জুন',
+  'জুলাই',
+  'আগস্ট',
+  'সেপ্টেম্বর',
+  'অক্টোবর',
+  'নভেম্বর',
+  'ডিসেম্বর',
+];
+
 /** ল্যাটিন অঙ্ককে বাংলা অঙ্কে রূপান্তর (e.g. "12.4" → "১২.৪") */
 export function toBnDigits(value: string | number): string {
   return String(value).replace(/[0-9]/g, (d) => BN_DIGITS[Number(d)]);
+}
+
+/** তারিখ: "১১ অক্টোবর ২০২৬" (শুধু-তারিখ ISO হলে টাইমজোন-নিরাপে) */
+export function formatDateBn(iso: string): string {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim());
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly;
+    return `${toBnDigits(Number(day))} ${BN_MONTHS[Number(month) - 1]} ${toBnDigits(year)}`;
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${toBnDigits(d.getDate())} ${BN_MONTHS[d.getMonth()]} ${toBnDigits(d.getFullYear())}`;
 }
 
 /** "৫ মিনিট আগে" ধাঁচের সাপেক্ষিক সময় */
