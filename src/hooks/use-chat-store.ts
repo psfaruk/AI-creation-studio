@@ -13,6 +13,7 @@ import type { ChatMessage, ConversationDetail, ConversationSummary } from '@/lib
 export const GENERIC_ERROR = 'কিছু একটা সমস্যা হয়েছে। আবার চেষ্টা করুন।';
 
 const ACTIVE_CONVERSATION_KEY = 'agentic-active-conversation';
+const CHAT_MODEL_KEY = 'agentic-chat-model';
 
 /** শেষ সক্রিয় কথোপকথন localStorage-এ মনে রাখা (রিলোডে ফিরিয়ে আনার জন্য) */
 function rememberActiveConversation(id: string | null): void {
@@ -21,6 +22,24 @@ function rememberActiveConversation(id: string | null): void {
     else window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
   } catch {
     // localStorage অনুপলব্ধ হলে নীরবে এড়িয়ে যাও
+  }
+}
+
+/** নির্বাচিত চ্যাট-মডেল localStorage-এ মনে রাখা */
+function loadChatModel(): string {
+  try {
+    return window.localStorage.getItem(CHAT_MODEL_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberChatModel(id: string): void {
+  try {
+    if (id) window.localStorage.setItem(CHAT_MODEL_KEY, id);
+    else window.localStorage.removeItem(CHAT_MODEL_KEY);
+  } catch {
+    // নীরব
   }
 }
 
@@ -41,8 +60,11 @@ interface ChatStore {
   draft: string;
   pendingAttachments: PendingAttachment[];
   composerFocusSignal: number;
+  /** নির্বাচিত চ্যাট-মডেল ('' = ডিফল্ট) — composer-এর সিলেক্টর থেকে সেট */
+  chatModel: string;
 
   setDraft: (value: string) => void;
+  setChatModel: (id: string) => void;
   addAttachments: (files: PendingAttachment[]) => void;
   removeAttachment: (index: number) => void;
   resetComposerInput: () => void;
@@ -73,8 +95,13 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   draft: '',
   pendingAttachments: [],
   composerFocusSignal: 0,
+  chatModel: typeof window !== 'undefined' ? loadChatModel() : '',
 
   setDraft: (value) => set({ draft: value }),
+  setChatModel: (id) => {
+    rememberChatModel(id);
+    set({ chatModel: id });
+  },
   addAttachments: (files) =>
     set((state) => ({ pendingAttachments: [...state.pendingAttachments, ...files] })),
   removeAttachment: (index) =>

@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { AudioLines, Film, Loader2 } from 'lucide-react';
+import { AudioLines, Cpu, Film, Loader2 } from 'lucide-react';
 
 import type { ChatMessage } from '@/lib/types';
 
@@ -156,7 +156,15 @@ function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending
       {message.productionId && <ProductionCard productionId={message.productionId} />}
 
       {message.runStats && (
-        <p className="text-xs text-muted-foreground">{formatRunStatsBn(message.runStats)}</p>
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span>{formatRunStatsBn(message.runStats)}</span>
+          {message.model && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-px text-[10px]">
+              <Cpu className="size-2.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              {message.model === '(default)' ? 'ডিফল্ট মডেল' : message.model}
+            </span>
+          )}
+        </p>
       )}
     </motion.div>
   );

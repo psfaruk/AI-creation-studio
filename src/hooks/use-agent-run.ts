@@ -227,6 +227,7 @@ export function useAgentRun() {
 
     const content = store.draft.trim();
     const attachments = [...store.pendingAttachments];
+    const chatModel = store.chatModel;
     if (!content && attachments.length === 0) return;
 
     const conversationIdAtSend = store.activeId ?? '';
@@ -249,6 +250,7 @@ export function useAgentRun() {
         body: JSON.stringify({
           conversationId: conversationIdAtSend,
           content,
+          model: chatModel,
           attachments: attachments.map(({ kind, name, dataUrl }) => ({ kind, name, dataUrl })),
         } satisfies ChatRequest),
       });

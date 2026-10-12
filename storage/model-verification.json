@@ -1,0 +1,80 @@
+{
+  "": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:36.205Z"
+  },
+  "glm-4.6": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:38.804Z"
+  },
+  "glm-4.5": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:41.400Z"
+  },
+  "glm-4.5-air": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:43.988Z"
+  },
+  "glm-4.5-flash": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:46.578Z"
+  },
+  "glm-4-flash": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:49.169Z"
+  },
+  "glm-4-plus": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:51.745Z"
+  },
+  "glm-4-air": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:54.335Z"
+  },
+  "glm-4-long": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:56.937Z"
+  },
+  "glm-4v": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:57:59.513Z"
+  },
+  "glm-4.1v": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:58:02.095Z"
+  },
+  "glm-4v-flash": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:58:04.679Z"
+  },
+  "glm-3-turbo": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T12:58:07.259Z"
+  }
+}

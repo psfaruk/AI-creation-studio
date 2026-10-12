@@ -52,6 +52,8 @@ model AgentRun {
   durationMs     Int?
   startedAt      DateTime     @default(now())
   finishedAt     DateTime?
+  model          String? // ব্যবহারকারীর অনুরোধকৃত চ্যাট-মডেল (null = SDK ডিফল্ট)
+  usedModel      String? // প্রকৃতপক্ষে ব্যবহৃত মডেল (ফলব্যাক হলে আলাদা হতে পারে)
   steps          AgentStep[]
   toolCalls      ToolCall[]
   artifacts      Artifact[]

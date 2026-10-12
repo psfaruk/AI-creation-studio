@@ -60,8 +60,10 @@ export function llmCacheStats(): LlmCacheStats {
   return { ...stats() };
 }
 
-function cacheKeyOf(messages: LLMMessage[]): string {
-  return createHash('sha1').update(JSON.stringify(messages)).digest('hex');
+function cacheKeyOf(messages: LLMMessage[], model?: string): string {
+  return createHash('sha1')
+    .update(JSON.stringify({ model: model ?? '', messages }))
+    .digest('hex');
 }
 
 async function readLlmCache(key: string): Promise<string | null> {
@@ -95,6 +97,11 @@ export interface ChatCompleteOptions {
   onRateLimitWait?: (info: RetryWaitInfo) => void;
   /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু) */
   skipCache?: boolean;
+  /**
+   * নির্বাচিত চ্যাট-মডেল ('' / undefined = SDK ডিফল্ট)।
+   * ক্যাশ-কী-তেও যায় — ভিন্ন মডেলে ভিন্ন উত্তর, একই ক্যাশ-এন্ট্রি নয়।
+   */
+  model?: string;
 }
 
 /**
@@ -107,7 +114,7 @@ export async function chatComplete(
   messages: LLMMessage[],
   opts?: ChatCompleteOptions
 ): Promise<string> {
-  const key = cacheKeyOf(messages);
+  const key = cacheKeyOf(messages, opts?.model);
   if (!opts?.skipCache) {
     const cached = await readLlmCache(key);
     if (cached != null) {
@@ -117,10 +124,12 @@ export async function chatComplete(
   }
   stats().misses++;
   const zai = await getZAI();
+  const model = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : undefined;
   const text = await withRetry(
     async () => {
       const res = await zai.chat.completions.create({
         messages,
+        ...(model ? { model } : {}),
         thinking: { type: 'disabled' },
       });
       const content = res?.choices?.[0]?.message?.content;

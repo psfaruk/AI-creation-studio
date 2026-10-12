@@ -387,6 +387,8 @@ export interface ChatMessage {
   artifacts?: ArtifactMeta[]; // all artifacts produced in this assistant turn
   runStats?: RunStats | null; // assistant messages only
   productionId?: string; // এই বার্তায় দেখানো production কার্ড
+  /** এই assistant উত্তরে ব্যবহৃত LLM মডেল (সৎ-লেবেল; ফলব্যাক হলে প্রকৃত মডেল) */
+  model?: string;
   /**
    * ক্লায়েন্ট-ক্ষণস্থায়ী রান-স্ট্যাটাস নোট (S9) — যেমন "রেট-লিমিট, ৪০ সে. অপেক্ষা"।
    * শুধু pending bubble-এ দেখানো হয়; সার্ভার কখনো পাঠায় না —
@@ -411,6 +413,8 @@ export interface ConversationDetail {
 export interface ChatRequest {
   conversationId: string; // '' → backend creates a new conversation
   content: string;
+  /** নির্বাচিত চ্যাট-মডেল ('' বা বাদ = ডিফল্ট; ক্যাটালগের id হতে হবে) */
+  model?: string;
   attachments?: {
     kind: 'image' | 'audio' | 'video';
     name: string;

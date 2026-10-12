@@ -14,6 +14,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 
 import { PulsingDots } from '@/components/chat/pulsing-dots';
+import { ModelSelector } from '@/components/chat/model-selector';
 import { useAgentRun } from '@/hooks/use-agent-run';
 import { useChatStore, type PendingAttachment } from '@/hooks/use-chat-store';
 import { toast } from '@/hooks/use-toast';
@@ -165,7 +166,9 @@ export function Composer() {
           </div>
         )}
 
-        <div className="flex items-end gap-1.5 rounded-2xl border bg-card p-1.5 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-emerald-600/25">
+        <div className="flex items-end gap-1 rounded-2xl border bg-card p-1 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-emerald-600/25">
+          <ModelSelector disabled={isRunActive} />
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button

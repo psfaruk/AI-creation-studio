@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { startAgentRun } from '@/lib/agent/orchestrator';
+import { isValidChatModelId } from '@/lib/agent/chat-models';
 import { buildMessageView, toAttachmentView } from '@/lib/agent/serialize';
 import { saveArtifactFile } from '@/lib/agent/storage';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
@@ -75,6 +76,12 @@ export async function POST(req: Request) {
   const conversationId = typeof body?.conversationId === 'string' ? body.conversationId : '';
   const rawAttachments: any[] = Array.isArray(body?.attachments) ? body.attachments : [];
   const trimmed = content.trim();
+
+  // চ্যাট-মডেল নির্বাচন ('' বা ক্যাটালগের id; অজানা মান → 400)
+  if (body?.model != null && !isValidChatModelId(body.model)) {
+    return NextResponse.json({ error: 'অজানা চ্যাট-মডেল — তালিকার একটি মডেল বেছে নিন' }, { status: 400 });
+  }
+  const chatModel = typeof body?.model === 'string' ? body.model : '';
 
   if (trimmed.length > MAX_CONTENT) {
     return NextResponse.json({ error: 'বার্তা সর্বোচ্চ ৮০০০ অক্ষরের হতে পারে' }, { status: 400 });
@@ -165,9 +172,13 @@ export async function POST(req: Request) {
     });
   }
 
-  // এজেন্ট রান তৈরি ও ব্যাকগ্রাউন্ডে চালু
+  // এজেন্ট রান তৈরি ও ব্যাকগ্রাউন্ডে চালু (নির্বাচিত মডেলসহ)
   const run = await db.agentRun.create({
-    data: { conversationId: conversation.id, status: 'running' },
+    data: {
+      conversationId: conversation.id,
+      status: 'running',
+      ...(chatModel ? { model: chatModel } : {}),
+    },
   });
 
   const view = await buildMessageView(userMessage);

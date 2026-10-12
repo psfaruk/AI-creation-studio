@@ -1,15 +1,29 @@
 // ============================================================
-// Music Generation Engine — নতুন মাস্টার প্ল্যান §৩
+// Music Generation Engine v2 — মাস্টার-প্ল্যান §৩ + Deep-Report আপগ্রেড
 //
-// সততার ঘোষণা (§৩.৩ "গুরুত্বপূর্ণ সীমাবদ্ধতা" অনুসারে):
+// সততার ঘোষণা (অপরিবর্তিত):
 //  - এই ইঞ্জিন *প্রসিডিউরাল সংশ্লেষণ* করে — সুর-তত্ত্বভিত্তিক
 //    (স্কেল, কর্ড-প্রগ্রেশন, ছন্দ) গাণিতিক অডিও-সংশ্লেষণ। এটি
-//    প্রকৃত অডিও তৈরি করে, কিন্তু এটি MusicGen/YuE-ধর্মী
-//    নিউরাল মিউজিক-মডেল নয় → সব আউটপুটে "পরীক্ষামূলক" লেবেল।
-//  - গান গাওয়া (singing) ও স্টেম-পৃথকীকরণ মডেল এই পরিবেশে নেই —
-//    সেগুলো গেটেড থাকে; TTS-কে গান বলে দেখানো হয় না।
+//    MusicGen/YuE-ধর্মী নিউরাল মিউজিক-মডেল নয় → সব আউটপুটে
+//    "পরীক্ষামূলক" লেবেল।
+//  - গান গাওয়া (singing) ও স্টেম-পৃথকীকরণ এই পরিবেশে নেই — গেটেড।
 //  - TTS-এর কণ্ঠে গানের কথা পড়ে দেওয়াকে "সম্পূর্ণ গাওয়া গান"
-//    হিসেবে দেখানো যাবে না (মাস্টার প্ল্যানের নিয়ম)।
+//    হিসেবে দেখানো হয় না।
+//
+// v2 আপগ্রেড (Deep-Report-এর "সংগীত অবাস্তব" পর্যালোচনার জবাব —
+// সবকিছু CPU-তেই, GPU ছাড়া):
+//  1. কারপ্লাস-স্ট্রং স্ট্রিং-সংশ্লেষণ — আর্পেজিও আর সাইন-বিপ নয়,
+//     নয়েজ-এক্সাইটেড ড্যাম্পড ডিলে-লাইন = প্রকৃত ছড়ানো তার।
+//  2. মোটিফ-ভিত্তিক মেলোডি — এলোমেলো বিচরণের বদলে ২-বারের মোটিফ
+//     তৈরি হয়, পুনরাবৃত্তি/ভ্যারিয়েশন/কর্ড-স্ন্যাপিং-এ "পরিচিত সুর"।
+//  3. মানবিকরণ — মাইক্রো-টাইমিং (±৮ms), ভেলোসিটি-তারতম্য,
+//     বিলম্বিত ভাইব্রেটো (৫.১–৫.৭Hz, ~৭ সেন্ট), সূক্ষ্ম পিচ-গ্লাইড।
+//  4. ফ্রিভার্ব-ধাঁচের রিভার্ব — ৮ কম্ব + ৪ অলপাস, স্টেরিও-ডেকোরিলেটেড,
+//     ২০ms প্রি-ডিলে — "ঘরের মতো স্থান-অনুভূতি"।
+//  5. উন্নত ড্রাম-ভয়েস — পিচ-সুইপ+ক্লিক কিক, দ্বৈত-টোন বডি স্নেয়ার,
+//     হাই-পাসড হাই-হ্যাট (ক্লোজড/ওপেন), কোরাসে ক্র্যাশ-সোয়েল।
+//  6. গান-কাঠামো — intro → verse ↔ chorus → outro (রিং-আউট ফাইনাল
+//     কর্ড), কোরাসে অষ্টক-ডাবলিং ও ঘন ব্যবস্থাপনা।
 // ============================================================
 
 import { audioQuality } from '@/lib/media/ffmpeg';
@@ -24,7 +38,7 @@ const execFileAsync = promisify(execFileCb);
 const midiHz = midiHzShared;
 
 export const MUSIC_ENGINE_LABEL =
-  'প্রসিডিউরাল সংগীত-সংশ্লেষণ (পরীক্ষামূলক — নিউরাল মিউজিক-মডেল নয়)';
+  'প্রসিডিউরাল সংগীত-সংশ্লেষণ v2 — কারপ্লাস-স্ট্রং তার, মোটিফ-মেলোডি, ভাইব্রেটো-মানবিকরণ, রিভার্ব (পরীক্ষামূলক — নিউরাল মিউজিক-মডেল নয়)';
 
 export type MusicMood = 'sad' | 'romantic' | 'joyful' | 'suspense' | 'action' | 'peaceful';
 
@@ -57,7 +71,7 @@ export interface InstrumentalResult {
 }
 
 // ------------------------------------------------------------
-// সুর-তত্ত্ব — মুড-কনফিগ
+// সুর-তত্ত্ব — মুড-কনফিগ (v2: বাজানোর-ধরন নিয়ন্ত্রণসহ)
 // ------------------------------------------------------------
 
 interface MoodConfig {
@@ -74,6 +88,20 @@ interface MoodConfig {
   percGain: number;
   /** কর্ড-প্রগ্রেশন — প্রতিটি কর্ড = রুট থেকে সেমিটোন অফসেট */
   progression: { root: number; tones: number[]; name: string }[];
+  // ---- v2 বাজানোর-ধরন ----
+  /** আর্পেজিও ধাপ (বিটে) — 0.5 = অষ্টম, 0.25 = ষোড়শ, 1 = চতুর্থাংশ */
+  arpDivVerse: number;
+  arpDivChorus: number;
+  /** বেজ-আঘাতের অবস্থান (বিটে, 0–4) */
+  bassVerse: number[];
+  bassChorus: number[];
+  /** কিক-আঘাতের অবস্থান */
+  kickVerse: number[];
+  kickChorus: number[];
+  /** রিভার্ব wet-মাত্রা (0–1) */
+  reverbWet: number;
+  /** উজ্জ্বল লিড-টোন (joyful/action) বনাম নরম স্ট্রিং-লিড */
+  leadBright: boolean;
 }
 
 const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
@@ -84,11 +112,19 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     minor: true,
     bpmRange: [62, 84, 72],
     percussion: false,
-    padGain: 0.9,
+    padGain: 0.95,
     bassGain: 0.8,
-    melodyGain: 0.7,
-    arpGain: 0.35,
+    melodyGain: 0.72,
+    arpGain: 0.4,
     percGain: 0,
+    arpDivVerse: 0.5,
+    arpDivChorus: 0.5,
+    bassVerse: [0, 2],
+    bassChorus: [0, 2],
+    kickVerse: [],
+    kickChorus: [],
+    reverbWet: 0.42,
+    leadBright: false,
     progression: [
       { root: 0, tones: [0, 3, 7], name: 'Am' },
       { root: 8, tones: [8, 12, 15], name: 'F' },
@@ -108,6 +144,14 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     melodyGain: 0.75,
     arpGain: 0.55,
     percGain: 0,
+    arpDivVerse: 0.5,
+    arpDivChorus: 0.25, // কোরাসে হার্প-সদৃশ দ্রুত ধারা
+    bassVerse: [0, 2],
+    bassChorus: [0, 1.5, 2, 3.5],
+    kickVerse: [],
+    kickChorus: [],
+    reverbWet: 0.38,
+    leadBright: false,
     progression: [
       { root: 0, tones: [0, 4, 7], name: 'C' },
       { root: 7, tones: [7, 11, 14], name: 'G' },
@@ -116,7 +160,7 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     ],
   },
   joyful: {
-    rootMidi: 67, // G4 এর এক অক্টেভ নিচে ধরি G3=55
+    rootMidi: 55, // G3
     scaleName: 'G মেজর',
     keyLabel: 'G মেজর',
     minor: false,
@@ -127,6 +171,14 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     melodyGain: 0.9,
     arpGain: 0.6,
     percGain: 0.75,
+    arpDivVerse: 0.5,
+    arpDivChorus: 0.25,
+    bassVerse: [0, 1.5, 2, 3.5],
+    bassChorus: [0, 1, 1.5, 2, 3, 3.5],
+    kickVerse: [0, 2],
+    kickChorus: [0, 2, 2.5],
+    reverbWet: 0.24,
+    leadBright: true,
     progression: [
       { root: 0, tones: [0, 4, 7], name: 'G' },
       { root: 5, tones: [5, 9, 12], name: 'C' },
@@ -144,8 +196,16 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     padGain: 1.0,
     bassGain: 1.0,
     melodyGain: 0.45,
-    arpGain: 0.3,
+    arpGain: 0.32,
     percGain: 0.5,
+    arpDivVerse: 0.5,
+    arpDivChorus: 0.25,
+    bassVerse: [0],
+    bassChorus: [0, 2],
+    kickVerse: [0],
+    kickChorus: [0, 2],
+    reverbWet: 0.32,
+    leadBright: false,
     progression: [
       { root: 0, tones: [0, 3, 7], name: 'Dm' },
       { root: 8, tones: [8, 12, 15], name: 'Bb' },
@@ -165,6 +225,14 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     melodyGain: 0.8,
     arpGain: 0.45,
     percGain: 0.9,
+    arpDivVerse: 0.25,
+    arpDivChorus: 0.25,
+    bassVerse: [0, 2],
+    bassChorus: [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+    kickVerse: [0, 2],
+    kickChorus: [0, 1, 2, 3],
+    reverbWet: 0.2,
+    leadBright: true,
     progression: [
       { root: 0, tones: [0, 3, 7], name: 'Em' },
       { root: 8, tones: [8, 12, 15], name: 'C' },
@@ -184,6 +252,14 @@ const MOOD_CONFIGS: Record<MusicMood, MoodConfig> = {
     melodyGain: 0.6,
     arpGain: 0.5,
     percGain: 0,
+    arpDivVerse: 1, // বিরল চতুর্থাংশ-ছড়া
+    arpDivChorus: 0.5,
+    bassVerse: [0, 2],
+    bassChorus: [0, 2],
+    kickVerse: [],
+    kickChorus: [],
+    reverbWet: 0.5,
+    leadBright: false,
     progression: [
       { root: 0, tones: [0, 4, 7], name: 'F' },
       { root: 5, tones: [5, 9, 12], name: 'C' },
@@ -198,105 +274,508 @@ const PENTA_MINOR = [0, 3, 5, 7, 10];
 const PENTA_MAJOR = [0, 2, 4, 7, 9];
 
 // ------------------------------------------------------------
-// ছোট সহায়ক (PCM-সহায়ক pcm.ts থেকে)
+// ইনস্ট্রুমেন্ট-ভয়েস (হারমোনিক-রেসিপি)
 // ------------------------------------------------------------
 
+const PAD_HARMONICS = [
+  { ratio: 1, gain: 1 },
+  { ratio: 2, gain: 0.35 },
+  { ratio: 3, gain: 0.12 },
+  { ratio: 4, gain: 0.05 },
+];
+const BASS_HARMONICS = [
+  { ratio: 1, gain: 1 },
+  { ratio: 2, gain: 0.45 },
+  { ratio: 3, gain: 0.16 },
+];
+const LEAD_STRINGS = [
+  { ratio: 1, gain: 1 },
+  { ratio: 2, gain: 0.3 },
+  { ratio: 3, gain: 0.15 },
+  { ratio: 4, gain: 0.07 },
+  { ratio: 5, gain: 0.035 },
+];
+const LEAD_BRIGHT = [
+  { ratio: 1, gain: 1 },
+  { ratio: 2, gain: 0.42 },
+  { ratio: 3, gain: 0.22 },
+  { ratio: 4, gain: 0.11 },
+  { ratio: 5, gain: 0.055 },
+];
+
 // ------------------------------------------------------------
-// বাদ্যযন্ত্র-সংশ্লেষণ (একক নোট/আঘাত রেন্ডারার)
+// v2 অসিলেটর — ফেজ-অ্যাকিউমুলেটর + ভাইব্রেটো + গ্লাইড + কোরাস
+// (ভাইব্রেটো প্রকৃত বাদ্যযন্ত্রের মতো সব হারমোনিকে সমানভাবে টানে)
 // ------------------------------------------------------------
 
-interface NoteOpts {
+interface ToneOptsV2 {
   startSec: number;
   durSec: number;
   gain: number;
   attackSec?: number;
   releaseSec?: number;
   harmonics?: { ratio: number; gain: number }[];
-  detune?: number; // সামান্য ডিটিউন (প্যাডের জন্য)
-  pan?: number; // -1..1
+  pan?: number;
+  /** স্বাভাবিক ক্ষয় (প্রতি সেকেন্ডে e^-x) */
+  decayPerSec?: number;
+  /** বিলম্বিত ভাইব্রেটো — লম্বা নোটে মানবিক কণ্ঠ/বেহালা-ভাব */
+  vibrato?: { rateHz: number; depthCents: number; delaySec: number };
+  /** নোট-শুরুতে সূক্ষ্ম পিচ-গ্লাইড (আঙুল-চাপার মতো) */
+  glideCents?: number;
+  glideSec?: number;
+  /** ধীর কোরাস — দ্বিতীয় ডিটিউনড অসিলেটর, LFO-দোলায়িত */
+  chorus?: { rateHz: number; depthCents: number; baseCents: number };
 }
 
-function renderTone(
+function panGains(gain: number, pan: number): [number, number] {
+  const p = Math.max(-1, Math.min(1, pan));
+  return [
+    gain * Math.sqrt(1 - Math.max(0, p)),
+    gain * Math.sqrt(1 - Math.max(0, -p)),
+  ];
+}
+
+function renderToneV2(
   L: Float32Array,
   R: Float32Array,
   freqHz: number,
-  o: NoteOpts,
+  o: ToneOptsV2,
   sr: number
 ): void {
   const start = Math.floor(o.startSec * sr);
-  const len = Math.floor(o.durSec * sr);
-  const atk = Math.floor((o.attackSec ?? 0.01) * sr);
-  const rel = Math.floor((o.releaseSec ?? 0.08) * sr);
-  const harmonics = o.harmonics ?? [
-    { ratio: 1, gain: 1 },
-    { ratio: 2, gain: 0.18 },
-    { ratio: 3, gain: 0.05 },
-  ];
-  const detune = o.detune ?? 0;
-  const pan = Math.max(-1, Math.min(1, o.pan ?? 0));
-  const gl = o.gain * (1 - Math.max(0, pan)) ** 0.5;
-  const gr = o.gain * (1 - Math.max(0, -pan)) ** 0.5;
+  if (start >= L.length) return;
+  const len = Math.max(16, Math.floor(o.durSec * sr));
+  const atk = Math.max(1, Math.floor((o.attackSec ?? 0.01) * sr));
+  const rel = Math.max(1, Math.floor((o.releaseSec ?? 0.08) * sr));
+  const harmonics = o.harmonics ?? PAD_HARMONICS;
+  const [gl, gr] = panGains(o.gain, o.pan ?? 0);
+  const vib = o.vibrato;
+  const glide =
+    o.glideCents != null && o.glideSec != null ? { cents: o.glideCents, sec: o.glideSec } : null;
+  const chorus = o.chorus;
+  const decay = o.decayPerSec ?? 0;
+  const nHarm = harmonics.length;
+  const baseInc = (2 * Math.PI * freqHz) / sr;
+  let phaseA = 0;
+  let phaseB = 0;
   for (let i = 0; i < len; i++) {
     const idx = start + i;
-    if (idx < 0 || idx >= L.length) continue;
+    if (idx < 0) continue;
+    if (idx >= L.length) break;
     const t = i / sr;
-    let env = 1;
-    if (i < atk) env = i / Math.max(1, atk);
-    if (i > len - rel) env *= (len - i) / Math.max(1, rel);
-    // হালকা পার্সিভ ফলঅফ
-    env *= Math.exp(-t * 0.35);
-    let s = 0;
-    for (const h of harmonics) {
-      s += h.gain * Math.sin(2 * Math.PI * freqHz * h.ratio * t);
-      if (detune) s += h.gain * 0.5 * Math.sin(2 * Math.PI * (freqHz * h.ratio + detune) * t);
+    // পিচ-মডিউলেশন: গ্লাইড → বিলম্বিত ভাইব্রেটো
+    let pm = 1;
+    if (glide && t < glide.sec) pm *= Math.pow(2, (glide.cents * (t / glide.sec)) / 1200);
+    if (vib && t > vib.delaySec) {
+      const vramp = Math.min(1, (t - vib.delaySec) / 0.22);
+      pm *=
+        1 +
+        (vib.depthCents / 1200) *
+          Math.sin(2 * Math.PI * vib.rateHz * (t - vib.delaySec)) *
+          vramp;
     }
-    L[idx] += gl * env * s;
-    R[idx] += gr * env * s;
+    phaseA += baseInc * pm;
+    let s = 0;
+    for (let h = 0; h < nHarm; h++) s += harmonics[h].gain * Math.sin(phaseA * harmonics[h].ratio);
+    if (chorus) {
+      const detuneCents =
+        chorus.baseCents + chorus.depthCents * Math.sin(2 * Math.PI * chorus.rateHz * t);
+      phaseB += baseInc * pm * Math.pow(2, detuneCents / 1200);
+      for (let h = 0; h < nHarm; h++) {
+        s += 0.5 * harmonics[h].gain * Math.sin(phaseB * harmonics[h].ratio);
+      }
+      s *= 0.72; // দুই অসিলেটরের মিলিত শক্তি সামঞ্জস্য
+    }
+    let env = 1;
+    if (i < atk) env = i / atk;
+    if (i > len - rel) env *= (len - i) / rel;
+    if (decay > 0) env *= Math.exp(-t * decay);
+    const v = env * s;
+    L[idx] += gl * v;
+    R[idx] += gr * v;
   }
 }
 
-function renderNoise(
+// ------------------------------------------------------------
+// কারপ্লাস-স্ট্রং স্ট্রিং — নয়েজ-এক্সাইটেড ড্যাম্পড ডিলে-লাইন।
+// বাস্তব ছড়ানো তারের শারীরিক মডেল: প্রতিটি স্বরে ভিন্ন রিং-দৈর্ঘ্য,
+// নিম্ন স্বর দীর্ঘ বাজে, উজ্জ্বলতা এক্সাইটেশন-ফিল্টারে নিয়ন্ত্রিত।
+// ------------------------------------------------------------
+
+interface PluckOpts {
+  startSec: number;
+  durSec: number;
+  gain: number;
+  attackSec?: number;
+  releaseSec?: number;
+  pan?: number;
+  /** এক্সাইটেশন নয়েজের উজ্জ্বলতা 0.2–0.9 */
+  bright?: number;
+  /** প্রতি-নমুনা লাইন-ক্ষয় 0.99–0.999 (উঁচু মান = দীর্ঘ রিং) */
+  damp?: number;
+}
+
+function renderPluck(
   L: Float32Array,
   R: Float32Array,
-  o: NoteOpts & { decaySec: number; rng: () => number },
-  sr: number
+  freqHz: number,
+  o: PluckOpts,
+  sr: number,
+  rng: () => number
 ): void {
   const start = Math.floor(o.startSec * sr);
-  const len = Math.floor(o.durSec * sr);
-  const pan = Math.max(-1, Math.min(1, o.pan ?? 0));
-  const gl = o.gain * (1 - Math.max(0, pan)) ** 0.5;
-  const gr = o.gain * (1 - Math.max(0, -pan)) ** 0.5;
+  if (start >= L.length) return;
+  const len = Math.max(64, Math.floor(o.durSec * sr));
+  const N = Math.max(2, Math.round(sr / freqHz));
+  const buf = new Float32Array(N);
+  const bright = Math.max(0.2, Math.min(0.9, o.bright ?? 0.55));
+  let le = 0;
+  for (let i = 0; i < N; i++) {
+    le = le * (1 - bright) + (rng() * 2 - 1) * bright;
+    buf[i] = le * 1.6;
+  }
+  const damp = Math.max(0.99, Math.min(0.999, o.damp ?? 0.995));
+  let idx = 0;
+  const atk = Math.max(1, Math.floor((o.attackSec ?? 0.002) * sr));
+  const rel = Math.max(1, Math.floor((o.releaseSec ?? 0.05) * sr));
+  const [gl, gr] = panGains(o.gain, o.pan ?? 0);
   for (let i = 0; i < len; i++) {
-    const idx = start + i;
-    if (idx < 0 || idx >= L.length) continue;
-    const t = i / sr;
-    const env = Math.exp(-t / o.decaySec);
-    const n = o.rng() * 2 - 1;
-    L[idx] += gl * env * n;
-    R[idx] += gr * env * n;
+    const idxAbs = start + i;
+    if (idxAbs < 0) {
+      idx = (idx + 1) % N;
+      continue;
+    }
+    if (idxAbs >= L.length) break;
+    const out = buf[idx];
+    const nxt = buf[(idx + 1) % N];
+    buf[idx] = damp * 0.5 * (out + nxt);
+    idx = (idx + 1) % N;
+    let env = 1;
+    if (i < atk) env = i / atk;
+    if (i > len - rel) env *= (len - i) / rel;
+    const v = env * out;
+    L[idxAbs] += gl * v;
+    R[idxAbs] += gr * v;
   }
 }
 
-function renderKick(L: Float32Array, R: Float32Array, startSec: number, gain: number, sr: number): void {
+// ------------------------------------------------------------
+// ড্রাম-ভয়েস v2
+// ------------------------------------------------------------
+
+function renderKickV2(
+  L: Float32Array,
+  R: Float32Array,
+  startSec: number,
+  gain: number,
+  rng: () => number,
+  sr: number
+): void {
   const start = Math.floor(startSec * sr);
-  const len = Math.floor(0.16 * sr);
+  const len = Math.floor(0.3 * sr);
+  let phase = 0;
   for (let i = 0; i < len; i++) {
     const idx = start + i;
-    if (idx < 0 || idx >= L.length) continue;
+    if (idx < 0) continue;
+    if (idx >= L.length) break;
     const t = i / sr;
-    const freq = 110 * Math.exp(-t * 22) + 42;
-    const env = Math.exp(-t * 15);
-    const s = Math.sin(2 * Math.PI * freq * t) * env * gain;
+    const f = 148 * Math.exp(-t * 28) + 42; // পিচ-সুইপ: বাস্তব কিকের মতো নেমে আসে
+    phase += (2 * Math.PI * f) / sr;
+    const env = Math.exp(-t * 10);
+    const click = (rng() * 2 - 1) * Math.exp(-t * 480) * 0.45; // হাতুড়ি-ক্লিক
+    const s = (Math.sin(phase) + click) * env * gain;
+    L[idx] += s * 0.98;
+    R[idx] += s;
+  }
+}
+
+function renderSnare(
+  L: Float32Array,
+  R: Float32Array,
+  startSec: number,
+  gain: number,
+  rng: () => number,
+  sr: number
+): void {
+  const start = Math.floor(startSec * sr);
+  const len = Math.floor(0.24 * sr);
+  // নয়েজ অংশ: হাই-পাসড ঝটকা
+  const hpAlpha = 1 - Math.exp((-2 * Math.PI * 1500) / sr);
+  let lp = 0;
+  // টোনাল অংশ: দুটি সামান্য-ভাঙা ড্রাম-স্বর (শেল-রেজোন্যান্স)
+  let p1 = 0;
+  let p2 = 0;
+  for (let i = 0; i < len; i++) {
+    const idx = start + i;
+    if (idx < 0) continue;
+    if (idx >= L.length) break;
+    const t = i / sr;
+    const env = Math.exp(-t * 20);
+    const nz = rng() * 2 - 1;
+    lp += hpAlpha * (nz - lp);
+    const nzs = (nz - lp) * env;
+    const sweep = Math.min(1, t / 0.09);
+    const f1 = 186 - 26 * sweep;
+    const f2 = 264 - 40 * sweep;
+    p1 += (2 * Math.PI * f1) / sr;
+    p2 += (2 * Math.PI * f2) / sr;
+    const body = (0.55 * Math.sin(p1) + 0.3 * Math.sin(p2)) * Math.exp(-t * 26);
+    const s = (nzs * 0.7 + body * 0.55) * gain;
     L[idx] += s;
     R[idx] += s;
   }
 }
 
+function renderHat(
+  L: Float32Array,
+  R: Float32Array,
+  startSec: number,
+  gain: number,
+  rng: () => number,
+  sr: number,
+  open: boolean
+): void {
+  const start = Math.floor(startSec * sr);
+  const len = Math.floor((open ? 0.3 : 0.055) * sr);
+  const a = 1 - Math.exp((-2 * Math.PI * 8200) / sr);
+  let lp = 0;
+  const decayRate = open ? 10 : 65;
+  const [gl, gr] = panGains(gain, open ? 0.18 : 0.12);
+  for (let i = 0; i < len; i++) {
+    const idx = start + i;
+    if (idx < 0) continue;
+    if (idx >= L.length) break;
+    const t = i / sr;
+    const nz = rng() * 2 - 1;
+    lp += a * (nz - lp);
+    const s = (nz - lp) * Math.exp(-t * decayRate) * 0.8;
+    L[idx] += gl * s;
+    R[idx] += gr * s;
+  }
+}
+
+function renderCrash(
+  L: Float32Array,
+  R: Float32Array,
+  startSec: number,
+  gain: number,
+  rng: () => number,
+  sr: number
+): void {
+  const start = Math.floor(startSec * sr);
+  const len = Math.floor(2.2 * sr);
+  const a = 1 - Math.exp((-2 * Math.PI * 4200) / sr);
+  let lp = 0;
+  const atkSamples = Math.floor(0.28 * sr);
+  for (let i = 0; i < len; i++) {
+    const idx = start + i;
+    if (idx < 0) continue;
+    if (idx >= L.length) break;
+    const t = i / sr;
+    const nz = rng() * 2 - 1;
+    lp += a * (nz - lp);
+    const atkEnv = i < atkSamples ? i / atkSamples : 1; // সোয়েল-প্রবেশ
+    const s = (nz - lp) * atkEnv * Math.exp(-t * 1.7) * 0.7;
+    L[idx] += gain * 0.85 * s;
+    R[idx] += gain * s;
+  }
+}
+
 // ------------------------------------------------------------
-// §৩.১ প্রধান সংশ্লেষণ-ফাংশন
+// ফ্রিভার্ব-ধাঁচের রিভার্ব — ৮ কম্ব + ৪ অলপাস (প্রতি চ্যানেল),
+// স্টেরিও-স্প্রেড, ড্যাম্পিং, ২০ms প্রি-ডিলে। সেন্ড-ধাঁচে যোগ হয়।
+// ------------------------------------------------------------
+
+function applyFreeverb(
+  L: Float32Array,
+  R: Float32Array,
+  sr: number,
+  wet: number,
+  roomSize: number,
+  damping: number
+): void {
+  if (wet <= 0) return;
+  const COMBS = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+  const ALLS = [556, 441, 341, 225];
+  const SPREAD = 23;
+  const PRE_DELAY = Math.max(1, Math.floor(0.02 * sr));
+  const fb = Math.min(0.92, roomSize);
+  const damp = Math.min(0.9, damping);
+  const SCALE = 0.06; // ৮-কম্ব যোগফলের মাত্রা-সামঞ্জস্য
+
+  interface FbCell {
+    buf: Float32Array;
+    idx: number;
+    store: number;
+  }
+  const mkCombs = (off: number): FbCell[] =>
+    COMBS.map(len => ({ buf: new Float32Array(len + off), idx: 0, store: 0 }));
+  const mkAlls = (off: number): FbCell[] =>
+    ALLS.map(len => ({ buf: new Float32Array(len + off), idx: 0, store: 0 }));
+  const combL = mkCombs(0);
+  const combR = mkCombs(SPREAD);
+  const allL = mkAlls(0);
+  const allR = mkAlls(SPREAD);
+
+  const preL = new Float32Array(PRE_DELAY);
+  const preR = new Float32Array(PRE_DELAY);
+  let preIdxL = 0;
+  let preIdxR = 0;
+  const n = Math.min(L.length, R.length);
+
+  for (let i = 0; i < n; i++) {
+    const inL = L[i];
+    const inR = R[i];
+    // প্রি-ডিলে — শুষ্ক সংকেত পরিষ্কার থাকে, ঘর সামান্য পরেই শুরু
+    const dl = preL[preIdxL];
+    preL[preIdxL] = inL;
+    preIdxL = (preIdxL + 1) % PRE_DELAY;
+    const dr = preR[preIdxR];
+    preR[preIdxR] = inR;
+    preIdxR = (preIdxR + 1) % PRE_DELAY;
+
+    // বাম চ্যানেল: কম্ব-ব্যাংক → অলপাস-শৃঙ্খল
+    let accL = 0;
+    for (let c = 0; c < combL.length; c++) {
+      const cb = combL[c];
+      const outp = cb.buf[cb.idx];
+      cb.store += damp * (outp - cb.store);
+      cb.buf[cb.idx] = dl + fb * cb.store;
+      cb.idx = (cb.idx + 1) % cb.buf.length;
+      accL += outp;
+    }
+    let yl = accL;
+    for (let a = 0; a < allL.length; a++) {
+      const ab = allL[a];
+      const outp = ab.buf[ab.idx];
+      const y = outp - yl;
+      ab.buf[ab.idx] = yl + outp * 0.5;
+      ab.idx = (ab.idx + 1) % ab.buf.length;
+      yl = y;
+    }
+    L[i] = inL + wet * SCALE * yl;
+
+    // ডান চ্যানেল
+    let accR = 0;
+    for (let c = 0; c < combR.length; c++) {
+      const cb = combR[c];
+      const outp = cb.buf[cb.idx];
+      cb.store += damp * (outp - cb.store);
+      cb.buf[cb.idx] = dr + fb * cb.store;
+      cb.idx = (cb.idx + 1) % cb.buf.length;
+      accR += outp;
+    }
+    let yr = accR;
+    for (let a = 0; a < allR.length; a++) {
+      const ab = allR[a];
+      const outp = ab.buf[ab.idx];
+      const y = outp - yr;
+      ab.buf[ab.idx] = yr + outp * 0.5;
+      ab.idx = (ab.idx + 1) % ab.buf.length;
+      yr = y;
+    }
+    R[i] = inR + wet * SCALE * yr;
+  }
+}
+
+// ------------------------------------------------------------
+// মোটিফ-মেলোডি — ২-বারের (৮-বিট) স্বর-আকৃতি তৈরি ও ভ্যারিয়েশন
+// ------------------------------------------------------------
+
+interface MotifNote {
+  /** বাক্য-অভ্যন্তরে অবস্থান (বিটে, 0–8) */
+  pos: number;
+  /** স্থায়িত্ব (বিটে) */
+  dur: number;
+  /** পেন্টাটনিক-সিঁডির ধাপ (deg -1 = বিশ্রাম) */
+  deg: number;
+}
+
+const MOTIF_RHYTHMS: number[][] = [
+  [1, 1, 2, 1, 1, 2],
+  [1.5, 0.5, 2, 1, 1, 2],
+  [1, 0.5, 0.5, 1, 1, 1, 2],
+  [2, 1, 1, 2, 2],
+  [1, 1, 1, 1, 2, 2],
+  [0.5, 0.5, 1, 0.5, 0.5, 1, 2, 2],
+];
+
+function generateMotif(rng: () => number): MotifNote[] {
+  const rhythm = MOTIF_RHYTHMS[Math.floor(rng() * MOTIF_RHYTHMS.length)];
+  const notes: MotifNote[] = [];
+  let deg = 3 + Math.floor(rng() * 3); // 3..5 থেকে শুরু — মধ্য-রেজিস্টার
+  let pos = 0;
+  for (let i = 0; i < rhythm.length; i++) {
+    const dur = rhythm[i];
+    const isLast = i === rhythm.length - 1;
+    if (isLast && rng() < 0.35) {
+      notes.push({ pos, dur, deg: -1 }); // শেষে নিঃশ্বাস-বিশ্রাম
+    } else {
+      notes.push({ pos, dur, deg });
+      const steps = [0, -1, 1, -2, 2, -1, 1]; // কাছাকাছি ধাপে হাঁটা — সুরকর্মের মতো
+      const step = steps[Math.floor(rng() * steps.length)];
+      deg = Math.max(0, Math.min(9, deg + step));
+    }
+    pos += dur;
+  }
+  return notes;
+}
+
+function varyMotif(motif: MotifNote[], rng: () => number): MotifNote[] {
+  const out: MotifNote[] = [];
+  const shift = rng() < 0.5 ? 1 : -1;
+  for (const mn of motif) {
+    if (mn.deg < 0) {
+      out.push(mn);
+      continue;
+    }
+    const deg = Math.max(0, Math.min(9, mn.deg + shift));
+    if (mn.dur >= 2 && rng() < 0.55) {
+      // লম্বা নোট দুই ভাগে — দ্বিতীয় অংশ পার্শ্ব-স্বরে
+      const firstDur = Math.max(0.5, Math.round(mn.dur * 0.8) / 2);
+      out.push({ pos: mn.pos, dur: firstDur, deg });
+      out.push({
+        pos: mn.pos + firstDur,
+        dur: mn.dur - firstDur,
+        deg: Math.max(0, Math.min(9, deg + (rng() < 0.5 ? 1 : -1))),
+      });
+    } else if (rng() < 0.2) {
+      out.push({ ...mn, deg: Math.max(0, Math.min(9, deg + (rng() < 0.5 ? 1 : -1))) });
+    } else {
+      out.push({ ...mn, deg });
+    }
+  }
+  return out;
+}
+
+/** পেন্টাটনিক-সিঁডি: ধাপ → MIDI (রুটের এক অষ্টক উপরে থেকে) */
+function pentaLadder(penta: number[], rootMidi: number, deg: number): number {
+  const oct = Math.floor(deg / penta.length);
+  const idx = ((deg % penta.length) + penta.length) % penta.length;
+  return rootMidi + 12 + penta[idx] + 12 * oct;
+}
+
+/** শক্তিশালী বিটের নোটকে নিকটতম কর্ড-স্বরে স্ন্যাপ — সুর হারমোনির সাথে বাঁধে */
+function snapDegreeToChord(
+  deg: number,
+  chordPcs: Set<number>,
+  penta: number[],
+  rootMidi: number
+): number {
+  for (const d of [deg, deg - 1, deg + 1, deg - 2, deg + 2]) {
+    if (d < 0 || d > 9) continue;
+    if (chordPcs.has(pentaLadder(penta, rootMidi, d) % 12)) return d;
+  }
+  return deg;
+}
+
+// ------------------------------------------------------------
+// §৩.১ প্রধান সংশ্লেষণ-ফাংশন (v2)
 // ------------------------------------------------------------
 
 const SR = 44100;
+
+type BarRole = 'intro' | 'verse' | 'chorus' | 'outro';
 
 export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<InstrumentalResult> {
   const cfg = MOOD_CONFIGS[spec.mood];
@@ -316,154 +795,239 @@ export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<Instru
   const beatsSec: number[] = [];
   for (let t = 0; t < durationSec; t += beatSec) beatsSec.push(Math.round(t * 100) / 100);
 
-  const sections: MusicSection[] = [];
-  const introBars = Math.min(2, Math.max(1, Math.floor(totalBars / 6)));
-  const outroBars = Math.min(2, Math.max(1, Math.floor(totalBars / 8)));
-  const mainBars = totalBars - introBars - outroBars;
-  sections.push({ name: 'intro', startSec: 0, endSec: Math.min(durationSec, introBars * barSec) });
-  // মূল অংশ verse/chorus পাল্টায় (২ বার করে)
-  let cursor = introBars;
-  let toggle = 0;
-  while (cursor < introBars + mainBars) {
-    const segBars = Math.min(2, introBars + mainBars - cursor);
-    const s = cursor * barSec;
-    const e = Math.min(durationSec, (cursor + segBars) * barSec);
-    sections.push({ name: toggle % 2 === 0 ? 'verse' : 'chorus', startSec: s, endSec: e });
-    cursor += segBars;
-    toggle++;
+  // ---- গান-কাঠামো: intro → verse ↔ chorus → outro ----
+  const introBars = Math.max(1, Math.min(4, Math.floor(totalBars / 6)));
+  const outroBars = Math.max(1, Math.min(4, Math.floor(totalBars / 8)));
+  const mainBars = Math.max(2, totalBars - introBars - outroBars);
+  const roles: BarRole[] = [];
+  for (let i = 0; i < introBars; i++) roles.push('intro');
+  {
+    let placed = 0;
+    let flip = 0;
+    while (placed < mainBars) {
+      const seg = mainBars - placed >= 8 ? 4 : Math.max(2, mainBars - placed);
+      const r: BarRole = flip % 2 === 0 ? 'verse' : 'chorus';
+      for (let i = 0; i < seg && placed < mainBars; i++) {
+        roles.push(r);
+        placed++;
+      }
+      flip++;
+    }
   }
-  sections.push({
-    name: 'outro',
-    startSec: Math.min(durationSec, (introBars + mainBars) * barSec),
-    endSec: durationSec,
-  });
+  while (roles.length < totalBars) roles.push('outro');
+  for (let i = introBars + mainBars; i < totalBars; i++) roles[i] = 'outro';
+
+  // ধারাবাহিক একই-ভূমিকার বারগুলো এক সেকশনে
+  const sections: MusicSection[] = [];
+  for (let bar = 0; bar < totalBars; bar++) {
+    const name = roles[bar];
+    const s = Math.min(durationSec, bar * barSec);
+    const e = Math.min(durationSec, (bar + 1) * barSec);
+    const last = sections[sections.length - 1];
+    if (last && last.name === name && last.endSec === s) last.endSec = e;
+    else sections.push({ name, startSec: s, endSec: e });
+  }
 
   const penta = cfg.minor ? PENTA_MINOR : PENTA_MAJOR;
-  let melodyMidi = cfg.rootMidi + 12;
 
+  // ---- সহযোগী বাদ্যযন্ত্র: বার-লুপ ----
   for (let bar = 0; bar < totalBars; bar++) {
     const barStart = bar * barSec;
     if (barStart >= durationSec) break;
-    const chord = cfg.progression[bar % cfg.progression.length];
-    const sectionName = sectionAt(sections, barStart);
-    const isIntro = sectionName === 'intro';
-    const isOutro = sectionName === 'outro';
-    const isChorus = sectionName === 'chorus';
-    const energy = isIntro ? 0.55 : isOutro ? 0.5 : isChorus ? 1.0 : 0.8;
+    const role = roles[Math.min(bar, roles.length - 1)];
+    const chord = cfg.progression[Math.floor(bar / 2) % cfg.progression.length]; // ধীর হারমোনিক-ছন্দ: ২ বার/কর্ড
+    const energy = role === 'intro' ? 0.55 : role === 'outro' ? 0.6 : role === 'chorus' ? 1 : 0.8;
 
-    // --- প্যাড: স্থায়ী কর্ড ---
-    for (const tone of chord.tones) {
-      const midi = cfg.rootMidi + tone;
-      renderTone(L, R, midiHz(midi), {
+    // ---- আউটরো: প্রথম বারেই ফাইনাল রিং-আউট কর্ড ----
+    if (role === 'outro') {
+      if (bar === totalBars - outroBars) {
+        const remaining = Math.max(1.2, durationSec - barStart);
+        for (const tone of chord.tones) {
+          renderToneV2(L, R, midiHz(cfg.rootMidi + tone), {
+            startSec: barStart,
+            durSec: remaining * 0.92,
+            gain: 0.12 * cfg.padGain,
+            attackSec: 0.3,
+            releaseSec: Math.min(2.5, remaining * 0.45),
+            harmonics: PAD_HARMONICS,
+            chorus: { rateHz: 0.13, depthCents: 4, baseCents: 6 },
+            pan: tone === chord.tones[0] ? -0.2 : 0.15,
+          }, SR);
+        }
+        // বেজ-মূল নোটও ধীরে নিভে যায়
+        renderToneV2(L, R, midiHz(cfg.rootMidi + chord.root - 12), {
+          startSec: barStart,
+          durSec: remaining * 0.7,
+          gain: 0.15 * cfg.bassGain,
+          attackSec: 0.012,
+          releaseSec: 1.0,
+          decayPerSec: 0.9,
+          harmonics: BASS_HARMONICS,
+        }, SR);
+      }
+      continue; // আউটরোতে নিয়মিত বাদ্যযন্ত্র নয় — কর্ডটিই শেষ-কথা
+    }
+
+    // ---- প্যাড: স্ট্রিং-সেকশন (কোরাস-LFO দোলায়িত ডিটিউন) ----
+    const padTones = role === 'chorus' ? [...chord.tones, chord.tones[0] + 12] : chord.tones;
+    for (let ti = 0; ti < padTones.length; ti++) {
+      renderToneV2(L, R, midiHz(cfg.rootMidi + padTones[ti]), {
         startSec: barStart,
-        durSec: Math.min(barSec + 0.25, durationSec - barStart),
-        gain: 0.16 * cfg.padGain * energy,
-        attackSec: 0.5,
-        releaseSec: 0.9,
-        harmonics: [
-          { ratio: 1, gain: 1 },
-          { ratio: 2, gain: 0.12 },
-        ],
-        detune: 0.7,
-        pan: tone === chord.tones[0] ? -0.2 : tone === chord.tones[2] ? 0.2 : 0,
+        durSec: Math.min(barSec + 0.3, durationSec - barStart),
+        gain: 0.12 * cfg.padGain * energy,
+        attackSec: 0.38,
+        releaseSec: 0.75,
+        harmonics: PAD_HARMONICS,
+        chorus: { rateHz: 0.1 + rng() * 0.06, depthCents: 5, baseCents: 7 },
+        pan: ti === 0 ? -0.2 : ti === 2 ? 0.2 : ti === 3 ? -0.08 : 0.06,
       }, SR);
     }
 
-    // --- বেজ: বারে দুই আঘাত ---
-    const bassMidi = cfg.rootMidi + chord.root - 12;
-    for (const beatOff of [0, 2]) {
-      renderTone(L, R, midiHz(bassMidi), {
-        startSec: barStart + beatOff * beatSec,
-        durSec: beatSec * 1.8,
-        gain: 0.22 * cfg.bassGain * energy,
-        attackSec: 0.02,
-        releaseSec: 0.3,
-        harmonics: [
-          { ratio: 1, gain: 1 },
-          { ratio: 2, gain: 0.08 },
-        ],
-      }, SR);
-    }
-
-    // --- আর্পেজিও: প্রতি অষ্টম-নোটে কর্ড-টোন ---
-    if (cfg.arpGain > 0 && !isIntro) {
-      for (let i = 0; i < 8; i++) {
-        const tone = chord.tones[i % chord.tones.length];
-        const midi = cfg.rootMidi + tone + 12;
-        renderTone(L, R, midiHz(midi), {
-          startSec: barStart + i * (beatSec / 2),
-          durSec: beatSec * 0.5,
-          gain: 0.08 * cfg.arpGain * energy,
-          attackSec: 0.005,
-          releaseSec: 0.12,
-          harmonics: [
-            { ratio: 1, gain: 1 },
-            { ratio: 3, gain: 0.15 },
-          ],
-          pan: i % 2 === 0 ? -0.3 : 0.3,
+    // ---- বেজ: মুড-নির্ভর প্যাটার্ন, মানবিক ভেলোসিটি ----
+    if (role !== 'intro') {
+      const bassPattern = role === 'chorus' ? cfg.bassChorus : cfg.bassVerse;
+      for (const off of bassPattern) {
+        const t0 = barStart + off * beatSec;
+        if (t0 >= durationSec - 0.05) break;
+        renderToneV2(L, R, midiHz(cfg.rootMidi + chord.root - 12), {
+          startSec: t0 + (rng() - 0.5) * 0.005,
+          durSec: beatSec * 0.95,
+          gain: 0.2 * cfg.bassGain * energy * (0.85 + rng() * 0.25),
+          attackSec: 0.008,
+          releaseSec: 0.1,
+          decayPerSec: 1.5,
+          harmonics: BASS_HARMONICS,
+          glideCents: -16,
+          glideSec: 0.02,
         }, SR);
       }
     }
 
-    // --- মেলোডি: পেন্টাটনিক বিচরণ ---
-    if (!isIntro || bar >= 1) {
-      let pos = 0;
-      while (pos < 4) {
-        const step = rng() < 0.3 ? 1.5 : rng() < 0.6 ? 1 : 0.5;
-        const dur = step * beatSec;
-        const jump = Math.floor(rng() * 5) - 2;
-        melodyMidi = Math.max(cfg.rootMidi + 7, Math.min(cfg.rootMidi + 24, melodyMidi + jump));
-        if (rng() < 0.6) {
-          renderTone(L, R, midiHz(melodyMidi), {
-            startSec: barStart + pos * beatSec,
-            durSec: dur * 0.95,
-            gain: 0.2 * cfg.melodyGain * energy,
-            attackSec: 0.01,
-            releaseSec: Math.max(0.1, dur * 0.5),
-            harmonics: [
-              { ratio: 1, gain: 1 },
-              { ratio: 2, gain: 0.2 },
-              { ratio: 4, gain: 0.04 },
-            ],
-          }, SR);
-        }
-        pos += step;
+    // ---- আর্পেজিও: কারপ্লাস-স্ট্রং ছড়ানো তার ----
+    if (cfg.arpGain > 0) {
+      const stepBeats = role === 'chorus' ? cfg.arpDivChorus : cfg.arpDivVerse;
+      const steps = Math.floor(4 / stepBeats + 0.001);
+      for (let s = 0; s < steps; s++) {
+        const cycle = s % 6; // ৩ তার + অষ্টক-উত্তরণ = ৬-ধাপ ব্রোকেন কর্ড
+        const tone = chord.tones[cycle % 3] + (cycle >= 3 ? 12 : 0);
+        const t0 = barStart + s * stepBeats * beatSec + (rng() - 0.5) * 0.007;
+        if (t0 >= durationSec - 0.05) break;
+        renderPluck(L, R, midiHz(cfg.rootMidi + tone + 12), {
+          startSec: t0,
+          durSec: Math.min(beatSec * stepBeats * 1.9, 1.1),
+          gain: 0.15 * cfg.arpGain * energy * (0.72 + rng() * 0.36),
+          attackSec: 0.002,
+          releaseSec: 0.05,
+          pan: s % 2 === 0 ? -0.3 : 0.3,
+          bright: 0.5 + rng() * 0.25,
+          damp: 0.994 + rng() * 0.0025,
+        }, SR, rng);
       }
     }
 
-    // --- পার্কাশন (মুডে চালু হলে) ---
-    if (cfg.percussion && !isIntro) {
-      for (let b = 0; b < 4; b++) {
+    // ---- ড্রাম: মুড-নির্ভর প্যাটার্ন + কোরাসে ক্র্যাশ-সোয়েল ----
+    if (cfg.percussion && (role === 'verse' || role === 'chorus')) {
+      const full = role === 'chorus';
+      const kicks = full ? cfg.kickChorus : cfg.kickVerse;
+      for (const b of kicks) {
         const t = barStart + b * beatSec;
-        if (t >= durationSec) break;
-        if (b === 0 || b === 2) renderKick(L, R, t, 0.5 * cfg.percGain * energy, SR);
-        renderNoise(L, R, {
-          startSec: t + beatSec / 2,
-          durSec: 0.06,
-          gain: 0.05 * cfg.percGain * energy,
-          decaySec: 0.015,
-          rng,
-          pan: 0.25,
-          attackSec: 0.001,
-          releaseSec: 0.01,
-        }, SR);
-        if (b === 1 || b === 3) {
-          renderNoise(L, R, {
-            startSec: t,
-            durSec: 0.15,
-            gain: 0.09 * cfg.percGain * energy,
-            decaySec: 0.05,
-            rng,
-            pan: -0.15,
-            attackSec: 0.001,
-            releaseSec: 0.02,
-          }, SR);
+        if (t < durationSec - 0.05) renderKickV2(L, R, t, 0.52 * cfg.percGain * energy, rng, SR);
+      }
+      if (full) {
+        for (const b of [1, 3]) {
+          const t = barStart + b * beatSec;
+          if (t < durationSec - 0.05) renderSnare(L, R, t, 0.3 * cfg.percGain * energy, rng, SR);
         }
+      } else if (spec.mood === 'joyful') {
+        const t = barStart + 3 * beatSec;
+        if (t < durationSec - 0.05) renderSnare(L, R, t, 0.18 * cfg.percGain * energy, rng, SR);
+      }
+      for (let b = 0; b < 4; b++) {
+        for (const off of [0, 0.5]) {
+          const t = barStart + (b + off) * beatSec;
+          if (t >= durationSec - 0.05) break;
+          const open = full && off === 0.5 && b === 3;
+          renderHat(
+            L, R, t,
+            (off === 0 ? 0.15 : 0.1) * cfg.percGain * energy * (full ? 1 : 0.72),
+            rng, SR, open
+          );
+        }
+      }
+      if (full && bar > 0 && roles[bar - 1] !== 'chorus') {
+        renderCrash(L, R, barStart, 0.22 * cfg.percGain, rng, SR); // কোরাস-প্রবেশে সোয়েল
       }
     }
   }
 
-  // --- মাস্টার: সফট-ক্লিপ + নরমালাইজ + শুরু/শেষ ফেড ---
+  // ---- মোটিফ-মেলোডি: verse/chorus বাক্য (২-বার) ----
+  const motif = generateMotif(rng);
+  const motifVaried = varyMotif(motif, rng);
+  let verseSeen = 0;
+  let chorusSeen = 0;
+  for (let p = 0; p * 2 < mainBars; p++) {
+    const phraseBar = introBars + p * 2;
+    if (phraseBar >= totalBars) break;
+    const role = roles[phraseBar];
+    if (role !== 'verse' && role !== 'chorus') continue;
+    const isChorus = role === 'chorus';
+    if (isChorus) chorusSeen++;
+    else verseSeen++;
+    const useVaried = (isChorus && chorusSeen >= 2) || (!isChorus && verseSeen >= 2);
+    const source = useVaried ? motifVaried : motif;
+    const phraseStart = phraseBar * barSec;
+    if (phraseStart >= durationSec) break;
+    const energy = isChorus ? 1 : 0.78;
+
+    for (const mn of source) {
+      if (mn.deg < 0) continue; // বিশ্রাম
+      // বাক্যের প্রতিটি বারের কর্ড মেলাও
+      const barInPhrase = Math.floor(mn.pos / 4);
+      const chord =
+        cfg.progression[Math.floor((phraseBar + barInPhrase) / 2) % cfg.progression.length];
+      const chordPcs = new Set(chord.tones.map(t => (cfg.rootMidi + t) % 12));
+      let deg = mn.deg;
+      if (Number.isInteger(mn.pos) && mn.pos % 2 === 0) {
+        deg = snapDegreeToChord(deg, chordPcs, penta, cfg.rootMidi); // শক্তি-বিটে কর্ড-বাঁধন
+      }
+      const midi = pentaLadder(penta, cfg.rootMidi, deg);
+      const startSec = phraseStart + mn.pos * beatSec + (rng() - 0.5) * 0.016; // মাইক্রো-টাইমিং
+      const vel = 0.8 + rng() * 0.32; // ভেলোসিটি-তারতম্য
+      const leadHarmonics = cfg.leadBright ? LEAD_BRIGHT : LEAD_STRINGS;
+      const gainBase = 0.2 * cfg.melodyGain * energy * vel;
+      const durSec = mn.dur * beatSec * 0.93;
+      renderToneV2(L, R, midiHz(midi), {
+        startSec,
+        durSec,
+        gain: gainBase,
+        attackSec: 0.022,
+        releaseSec: Math.max(0.09, mn.dur * beatSec * 0.35),
+        harmonics: leadHarmonics,
+        glideCents: -25,
+        glideSec: 0.035,
+        decayPerSec: 0.18,
+        vibrato:
+          mn.dur >= 1.2 ? { rateHz: 5.1 + rng() * 0.6, depthCents: 7, delaySec: 0.2 } : undefined,
+      }, SR);
+      if (isChorus) {
+        // কোরাসে অষ্টক-ডাবলিং — পূর্ণতা ও উজ্জ্বলতা
+        renderToneV2(L, R, midiHz(midi + 12), {
+          startSec,
+          durSec,
+          gain: gainBase * 0.34,
+          attackSec: 0.02,
+          releaseSec: Math.max(0.09, mn.dur * beatSec * 0.3),
+          harmonics: LEAD_STRINGS,
+          decayPerSec: 0.2,
+        }, SR);
+      }
+    }
+  }
+
+  // ---- রিভার্ব (মুড-নির্ভর wet) ----
+  applyFreeverb(L, R, SR, cfg.reverbWet, 0.82, 0.25);
+
+  // ---- মাস্টার: সফট-ক্লিপ → নরমালাইজ → ফেড ----
   let peak = 0;
   for (let i = 0; i < n; i++) {
     L[i] = softClip(L[i]);
@@ -472,7 +1036,7 @@ export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<Instru
   }
   const target = 0.84; // ≈ −1.5 dBFS
   const scale = peak > 0 ? target / peak : 1;
-  const fadeLen = Math.floor(1.2 * SR);
+  const fadeLen = Math.floor(1.4 * SR);
   for (let i = 0; i < n; i++) {
     let f = 1;
     if (i < fadeLen) f = i / fadeLen;
@@ -499,18 +1063,8 @@ export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<Instru
   };
 }
 
-function sectionAt(sections: MusicSection[], t: number): string {
-  for (const s of sections) {
-    if (t >= s.startSec && t < s.endSec) return s.name;
-  }
-  return sections[sections.length - 1]?.name ?? 'verse';
-}
-
 // ------------------------------------------------------------
-// §৬.১ গান-বিশ্লেষণ (আপলোড করা গানের জন্য)
-// এনার্জি-ভিত্তিক বিট-শনাক্তকরণ ও আনুমানিক বিভাগ-বিভাজন।
-// সৎ সীমা: এটি সংগীত-তথ্য-বিশ্লেষণ (music information retrieval)-এর
-// সরলীকৃত সংস্করণ — নিখুঁত বিট-ট্র্যাকিং নয়।
+// §৬.১ গান-বিশ্লেষণ (আপলোড করা গানের জন্য) — অপরিবর্তিত
 // ------------------------------------------------------------
 
 export interface AudioEnergyAnalysis {

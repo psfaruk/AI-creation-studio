@@ -81,9 +81,15 @@ export function startAgentRun(runId: string): void {
 /**
  * chatComplete + প্রতিটি রেট-লিমিট-অপেক্ষায় SSE run_note —
  * ব্যবহারকারী দেখে "অপেক্ষা চলছে", নিঃশব্দ আটকে থাকা নয়।
+ * নির্বাচিত মডেল ('' = ডিফল্ট) পাস-থ্রু হয়।
  */
-async function chatCompleteWithNotes(runId: string, context: LLMMessage[]): Promise<string> {
+async function chatCompleteWithNotes(
+  runId: string,
+  context: LLMMessage[],
+  model?: string
+): Promise<string> {
   return chatComplete(context, {
+    ...(model ? { model } : {}),
     onRateLimitWait: info => {
       const sec = Math.max(1, Math.round(info.delayMs / 1000));
       emit(runId, {
@@ -362,6 +368,13 @@ async function runAgentLoop(runId: string): Promise<void> {
   const startedAt = Date.now();
   let proposedProductionId: string | null = null;
 
+  // ---- ০. মডেল-নির্বাচন: ব্যবহারকারীর অনুরোধকৃত মডেল ----
+  // সততা: নির্বাচিত মডেল ব্যর্থ হলে (৪২৯-ব্যতীত কারণে) একবার ডিফল্টে
+  // সৎ ফলব্যাক হয় + run_note-এ জানানো হয়; usedModel-এ প্রকৃত মডেল থাকে।
+  const requestedModel = run.model ?? '';
+  let usedModel = requestedModel;
+  let modelFallbackDone = false;
+
   // ---- ১. context তৈরি: system prompt + সর্বশেষ ~২০টি বার্তা ----
   const history = await db.message.findMany({
     where: { conversationId: run.conversationId },
@@ -429,16 +442,47 @@ async function runAgentLoop(runId: string): Promise<void> {
     const t0 = Date.now();
     let text: string;
     try {
-      text = await chatCompleteWithNotes(runId, context);
+      text = await chatCompleteWithNotes(runId, context, usedModel);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (err instanceof TemporarilyUnavailableError || isRateLimitErrorText(msg)) {
+      if (
+        !modelFallbackDone &&
+        usedModel !== '' &&
+        !isRateLimitErrorText(msg) &&
+        !(err instanceof TemporarilyUnavailableError)
+      ) {
+        // নির্বাচিত মডেলটি এই ব্যাকএন্ডে নেই/চলছে না (৪২৯ নয়) →
+        // একবার ডিফল্ট মডেলে সৎ ফলব্যাক + নোট
+        modelFallbackDone = true;
+        usedModel = '';
+        await db.agentRun.update({
+          where: { id: runId },
+          data: { usedModel: '(default)' },
+        });
+        emit(runId, {
+          type: 'run_note',
+          runId,
+          level: 'warn',
+          note: `নির্বাচিত মডেল "${requestedModel}" এই মুহূর্তে ব্যবহার করা যায়নি (${msg.slice(0, 120)})। ডিফল্ট মডেলে চালিয়ে যাওয়া হচ্ছে — সৎ-ফলব্যাক।`,
+        });
+        try {
+          text = await chatCompleteWithNotes(runId, context, '');
+        } catch (err2) {
+          const msg2 = err2 instanceof Error ? err2.message : String(err2);
+          if (err2 instanceof TemporarilyUnavailableError || isRateLimitErrorText(msg2)) {
+            rateLimitExhausted = true;
+            break loop;
+          }
+          throw err2;
+        }
+      } else if (err instanceof TemporarilyUnavailableError || isRateLimitErrorText(msg)) {
         // S9: ৪২৯-উইন্ডো রিট্রাই-বাজেটও ছাড়িয়ে গেছে — লুপ ভাঙো;
         // নিচে ইন্টেন্ট-ফলব্যাক/সৎ-ব্যর্থতা-পথ দেখবে
         rateLimitExhausted = true;
         break loop;
+      } else {
+        throw err;
       }
-      throw err;
     }
     llmSteps++;
     const decisionSeq = nextSeq();
@@ -540,7 +584,7 @@ async function runAgentLoop(runId: string): Promise<void> {
     forced = true;
     context.push({ role: 'user', content: 'আর কোনো টুল ছাড়া এখনই চূড়ান্ত উত্তর দাও।' });
     const t0 = Date.now();
-    const text = await chatCompleteWithNotes(runId, context);
+    const text = await chatCompleteWithNotes(runId, context, usedModel);
     const forcedSeq = nextSeq();
     await db.agentStep.create({
       data: {
@@ -558,6 +602,14 @@ async function runAgentLoop(runId: string): Promise<void> {
         ? text
         : 'দুঃখিত, এই কাজটি সম্পূর্ণ করতে অনুমোদিত ধাপের সীমা (১২) শেষ হয়ে গেছে। অনুগ্রহ করে প্রশ্নটি ছোট ছোট অংশে ভাগ করে আবার জিজ্ঞাসা করুন।';
   }
+
+  // প্রকৃতপক্ষে ব্যবহৃত মডেল রেকর্ড (ফলব্যাক হলে আলাদা) — সৎ-লেবেলিং
+  await db.agentRun
+    .update({
+      where: { id: runId },
+      data: { usedModel: usedModel === '' ? '(default)' : usedModel },
+    })
+    .catch(() => undefined);
 
   await finalizeRun(runId, finalText, {
     steps: forced ? MAX_STEPS : llmSteps,

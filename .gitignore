@@ -57,3 +57,9 @@ server.log
 
 # Skills directory
 /skills/
+# runtime junk (Deep-Report cleanup) — tool-read cache, repro dumps, tmp diagnostics
+/tool-results/
+/tmp-*/
+mixrepro-*
+/model-test/
+storage/logs/

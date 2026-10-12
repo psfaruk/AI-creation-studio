@@ -121,6 +121,12 @@ export async function buildMessageView(msg: Message): Promise<ChatMessage> {
     }
     if (run) {
       base.runStats = toRunStats(run);
+      // সৎ-লেবেলিং: এই উত্তরটি কোন মডেল দিয়ে হয়েছে (ফলব্যাক-সহ)
+      if (run.usedModel) {
+        base.model = run.usedModel;
+      } else if (run.model) {
+        base.model = run.model;
+      }
     }
   }
   return base;
