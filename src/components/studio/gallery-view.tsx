@@ -15,6 +15,7 @@ import {
   Film,
   Images,
   RefreshCcw,
+  TriangleAlert,
 } from 'lucide-react';
 
 import { formatSizeBn, relativeTimeBn, toBnDigits, withDownloadParam } from '@/components/chat/bn-format';
@@ -52,6 +53,66 @@ const ORIGIN_LABEL: Record<string, string> = {
   production: 'প্রোডাকশন',
   user_upload: 'আপলোড',
 };
+
+// ------------------------------------------------------------
+// ভিডিও-সততা সহায়ক — প্রসিডিউরাল-ফলব্যাক শনাক্তকরণ (৪২৯-উইন্ডোর
+// ফ্রেমগুলো আর "কেন ব্লার/ছবি-নেই" বোঝা যায় না তা যেন না হয়)
+// ------------------------------------------------------------
+
+interface VideoHonestyInfo {
+  isProcedural: boolean;
+  shotEngineLabels: string[];
+  honestLabel: string;
+}
+
+/** মেটা থেকে প্রসিডিউরাল-ফলব্যাক চিহ্ন বের করো */
+function readVideoHonesty(meta: Record<string, unknown> | undefined): VideoHonestyInfo {
+  const labelsRaw = Array.isArray(meta?.shotEngineLabels) ? (meta?.shotEngineLabels as unknown[]) : [];
+  const shotEngineLabels = labelsRaw.filter((x): x is string => typeof x === 'string');
+  const honestLabel = typeof meta?.honestLabel === 'string' ? (meta.honestLabel as string) : '';
+  const hay = [honestLabel, ...shotEngineLabels].join(' ');
+  const isProcedural = /প্রসিডিউরাল|procedural|cinematic_motion/.test(hay);
+  return { isProcedural, shotEngineLabels, honestLabel };
+}
+
+/** প্রসিডিউরাল-ভিডিওর ব্যাখ্যা-কার্ড (গ্যালারি প্রিভিউ-ডায়ালগে) */
+function VideoHonestyCard({ info }: { info: VideoHonestyInfo }) {
+  return (
+    <div
+      role="note"
+      aria-label="ভিডিও সততা-তথ্য"
+      className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-[12px] leading-relaxed text-amber-800 dark:text-amber-300"
+    >
+      <p className="flex items-start gap-2 font-medium">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        {info.isProcedural
+          ? 'এই ভিডিওর শট-ছবিগুলো AI-জেনারেটেড নয়'
+          : 'ভিডিও-ইঞ্জিন সম্পর্কে তথ্য'}
+      </p>
+      {info.isProcedural && (
+        <p>
+          তৈরির সময় ক্লাউড ইমেজ-জেন API রেট-লিমিটেড (429) থাকায় প্রাইপলাইন সৎ
+          ফলব্যাকে লোকাল প্রসিডিউরাল ফ্রেম (রঙিন স্তর-শিল্প — মেঘ/নক্ষত্র/পাহাড়)
+          ব্যবহার করেছে। API সচল থাকলে আবার বানালে আসল AI-ছবির শট আসবে —
+          এটি লাইসেন্স-বা সফটওয়্যার-সমস্যা নয়, সাময়িক সীমার ফল।
+        </p>
+      )}
+      {info.shotEngineLabels.length > 0 && (
+        <div className="flex flex-wrap gap-1.5" aria-label="শটভিত্তিক ইঞ্জিন-লেবেল">
+          {info.shotEngineLabels.map((label, i) => (
+            <span
+              key={i}
+              className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px]"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+      {info.honestLabel && <p className="text-[11px] opacity-90">{info.honestLabel}</p>}
+    </div>
+  );
+}
 
 /** প্রতি পেজে ৪০টি — সর্বোচ্চ ১২০টি একসাথে রেন্ডার */
 const PAGE_SIZE = 40;
@@ -235,6 +296,11 @@ export function GalleryView() {
                       <span className="text-[11px]">
                         {item.kind === 'video' ? 'ভিডিও' : item.kind === 'audio' ? 'অডিও' : 'নথি'}
                       </span>
+                      {item.kind === 'video' && readVideoHonesty(item.meta).isProcedural && (
+                        <span className="rounded-full border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+                          প্রসিডিউরাল ফ্রেম
+                        </span>
+                      )}
                     </span>
                   )}
                   <span className="block space-y-1 px-2.5 py-2">
@@ -297,13 +363,20 @@ export function GalleryView() {
                 />
               )}
               {preview.kind === 'video' && (
-                <video
-                  controls
-                  preload="metadata"
-                  src={preview.url}
-                  className="max-h-[60vh] w-full rounded-lg bg-black"
-                  aria-label={preview.fileName}
-                />
+                <>
+                  <video
+                    controls
+                    preload="metadata"
+                    src={preview.url}
+                    className="max-h-[60vh] w-full rounded-lg bg-black"
+                    aria-label={preview.fileName}
+                  />
+                  {(() => {
+                    const info = readVideoHonesty(preview.meta);
+                    if (info.shotEngineLabels.length === 0 && !info.honestLabel) return null;
+                    return <VideoHonestyCard info={info} />;
+                  })()}
+                </>
               )}
               {preview.kind === 'audio' && (
                 <audio controls preload="metadata" src={preview.url} className="w-full" aria-label={preview.fileName} />
