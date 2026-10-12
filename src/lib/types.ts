@@ -387,6 +387,12 @@ export interface ChatMessage {
   artifacts?: ArtifactMeta[]; // all artifacts produced in this assistant turn
   runStats?: RunStats | null; // assistant messages only
   productionId?: string; // এই বার্তায় দেখানো production কার্ড
+  /**
+   * ক্লায়েন্ট-ক্ষণস্থায়ী রান-স্ট্যাটাস নোট (S9) — যেমন "রেট-লিমিট, ৪০ সে. অপেক্ষা"।
+   * শুধু pending bubble-এ দেখানো হয়; সার্ভার কখনো পাঠায় না —
+   * চূড়ান্ত message ইভেন্টে pending বার্তা পুরো বদলে যায়, তাই নোটও মুছে যায়।
+   */
+  statusNote?: string;
 }
 
 export interface ConversationSummary {
@@ -440,6 +446,13 @@ export type RunEvent =
       durationMs?: number;
     }
   | { type: 'message'; conversationId: string; message: ChatMessage }
+  | {
+      /** S9: রান-স্ট্যাটাস নোট — যেমন "রেট-লিমিট, অপেক্ষা চলছে (৪০ সে.)" */
+      type: 'run_note';
+      runId: string;
+      note: string;
+      level?: 'info' | 'waiting' | 'warn';
+    }
   | {
       type: 'run_finished';
       runId: string;

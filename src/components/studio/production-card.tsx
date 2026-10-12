@@ -186,7 +186,12 @@ function specSummaryText(spec: CreativeJobSpec): string[] {
   if (spec.aspect) bits.push(`অনুপাত: ${toBnDigits(spec.aspect)}`);
   if (spec.durationSec) bits.push(`দৈর্ঘ্য: ${toBnDigits(spec.durationSec)} সেকেন্ড`);
   if (spec.fps) bits.push(`FPS: ${toBnDigits(spec.fps)}`);
-  if (spec.sound) bits.push(`শব্দ: ${{ none: 'নীরব', ambient: 'পরিবেশ-শব্দ', narration: 'ভয়েসওভার', uploaded_song: 'আপলোড করা গান' }[spec.sound]}`);
+  // সততা: uploaded_song কিন্তু আসল গান-আর্টিফ্যাক্ট নেই → প্রসিডিউরাল হবে (নোট-সহ সৎ লেবেল)
+  if (spec.sound === 'uploaded_song' && !spec.songArtifactId) {
+    bits.push('শব্দ: প্রসিডিউরাল ইনস্ট্রুমেন্টাল (আপলোড করা গান নেই)');
+  } else if (spec.sound) {
+    bits.push(`শব্দ: ${{ none: 'নীরব', ambient: 'পরিবেশ-শব্দ', narration: 'ভয়েসওভার', uploaded_song: 'আপলোড করা গান' }[spec.sound]}`);
+  }
   if (spec.voice) bits.push(`কণ্ঠ: ${spec.voice}`);
   if (spec.subtitles) bits.push('সাবটাইটেল: হ্যাঁ');
   if (spec.format) bits.push(`ফরম্যাট: ${IMAGE_FORMAT_LABELS[spec.format]}`);
@@ -555,7 +560,25 @@ export function ProductionCard({ productionId }: { productionId: string }) {
               {statusMeta.label}
             </Badge>
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{typeMeta.label}</p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+            <span>{typeMeta.label}</span>
+            {/* S9: ইঞ্জিনের সৎ লেবেল — সব অবস্থাতেই কার্ডে দেখা যায় (শুধু অপেক্ষার-সময় নয়) */}
+            {isVideoType(view.spec.type) && view.spec.videoEngine && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span
+                  className={cn(
+                    view.spec.videoEngine === 'cinematic_motion' &&
+                      'font-medium text-amber-700 dark:text-amber-400',
+                  )}
+                >
+                  {view.spec.videoEngine === 'cinematic_motion'
+                    ? 'ইঞ্জিন: ক্যামেরা-মোশন (AI ডিফিউশন নয়)'
+                    : 'ইঞ্জিন: AI ডিফিউশন (CogVideoX-3)'}
+                </span>
+              </>
+            )}
+          </p>
         </div>
       </div>
 

@@ -125,6 +125,19 @@ function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending
             এজেন্ট কাজ করছে…
             <PulsingDots />
           </p>
+          {/* S9: রান-স্ট্যাটাস নোট (রেট-লিমিট-অপেক্ষা ইত্যাদি) — চূড়ান্ত বার্তা এলে আপনিই সরে যায় */}
+          {message.statusNote && (
+            <p
+              role="status"
+              className="mt-2.5 flex items-start gap-2 border-l-2 border-amber-500/70 pl-2.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400"
+            >
+              <span
+                className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
+                aria-hidden="true"
+              />
+              {message.statusNote}
+            </p>
+          )}
           <div className="mt-3 space-y-2">
             <Skeleton className="h-3 w-3/4" />
             <Skeleton className="h-3 w-1/2" />

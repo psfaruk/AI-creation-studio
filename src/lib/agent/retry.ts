@@ -1,16 +1,27 @@
 // ============================================================
 // retry.ts — §১০-র ৪২৯/৫xx-সহনশীল পুনঃচেষ্টা-নীতির বিশুদ্ধ মূল।
 //
-// sdk-helpers.ts থেকে আলাদা করা হয়েছে যাতে llm.ts-ও একই নীতি
-// ব্যবহার করতে পারে import-cycle ছাড়া (sdk-helpers → llm একমুখী)।
-// sdk-helpers.ts এগুলো re-export করে — পুরনো সব ইমপোর্টার অক্ষত।
+// S9-গভীর-সমাধান: rate-limit-coordinator-এর সঙ্গী হয়েছে —
+//  - চ্যানেল (chat/image/tts/…) দিলে: প্রতিটি চেষ্টার আগে
+//    চ্যানেল-কুলডাউন শেষ পর্যন্ত সৎ-অপেক্ষা
+//  - একই চ্যানেলে কলগুলো সিরিয়ালাইজড (সমান্তরাল ৪২৯-ঝড় নয়)
+//  - ৪২৯-এ coordinator-কে জানানো হয় (অভিযোজিত কুলডাউন)
+//  - onWait-কলব্যাক দিলে UI/রান অপেক্ষা-নোট দেখাতে পারে
 //
-// নীতি (§১০):
+// পুরনো নীতি (S8-3) অপরিবর্তিত:
 //  - Retry-After থাকলে সেটিই মানের ভিত্তি (সেকেন্ড বা HTTP-date)
 //  - না থাকলে full-jitter এক্সপোনেনশিয়াল ব্যাকঅফ
 //  - ৪২৯/রেট-লিমিটে পুনঃচেষ্টা শেষ হলে TemporarilyUnavailableError —
 //    ৪২৯ কখনোই লাইসেন্স/অনুমতির সমস্যা নয়, "সাময়িকভাবে অনুপলব্ধ"
 // ============================================================
+
+import {
+  noteRateLimit,
+  noteSuccess,
+  runSerialized,
+  waitForChannel,
+  type RateLimitChannel,
+} from './rate-limit-coordinator';
 
 /**
  * সাময়িক অনুপলব্ধতা (রেট-লিমিট/৪২৯-নিঃশেষ)। বার্তার শুরুতেই
@@ -26,12 +37,12 @@ export class TemporarilyUnavailableError extends Error {
 
 /** বার্তাটি রেট-লিমিট/৪২৯ কি না (লাইসেন্স-সমস্যা কখনোই নয়) */
 export function isRateLimitErrorText(msg: string): boolean {
-  return /429|rate.?limit|too many/i.test(msg);
+  return /429|rate.?limit|too many|TEMPORARILY_UNAVAILABLE/i.test(msg);
 }
 
 /** পুনঃচেষ্টা-যোগ্য (৪২৯/রেট-লিমিট/৫xx/টাইমআউট) কি না */
 function isRetryableErrorText(msg: string): boolean {
-  return /429|rate.?limit|too many|\b5\d{2}\b|timeout/i.test(msg);
+  return /429|rate.?limit|too many|\b5\d{2}\b|timeout|TEMPORARILY_UNAVAILABLE/i.test(msg);
 }
 
 /** একক-মান থেকে মিলিসেকেন্ড ("30" / "30s" / 30 / HTTP-date) — না বুঝলে null */
@@ -89,8 +100,31 @@ export function fullJitterDelayMs(baseMs: number, attempt: number, maxDelayMs: n
   return Math.round(floor + Math.random() * (ceiling - floor));
 }
 
+export interface RetryWaitInfo {
+  /** এটি কোন চেষ্টা (১-ভিত্তিক) */
+  attempt: number;
+  /** এই চেষ্টার আগে কত মি.সে. অপেক্ষা করা হবে */
+  delayMs: number;
+  /** চ্যানেল-কুলডাউনের কারণে অপেক্ষা কি না */
+  fromCooldown: boolean;
+  channel: RateLimitChannel | null;
+  /** চ্যানেল আর কত মি.সে. ব্লকড ছিল (fromCooldown হলে) */
+  blockedMs: number;
+}
+
+export interface RetryOptions {
+  maxDelayMs?: number;
+  /** রেট-লিমিট-চ্যানেল — দিলে কুলডাউন-সচেতন + সিরিয়ালাইজড হয় */
+  channel?: RateLimitChannel;
+  /** প্রতিটি অপেক্ষার আগে ডাকা হয় (UI-নোটের জন্য) */
+  onWait?: (info: RetryWaitInfo) => void;
+  /** চ্যানেল-কুলডাউনের জন্য সর্বোচ্চ অপেক্ষা-বাজেট (ডিফল্ট ৫ মিনিট) */
+  cooldownBudgetMs?: number;
+}
+
 /**
- * ৪২৯/৫xx হলে ব্যাকঅফ-সহ পুনঃচেষ্টা — TTS/ASR/LLM/ছবি-সার্চ সবখানে ব্যবহৃত।
+ * ৪২৯/৫xx হলে ব্যাকঅফ-সহ পুনঃচেষ্টা — TTS/ASR/LLM/ছবি-সার্চ/ভিডিও সবখানে ব্যবহৃত।
+ * channel দিলে: কুলডাউন-শেষ পর্যন্ত সৎ-অপেক্ষা + একই চ্যানেলে কল সিরিয়ালাইজড।
  * ৪২৯-নিঃশেষে TemporarilyUnavailableError (লাইসেন্স-সমস্যা নয়),
  * ৫xx/টাইমআউট-নিঃশেষে সাধারণ সৎ-ব্যর্থতা।
  */
@@ -99,25 +133,58 @@ export async function withRetry<T>(
   label: string,
   attempts = 4,
   baseMs = 4000,
-  opts?: { maxDelayMs?: number }
+  opts?: RetryOptions
 ): Promise<T> {
   const maxAttempts = Math.max(1, Math.floor(attempts));
   const maxDelayMs = opts?.maxDelayMs ?? 90_000;
+  const channel = opts?.channel;
   let lastErr: unknown;
   for (let i = 0; i < maxAttempts; i++) {
+    // (ক) চ্যানেল-কুলডাউন চলছে কি না — থাকলে শেষ পর্যন্ত সৎ-অপেক্ষা;
+    //     বাজেট শেষেও ব্লকড থাকলে নিষ্ফল চেষ্টা বাদ — সরাসরি সৎ-ব্যর্থতা
+    if (channel) {
+      const waited = await waitForChannel(channel, opts?.cooldownBudgetMs ?? 5 * 60_000);
+      if (waited === -1) {
+        const finalMsg = `${channel}-চ্যানেল রেট-লিমিট-কুলডাউনে বাধা অতিক্রম করছে না`;
+        throw new TemporarilyUnavailableError(`${label} — ${finalMsg}`);
+      }
+      if (waited > 0) {
+        opts?.onWait?.({
+          attempt: i + 1,
+          delayMs: waited,
+          fromCooldown: true,
+          channel,
+          blockedMs: waited,
+        });
+      }
+    }
+    // (খ) চ্যানেল-সিরিয়ালাইজেশন — এক চ্যানেলে একাধিক সমান্তরাল কল নয়
+    const exec = channel ? () => runSerialized(channel, fn) : fn;
     try {
-      return await fn();
+      const result = await exec();
+      if (channel) noteSuccess(channel);
+      return result;
     } catch (err: any) {
       lastErr = err;
       const msg = String(err?.message ?? err);
       if (i === maxAttempts - 1) break;
       if (!isRetryableErrorText(msg)) throw err;
-      // §১০: Retry-After থাকলে সেটিই (৯০ সে.-ছাদে সীমিত), নয়তো full-jitter
+      // (গ) ৪২৯/রেট-লিমিট হলে coordinator-কে জানাও (অভিযোজিত কুলডাউন)
+      const isRateLimit = isRateLimitErrorText(msg);
       const ra = parseRetryAfterMs(err);
+      if (isRateLimit && channel) noteRateLimit(channel, ra);
+      // §১০: Retry-After থাকলে সেটিই (সীমা-ছদে), নয়তো full-jitter
       const delayMs =
-        ra != null
+        ra != null && isRateLimit
           ? Math.max(0, Math.min(maxDelayMs, ra))
           : fullJitterDelayMs(baseMs, i, maxDelayMs);
+      opts?.onWait?.({
+        attempt: i + 1,
+        delayMs,
+        fromCooldown: false,
+        channel: channel ?? null,
+        blockedMs: 0,
+      });
       await new Promise(r => setTimeout(r, delayMs));
     }
   }

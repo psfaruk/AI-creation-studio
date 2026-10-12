@@ -71,6 +71,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
               send(event);
             }
             return;
+          case 'run_note':
+            // S9: রেট-লিমিট-অপেক্ষার মতো স্ট্যাটাস-নোট — সবসময় পাঠানো হয়
+            send(event);
+            return;
           case 'run_finished':
             if (!runFinishedSent) {
               runFinishedSent = true;

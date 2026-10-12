@@ -32,7 +32,8 @@ import {
   makeSrt,
   burnSubtitles,
 } from '../../film-helpers';
-import { generateImageBuffer, editImageBuffer, chatJson } from '../../sdk-helpers';
+import { generateImageBuffer, editImageBuffer, chatJson, isRateLimitErrorText } from '../../sdk-helpers';
+import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
 import type { CameraMove } from '@/lib/types';
 import { audioQuality, ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
@@ -216,11 +217,19 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       energy: energyAt((b + bounds[i + 1]) / 2),
     }));
 
-    const { data } = await chatJson<{
+    // S11: পরিকল্পনা-ধাপ কখনো পাইপলাইন মারবে না — ৪২৯-উইন্ডোতেও
+    // নিচের সৎ ফলব্যাক (fallbackDescription) পথ চালু থাকে।
+    let data: {
       visualStyle: string;
       characters: { name: string; appearance: string }[];
       shots: { description: string; label: string; shotType: string; cameraMove: string; character?: string | null }[];
-    }>([
+    } | null = null;
+    try {
+      ({ data } = await chatJson<{
+        visualStyle: string;
+        characters: { name: string; appearance: string }[];
+        shots: { description: string; label: string; shotType: string; cameraMove: string; character?: string | null }[];
+      }>([
       {
         role: 'assistant',
         content:
@@ -240,7 +249,16 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
           `সেগমেন্ট-জানালা (শুরু–শেষ, শক্তি):\n${segs.map((s, i) => `  ${i + 1}. ${s.startSec.toFixed(1)}–${s.endSec.toFixed(1)} সে. [${s.energy}]`).join('\n')}\n` +
           (spec.style ? `শৈলী-ইঙ্গিত: ${spec.style}` : ''),
       },
-    ]);
+      ]));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.partialNotes.push(
+        isRateLimitErrorText(msg)
+          ? 'LLM ভিজ্যুয়াল-পরিকল্পনা রেট-লিমিটেড — সাধারণ শট-তালিকা ব্যবহৃত (AI-পরিকল্পনা নয়)।'
+          : `LLM ভিজ্যুয়াল-পরিকল্পনা ব্যর্থ (${msg.slice(0, 120)}) — সাধারণ শট-তালিকা ব্যবহৃত।`
+      );
+      data = null;
+    }
 
     const rawShots = Array.isArray(data?.shots) ? data.shots : [];
     const typeOk = ['performance', 'close_up', 'wide', 'establishing'];
@@ -299,18 +317,65 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
         }
       }
       await step.setDetail(`"${ch.name}" — পোর্ট্রেট তৈরি`);
-      const { buffer } = await generateImageBuffer(portraitPrompt(ch.name, ch.appearance), '864x1152');
-      const p = path.join(wd, `character-${sanitize(ch.name) || 'artist'}.png`);
-      await writeFile(p, buffer);
+      // S11: ক্লাউড-পোর্ট্রেট ব্যর্থ (৪২৯-সহ) হলে লোকাল প্রসিডিউরাল
+      // পোর্ট্রেট — সৎ লেবেলসহ; Character-টেবিলে কেবল প্রকৃত AI-পোর্ট্রেট
+      // ঢোকে (প্রসিডিউরাল ফ্রেমকে স্থায়ী রেফারেন্স বলা অসৎ হবে)।
+      const charBase = sanitize(ch.name) || 'artist';
+      const localPortraitPath = path.join(wd, `character-${charBase}-local.png`);
+      const aiPortraitPath = path.join(wd, `character-${charBase}.png`);
+      let buffer: Buffer;
+      let portraitIsLocal = false;
+      try {
+        ({ buffer } = await generateImageBuffer(portraitPrompt(ch.name, ch.appearance), '864x1152'));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+          const local = await generateLocalFrame({
+            seed: `mv-char-${ch.name}`,
+            width: 864,
+            height: 1152,
+            outputPath: localPortraitPath,
+            mood: String(spec.mood ?? ''),
+            label: ch.name,
+          });
+          buffer = await readFile(local.path);
+          portraitIsLocal = true;
+          ctx.partialNotes.push(
+            isRateLimitErrorText(msg)
+              ? `চরিত্র ${ch.name}-এর পোর্ট্রেট ক্লাউড-রেট-লিমিটেড — ${LOCAL_FRAME_LABEL}`
+              : `চরিত্র ${ch.name}-এর পোর্ট্রেট ক্লাউডে ব্যর্থ (${msg.slice(0, 100)}) — ${LOCAL_FRAME_LABEL}`
+          );
+        } catch (localErr) {
+          ctx.partialNotes.push(
+            `চরিত্র "${ch.name}"-এর পোর্ট্রেট তৈরি ব্যর্থ (${msg.slice(0, 120)}; লোকাল-ফ্রেম: ${
+              localErr instanceof Error ? localErr.message.slice(0, 80) : 'অজানা'
+            }) — দৃশ্য-প্রম্পট ব্যবহৃত হবে`
+          );
+          continue;
+        }
+      }
+      const p = portraitIsLocal ? localPortraitPath : aiPortraitPath;
+      if (!portraitIsLocal) await writeFile(p, buffer);
       const art = await ctx.registerArtifact({
         buffer,
         kind: 'image',
         mimeType: 'image/png',
-        fileName: `character-${sanitize(ch.name) || 'artist'}.png`,
-        metaJson: { characterName: ch.name, pipeline: 'music_video', kind: 'artist-reference' },
+        fileName: `character-${charBase}${portraitIsLocal ? '-local' : ''}.png`,
+        metaJson: {
+          characterName: ch.name,
+          pipeline: 'music_video',
+          kind: portraitIsLocal ? 'local-procedural' : 'artist-reference',
+          ...(portraitIsLocal
+            ? { honestLabel: LOCAL_FRAME_LABEL, note: 'local-procedural — AI পোর্ট্রেট নয়' }
+            : {}),
+        },
       });
       ch.portraitPath = p;
       ch.portraitDataUrl = `data:image/png;base64,${buffer.toString('base64')}`;
+      if (portraitIsLocal) {
+        await step.setDetail(`"${ch.name}" — লোকাল প্রসিডিউরাল পোর্ট্রেট (ক্লাউড-রেট-লিমিটেড)`);
+        continue; // স্থায়ী Character-রেকর্ড নয় — সৎ সীমা
+      }
       // §৭.২ — Character-টেবিলে সংরক্ষণ (পরের প্রোডাকশনে পুনঃব্যবহার)
       await db.character.upsert({
         where: { conversationId_name: { conversationId: ctx.conversationId, name: ch.name } },
@@ -380,7 +445,9 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
                   of: shots.length,
                   cameraMove: shot.cameraMove,
                   label: shot.label,
-                  note: `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
+                  note: res.frameLocal
+                    ? `ক্লাউড AI-জেনারেশন ও ফলব্যাক-ফ্রেম ব্যর্থ — লোকাল প্রসিডিউরাল ফ্রেম (${LOCAL_FRAME_LABEL})`
+                    : `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
                 },
               });
             }
@@ -407,26 +474,60 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
             }
             return (await generateImageBuffer(imagePromptForShot(shot, visualStyle || spec.style), genSize)).buffer;
           };
+          // S11: শট-বাদের আগে শেষ-উপায় — লোকাল প্রসিডিউরাল ফ্রেম (সৎ লেবেলসহ)
+          let frameIsLocal = false;
+          let frameFailReason = '';
           try {
             buffer = await tryGen();
-          } catch {
+          } catch (err) {
+            frameFailReason = err instanceof Error ? err.message : String(err);
             try {
               buffer = await tryGen();
-            } catch (err) {
-              ctx.partialNotes.push(
-                `শট ${i + 1}-এর ফ্রেম ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শট বাদ`
-              );
-              continue;
+            } catch (err2) {
+              const msg2 = err2 instanceof Error ? err2.message : String(err2);
+              const rateLimited = isRateLimitErrorText(msg2);
+              try {
+                const localFrame = await generateLocalFrame({
+                  seed: `mv-shot-${i}`,
+                  width: dims.w,
+                  height: dims.h,
+                  outputPath: path.join(wd, `frame-${i}.png`),
+                  mood: String(spec.mood ?? ''),
+                  label: shot.label,
+                });
+                buffer = await readFile(localFrame.path);
+                frameIsLocal = true;
+                ctx.partialNotes.push(
+                  rateLimited
+                    ? `শট ${i + 1}-এর ইমেজ-জেন রেট-লিমিটেড — ${LOCAL_FRAME_LABEL}`
+                    : `শট ${i + 1}-এর ফ্রেম ক্লাউডে ব্যর্থ (${msg2.slice(0, 100)}) — ${LOCAL_FRAME_LABEL}`
+                );
+              } catch (localErr) {
+                ctx.partialNotes.push(
+                  `শট ${i + 1}-এর ফ্রেম ব্যর্থ (${msg2.slice(0, 120)}) ও লোকাল-ফ্রেমও ব্যর্থ (${
+                    localErr instanceof Error ? localErr.message.slice(0, 80) : 'অজানা'
+                  }) — শট বাদ`
+                );
+                continue;
+              }
             }
           }
           const framePath = path.join(wd, `frame-${i}.png`);
-          await writeFile(framePath, buffer);
+          if (!frameIsLocal) await writeFile(framePath, buffer);
           await ctx.registerArtifact({
             buffer,
             kind: 'image',
             mimeType: 'image/png',
             fileName: `storyboard-shot-${i + 1}.png`,
-            metaJson: { shot: i + 1, of: shots.length, cameraMove: shot.cameraMove, label: shot.label },
+            metaJson: {
+              shot: i + 1,
+              of: shots.length,
+              cameraMove: shot.cameraMove,
+              label: shot.label,
+              ...(frameIsLocal
+                ? { kind: 'local-procedural', honestLabel: LOCAL_FRAME_LABEL, note: 'local-procedural — AI ফ্রেম নয়' }
+                : {}),
+            },
           });
           await step.setDetail(`শট ${i + 1}/${shots.length} মোশন ক্লিপ (${shot.cameraMove})`);
           const clipPath = path.join(wd, `clip-${i}.mp4`);
@@ -453,7 +554,13 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               continue;
             }
           }
-          shotEngineLabels.push(`শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`);
+          shotEngineLabels.push(
+            frameIsLocal
+              ? `শট ${i + 1}: লোকাল প্রসিডিউরাল ফ্রেম + ক্যামেরা-মোশন (${
+                  isRateLimitErrorText(frameFailReason) ? 'ইমেজ-জেন রেট-লিমিটেড' : 'ইমেজ-জেন ব্যর্থ'
+                })`
+              : `শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`
+          );
           valid.push({ ...shot, framePath, clipPath });
         }
       }

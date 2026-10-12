@@ -6,7 +6,8 @@
 import { z } from 'zod';
 import type { ArtifactMeta } from '@/lib/types';
 import { db } from '@/lib/db';
-import { validateSpec, summarizeSpec } from '../capabilities';
+import { summarizeSpec } from '../capabilities';
+import { createProduction } from '../production/create';
 import { generateImageBuffer } from '../sdk-helpers';
 import { saveArtifactFile } from '../storage';
 import { toArtifactMeta } from '../serialize';
@@ -37,57 +38,18 @@ const proposeJobSpec: ToolSpec<{
     return `${String(s.type ?? 'কাজ')}: ${truncate(String(s.title ?? s.idea ?? s.story ?? ''), 80)}`;
   },
   execute: async (input, ctx) => {
-    const validation = validateSpec(input.spec);
-    if (!validation.ok || !validation.validated) {
-      const alt = validation.alternatives?.length ? ` বিকল্প: ${validation.alternatives.join('; ')}` : '';
-      throw new Error(`স্পেক যাচাই ব্যর্থ: ${validation.errors.join('; ')}.${alt}`);
+    // S9: শেয়ার্ড তৈরি-পথ (propose_job ≡ POST /api/productions ≡ ইন্টেন্ট-ফলব্যাক)
+    const created = await createProduction(input.spec, ctx.conversationId);
+    if (!created.ok) {
+      const alt = created.alternatives?.length ? ` বিকল্প: ${created.alternatives.join('; ')}` : '';
+      throw new Error(`স্পেক যাচাই ব্যর্থ: ${created.errors.join('; ')}.${alt}`);
     }
-    const caps = validation.validated;
-
-    // --- অটো-ওয়্যার: মিউজিক ভিডিওতে গান আবার যুক্ত করা ---
-    // LLM কখনো কখনো songArtifactId দিতে ভুলে যায় — কথোপকথনের
-    // সর্বশেষ আপলোড করা অডিও থাকলে সেটিই spec-এ বসিয়ে দাও।
-    if (caps.spec.type === 'music_video' && !caps.spec.songArtifactId) {
-      const song = await db.artifact.findFirst({
-        where: { conversationId: ctx.conversationId, kind: 'audio', origin: 'user_upload' },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (song) {
-        caps.spec.songArtifactId = song.id;
-        caps.spec.sound = 'uploaded_song';
-        caps.notes = caps.notes.filter(n => !n.includes('আপলোড করা গান পাওয়া যায়নি'));
-      }
-    }
-    // ছবি-ভিত্তিক কাজে সর্বশেষ আপলোড করা ছবি (sourceArtifactId না থাকলে)
-    if (caps.spec.type === 'image' && !caps.spec.sourceArtifactId) {
-      const img = await db.artifact.findFirst({
-        where: { conversationId: ctx.conversationId, kind: 'image', origin: 'user_upload' },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (img) caps.spec.sourceArtifactId = img.id;
-    }
-    // image-to-video (animate_image) উৎস
-    if (caps.spec.type === 'motion_video' && !caps.spec.sourceImageArtifactId) {
-      const img = await db.artifact.findFirst({
-        where: { conversationId: ctx.conversationId, kind: 'image', origin: 'user_upload' },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (img) caps.spec.sourceImageArtifactId = img.id;
-    }
-
-    const production = await db.production.create({
-      data: {
-        conversationId: ctx.conversationId,
-        type: caps.spec.type,
-        title: caps.spec.title,
-        status: 'awaiting_confirmation',
-        specJson: JSON.stringify(caps.spec),
-      },
-    });
+    const caps = created.caps;
+    const { productionId } = created;
     return {
       summary: `প্রস্তাব তৈরি: ${caps.spec.title} (${summarizeSpec(caps.spec)})`,
       resultJson: JSON.stringify({
-        productionId: production.id,
+        productionId,
         status: 'awaiting_confirmation',
         title: caps.spec.title,
         summary: summarizeSpec(caps.spec),

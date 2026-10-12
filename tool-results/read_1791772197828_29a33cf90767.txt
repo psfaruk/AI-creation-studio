@@ -1,0 +1,687 @@
+     1→// ============================================================
+     2→// Music video pipeline — নতুন মাস্টার প্ল্যান §৬ (৬-ধাপ কাঠামো)
+     3→// song_input → visual_plan → characters → generate_shots →
+     4→// timeline → final_qc।
+     5→//
+     6→//  - song_input: আপলোড গান → §৬.১ এনার্জি-বিশ্লেষণ (বিট/সেকশন/BPM);
+     7→//    গান না থাকলে §৩ প্রসিডিউরাল ইনস্ট্রুমেন্টাল (সৎ লেবেলসহ)।
+     8→//  - visual_plan: সেকশন-ভিত্তিক শট-তালিকা — কাট-পয়েন্ট বিট-মার্কার
+     9→//    থেকে সমান দূরত্বে বাছাই (প্রতিটি বিট নয়)।
+    10→//  - characters: Character-টেবিল থেকে পোর্ট্রেট পুনঃব্যবহার (§৭.২)।
+    11→//  - generate_shots: ai_diffusion (শিল্পী-পোর্ট্রেট data-URL দিয়ে i2v)
+    12→//    বা cinematic_motion — সৎ-ফলব্যাক ও লেবেলসহ।
+    13→//  - timeline: শট-ক্লিপ বিট-কাটে বসানো (ট্রিম+concat; xfade ≤৬),
+    14→//    গান মাস্টার-অডিও, ঐচ্ছিক লিরিক-সাবটাইটেল।
+    15→//  - final_qc (§৬.৫): দৈর্ঘ্য-মিল / অডিও-গুণমান / A-V সমলয় যাচাই।
+    16→//
+    17→// সততা: লিপ-সিঙ্ক নেই — "গায়কের মুখ নড়ছে" দাবি করা হয় না;
+    18→// প্রসিডিউরাল গান = পরীক্ষামূলক, নিউরাল মিউজিক-মডেল নয়।
+    19→// ============================================================
+    20→
+    21→import path from 'path';
+    22→import { readFile, writeFile } from 'fs/promises';
+    23→import type { PipelineFn, StepHandle } from '../runner';
+    24→import {
+    25→  kenBurnsClip,
+    26→  concatClips,
+    27→  muxAudio,
+    28→  imagePromptForShot,
+    29→  portraitPrompt,
+    30→  sanitize,
+    31→  segmentDialogueToCues,
+    32→  makeSrt,
+    33→  burnSubtitles,
+    34→} from '../../film-helpers';
+    35→import { generateImageBuffer, editImageBuffer, chatJson } from '../../sdk-helpers';
+    36→import type { CameraMove } from '@/lib/types';
+    37→import { audioQuality, ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
+    38→import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
+    39→import { AI_VIDEO_MODEL } from '../../video/ai_video';
+    40→import { generateAiShot, buildAiVideoPrompt, toDataUrl } from './motion_video';
+    41→import {
+    42→  synthesizeInstrumental,
+    43→  analyzeAudioEnergy,
+    44→  detectMoodFromText,
+    45→  moodLabel,
+    46→  MUSIC_ENGINE_LABEL,
+    47→  type MusicMood,
+    48→} from '../../audio/music_engine';
+    49→import { db } from '@/lib/db';
+    50→
+    51→type MvShotType = 'performance' | 'close_up' | 'wide' | 'establishing';
+    52→
+    53→interface MvShot {
+    54→  /** ইংরেজি জেনারেশন-বর্ণনা */
+    55→  description: string;
+    56→  /** বাংলা লেবেল */
+    57→  label: string;
+    58→  shotType: MvShotType;
+    59→  cameraMove: CameraMove;
+    60→  startSec: number;
+    61→  endSec: number;
+    62→  durationSec: number;
+    63→  character?: string | null;
+    64→  framePath?: string;
+    65→  clipPath?: string;
+    66→}
+    67→
+    68→interface MvCharacter {
+    69→  name: string;
+    70→  appearance: string;
+    71→  portraitPath?: string;
+    72→  portraitDataUrl?: string;
+    73→  reused?: boolean;
+    74→}
+    75→
+    76→const SHOT_TYPE_HINT: Record<MvShotType, string> = {
+    77→  performance: 'performing musician singing into camera, expressive gestures, stage presence',
+    78→  close_up: 'intimate close-up shot, expressive face detail',
+    79→  wide: 'wide atmospheric shot, environment and scale',
+    80→  establishing: 'establishing shot of the location, sweeping view',
+    81→};
+    82→
+    83→const MOVES: CameraMove[] = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'];
+    84→
+    85→const round2 = (v: number) => Math.round(v * 100) / 100;
+    86→
+    87→export const musicVideoPipeline: PipelineFn = async ctx => {
+    88→  const spec = ctx.spec;
+    89→  const aspect = spec.aspect ?? '9:16';
+    90→  const fps = spec.fps ?? 30;
+    91→  const engine = spec.videoEngine === 'cinematic_motion' ? 'cinematic_motion' : 'ai_diffusion';
+    92→  const resolution = spec.quality === 'draft' ? '720p' : '1080p';
+    93→  const dims = outputDims(aspect, resolution);
+    94→  const wd = ctx.workingDir;
+    95→  const genSize = ASPECT_TO_GEN_SIZE[aspect];
+    96→
+    97→  const notes: string[] = [];
+    98→
+    99→  // ------------------------------------------------------- song_input
+   100→  let songPath: string | null = null;
+   101→  let songArtifactId: string | null = null;
+   102→  let songDuration = 0;
+   103→  /** গান থেকে ব্যবহৃত অংশ (টার্গেট-দৈর্ঘ্য) */
+   104→  let songUseSec = 0;
+   105→  let targetDuration = 0;
+   106→  let beatsSec: number[] = [];
+   107→  let sections: { name: string; startSec: number; endSec: number; energy: string }[] = [];
+   108→  let songBpm = 0;
+   109→  let musicSourceLabel = '';
+   110→  let analysisLabel = '';
+   111→  await ctx.runStep('song_input', 'গান ইনপুট ও বিট-বিশ্লেষণ', async (step: StepHandle) => {
+   112→    const desired = spec.durationSec && spec.durationSec > 0 ? spec.durationSec : 60;
+   113→    if (spec.songArtifactId) {
+   114→      songPath = await ctx.resolveArtifactFile(spec.songArtifactId);
+   115→      songArtifactId = spec.songArtifactId;
+   116→      const info = await mediaInfo(songPath);
+   117→      if (!info.hasAudio) throw new Error('আপলোড করা গানে অডিও স্ট্রিম পাওয়া যায়নি');
+   118→      songDuration = info.durationSec;
+   119→      // §৬.১ — এনার্জি-বিশ্লেষণ: বিট-মার্কার, সেকশন, আনুমানিক BPM
+   120→      const analysis = await analyzeAudioEnergy(songPath);
+   121→      beatsSec = analysis.beatsSec;
+   122→      sections = analysis.sections.map(s => ({ name: s.energy, startSec: s.startSec, endSec: s.endSec, energy: s.energy }));
+   123→      songBpm = analysis.estimatedBpm;
+   124→      analysisLabel = analysis.honestLabel;
+   125→      targetDuration = Math.max(5, Math.min(desired, songDuration));
+   126→      songUseSec = targetDuration;
+   127→      musicSourceLabel = 'ব্যবহারকারীর আপলোড করা গান';
+   128→      await step.setDetail(
+   129→        `আপলোড গান ${songDuration.toFixed(1)} সে. — ≈${songBpm || '?'} BPM, ${beatsSec.length}টি বিট-মার্কার (${analysisLabel})`
+   130→      );
+   131→    } else if (spec.musicSource === 'none') {
+   132→      targetDuration = Math.max(15, Math.min(180, desired));
+   133→      musicSourceLabel = 'গান নেই — নীরব টাইমলাইন';
+   134→      await step.setDetail('গান ছাড়া নীরব মিউজিক-ভিডিও');
+   135→      notes.push('গান নেই — নীরব টাইমলাইন (musicSource: none)।');
+   136→    } else {
+   137→      // §৩ — প্রসিডিউরাল ইনস্ট্রুমেন্টাল (সৎ লেবেলসহ)
+   138→      const moodText = `${spec.mood ?? ''} ${spec.idea ?? ''} ${spec.title ?? ''} ${spec.genre ?? ''}`;
+   139→      const mood: MusicMood =
+   140→        detectMoodFromText(String(spec.mood ?? '')) ?? detectMoodFromText(moodText) ?? 'romantic';
+   141→      const dur = Math.max(8, Math.min(120, desired));
+   142→      await step.setDetail(`${moodLabel(mood)} মুডে প্রসিডিউরাল ইনস্ট্রুমেন্টাল (${dur} সে.) সংশ্লেষণ…`);
+   143→      const inst = await synthesizeInstrumental({ mood, durationSec: dur, tempoBpm: spec.tempoBpm, genre: spec.genre });
+   144→      const wavPath = path.join(wd, 'procedural-song.wav');
+   145→      await writeFile(wavPath, inst.buffer);
+   146→      const art = await ctx.registerArtifact({
+   147→        buffer: inst.buffer,
+   148→        kind: 'audio',
+   149→        mimeType: 'audio/wav',
+   150→        fileName: `${sanitize(spec.title || 'music-video').slice(0, 36)}-instrumental.wav`,
+   151→        metaJson: {
+   152→          pipeline: 'music_video',
+   153→          kind: 'song',
+   154→          source: 'procedural',
+   155→          mood: inst.meta.mood,
+   156→          moodLabel: moodLabel(inst.meta.mood),
+   157→          tempoBpm: inst.meta.tempoBpm,
+   158→          keyLabel: inst.meta.keyLabel,
+   159→          beats: inst.meta.beatsSec.length,
+   160→          sections: inst.meta.sections,
+   161→          honestLabel: inst.meta.honestLabel,
+   162→        },
+   163→      });
+   164→      songPath = wavPath;
+   165→      songArtifactId = art.id;
+   166→      songDuration = inst.meta.durationSec;
+   167→      beatsSec = inst.meta.beatsSec;
+   168→      sections = inst.meta.sections.map(s => ({ name: s.name, startSec: s.startSec, endSec: s.endSec, energy: sectionEnergy(s.name) }));
+   169→      songBpm = inst.meta.tempoBpm;
+   170→      targetDuration = songDuration;
+   171→      songUseSec = songDuration;
+   172→      musicSourceLabel = `প্রসিডিউরাল ইনস্ট্রুমেন্টাল (${moodLabel(inst.meta.mood)}, ${inst.meta.tempoBpm} BPM)`;
+   173→      notes.push(
+   174→        `গান: পরীক্ষামূলক প্রসিডিউরাল ইনস্ট্রুমেন্টাল — নিউরাল মিউজিক-মডেল নয় (${MUSIC_ENGINE_LABEL})।`
+   175→      );
+   176→      await step.setDetail(
+   177→        `প্রসিডিউরাল গান তৈরি — ${inst.meta.durationSec} সে., ${inst.meta.tempoBpm} BPM, ${beatsSec.length}টি বিট-মার্কার`
+   178→      );
+   179→    }
+   180→  });
+   181→
+   182→  const energyAt = (t: number): string => {
+   183→    const s = sections.find(x => t >= x.startSec && t < x.endSec);
+   184→    return s?.energy ?? 'medium';
+   185→  };
+   186→
+   187→  // ------------------------------------------------------- visual_plan
+   188→  let shots: MvShot[] = [];
+   189→  let characters: MvCharacter[] = [];
+   190→  let visualStyle = '';
+   191→  await ctx.runStep('visual_plan', 'ভিজ্যুয়াল পরিকল্পনা (সেকশন-ভিত্তিক শট-তালিকা)', async (step: StepHandle) => {
+   192→    const limit = maxShots('music_video', spec.quality, engine);
+   193→    // AI-পথে প্রতি শট ≤৯ সে. (৫/১০-গ্রিড + ট্রানজিশন-প্যাড), সিনেম্যাটিকে ২.৫–৬ সে.
+   194→    const segCap = engine === 'ai_diffusion' ? 9 : 6;
+   195→    const shotCount = Math.max(engine === 'ai_diffusion' ? 1 : 3, Math.min(limit, Math.ceil(targetDuration / segCap)));
+   196→
+   197→    // বিট-মার্কার থেকে কাট-পয়েন্ট — সমান দূরত্বে বিট বাছাই (প্রতিটি বিট নয়)
+   198→    const usable = beatsSec.filter(b => b > 1 && b < targetDuration - 1);
+   199→    const interior: number[] = [];
+   200→    if (usable.length >= shotCount - 1) {
+   201→      for (let k = 1; k <= shotCount - 1; k++) {
+   202→        const idx = Math.min(usable.length - 1, Math.max(0, Math.round((k * usable.length) / shotCount) - 1));
+   203→        interior.push(usable[idx]);
+   204→      }
+   205→    } else {
+   206→      for (let k = 1; k <= shotCount - 1; k++) interior.push(round2((k * targetDuration) / shotCount));
+   207→    }
+   208→    const bounds: number[] = [0];
+   209→    for (const b of interior.sort((a, b) => a - b)) {
+   210→      if (b - bounds[bounds.length - 1] >= 1.2 && targetDuration - b >= 1.2) bounds.push(round2(b));
+   211→    }
+   212→    bounds.push(targetDuration);
+   213→    const segs = bounds.slice(0, -1).map((b, i) => ({
+   214→      startSec: b,
+   215→      endSec: bounds[i + 1],
+   216→      energy: energyAt((b + bounds[i + 1]) / 2),
+   217→    }));
+   218→
+   219→    const { data } = await chatJson<{
+   220→      visualStyle: string;
+   221→      characters: { name: string; appearance: string }[];
+   222→      shots: { description: string; label: string; shotType: string; cameraMove: string; character?: string | null }[];
+   223→    }>([
+   224→      {
+   225→        role: 'assistant',
+   226→        content:
+   227→          'তুমি মিউজিক-ভিডিও পরিচালক। গানের সেকশন-শক্তি ও সেগমেন্ট-জানালা অনুযায়ী ঠিক ' +
+   228→          `${segs.length}টি শট দাও — প্রতিটি সেগমেন্টের জন্য একটি করে।\n` +
+   229→          'শটের shotType: "performance"|"close_up"|"wide"|"establishing" — জোরালো (loud/chorus) অংশে performance/close_up, শান্ত (quiet/intro/outro) অংশে wide/establishing।\n' +
+   230→          'description ইংরেজিতে (ভিডিও-জেনারেশনের জন্য দৃশ্যমান বর্ণনা — পরিবেশ, চরিত্র, আলো), label বাংলায়।\n' +
+   231→          'cameraMove: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static"।\n' +
+   232→          'গায়ক/শিল্পী-চরিত্র দরকার হলে ঠিক ১টি চরিত্র দাও (সংগীতশিল্পী) — appearance ইংরেজিতে বিস্তারিত (বয়স, চেহারা, পোশাক); performance শটগুলোতে ওই চরিত্রের নাম দাও।\n' +
+   233→          'শুধু JSON: {"visualStyle":"...","characters":[{"name":"...","appearance":"..."}],"shots":[{"description":"...","label":"...","shotType":"performance","cameraMove":"zoom_in","character":"নাম বা null"}]}',
+   234→      },
+   235→      {
+   236→        role: 'user',
+   237→        content:
+   238→          `শিরোনাম: ${spec.title}\nআইডিয়া: ${spec.idea ?? '(স্বাধীন)'}\nমোট দৈর্ঘ্য: ${targetDuration.toFixed(1)} সেকেন্ড\n` +
+   239→          `গান-উৎস: ${musicSourceLabel}${songBpm ? ` (${songBpm} BPM)` : ''}\n` +
+   240→          `সেগমেন্ট-জানালা (শুরু–শেষ, শক্তি):\n${segs.map((s, i) => `  ${i + 1}. ${s.startSec.toFixed(1)}–${s.endSec.toFixed(1)} সে. [${s.energy}]`).join('\n')}\n` +
+   241→          (spec.style ? `শৈলী-ইঙ্গিত: ${spec.style}` : ''),
+   242→      },
+   243→    ]);
+   244→
+   245→    const rawShots = Array.isArray(data?.shots) ? data.shots : [];
+   246→    const typeOk = ['performance', 'close_up', 'wide', 'establishing'];
+   247→    shots = segs.map((seg, i) => {
+   248→      const s = rawShots[i];
+   249→      const description = String(s?.description ?? '').trim();
+   250→      return {
+   251→        description: (description || fallbackDescription(i, segs.length)).slice(0, 900),
+   252→        label: String(s?.label ?? '').slice(0, 120) || `শট ${i + 1}`,
+   253→        shotType: (typeOk.includes(String(s?.shotType)) ? s!.shotType : i === 0 ? 'establishing' : 'performance') as MvShotType,
+   254→        cameraMove: (MOVES.includes(String(s?.cameraMove) as CameraMove)
+   255→          ? (s!.cameraMove as CameraMove)
+   256→          : MOVES[i % MOVES.length]) as CameraMove,
+   257→        startSec: seg.startSec,
+   258→        endSec: seg.endSec,
+   259→        durationSec: round2(seg.endSec - seg.startSec),
+   260→        character: s?.character ? String(s.character).slice(0, 60) : null,
+   261→      };
+   262→    });
+   263→    if (rawShots.length > segs.length) {
+   264→      ctx.partialNotes.push(`LLM ${rawShots.length}টি শট দিয়েছিল — সেগমেন্ট-সীমা অনুযায়ী ${segs.length}টি রাখা হলো।`);
+   265→    }
+   266→    visualStyle = String(data?.visualStyle ?? spec.style ?? '').slice(0, 200);
+   267→
+   268→    const rawChars = Array.isArray(data?.characters) ? data.characters : [];
+   269→    characters = rawChars
+   270→      .filter(c => String(c?.name ?? '').trim() && String(c?.appearance ?? '').trim())
+   271→      .slice(0, 1) // সংগীতশিল্পী-চরিত্র ১টি থাকলেই চলে
+   272→      .map(c => ({ name: String(c.name).slice(0, 60), appearance: String(c.appearance).slice(0, 600) }));
+   273→
+   274→    await step.setDetail(
+   275→      `${shots.length}টি শট (বিট-কাটে), ${characters.length > 0 ? `চরিত্র: ${characters[0].name}` : 'দৃশ্য-কেন্দ্রিক'}`
+   276→    );
+   277→  });
+   278→
+   279→  // ------------------------------------------------------- characters
+   280→  await ctx.runStep('characters', 'চরিত্র/পারফরম্যান্স রেফারেন্স', async (step: StepHandle) => {
+   281→    if (characters.length === 0) {
+   282→      await step.setDetail('দৃশ্য-কেন্দ্রিক ভিজ্যুয়াল — কোনো চরিত্র প্রয়োজন নেই');
+   283→      return;
+   284→    }
+   285→    // §৭.২ — Character-টেবিল থেকে মিল-নাম হলে পোর্ট্রেট পুনঃব্যবহার
+   286→    const existing = await db.character.findMany({ where: { conversationId: ctx.conversationId } });
+   287→    for (const ch of characters) {
+   288→      const match = existing.find(c => c.name.trim() === ch.name || c.name.includes(ch.name) || ch.name.includes(c.name.trim()));
+   289→      if (match?.portraitArtifactId) {
+   290→        try {
+   291→          const p = await ctx.resolveArtifactFile(match.portraitArtifactId);
+   292→          ch.portraitDataUrl = await toDataUrl(p);
+   293→          ch.portraitPath = p;
+   294→          ch.reused = true;
+   295→          await step.setDetail(`"${ch.name}" — Character-বাইবেল থেকে পোর্ট্রেট পুনঃব্যবহার`);
+   296→          continue;
+   297→        } catch {
+   298→          // পড়তে ব্যর্থ → নতুন পোর্ট্রেট তৈরি হবে
+   299→        }
+   300→      }
+   301→      await step.setDetail(`"${ch.name}" — পোর্ট্রেট তৈরি`);
+   302→      const { buffer } = await generateImageBuffer(portraitPrompt(ch.name, ch.appearance), '864x1152');
+   303→      const p = path.join(wd, `character-${sanitize(ch.name) || 'artist'}.png`);
+   304→      await writeFile(p, buffer);
+   305→      const art = await ctx.registerArtifact({
+   306→        buffer,
+   307→        kind: 'image',
+   308→        mimeType: 'image/png',
+   309→        fileName: `character-${sanitize(ch.name) || 'artist'}.png`,
+   310→        metaJson: { characterName: ch.name, pipeline: 'music_video', kind: 'artist-reference' },
+   311→      });
+   312→      ch.portraitPath = p;
+   313→      ch.portraitDataUrl = `data:image/png;base64,${buffer.toString('base64')}`;
+   314→      // §৭.২ — Character-টেবিলে সংরক্ষণ (পরের প্রোডাকশনে পুনঃব্যবহার)
+   315→      await db.character.upsert({
+   316→        where: { conversationId_name: { conversationId: ctx.conversationId, name: ch.name } },
+   317→        create: {
+   318→          conversationId: ctx.conversationId,
+   319→          name: ch.name,
+   320→          role: 'সংগীতশিল্পী',
+   321→          description: ch.appearance.slice(0, 500),
+   322→          appearanceJson: JSON.stringify({ appearance: ch.appearance }),
+   323→          language: spec.language ?? 'bn',
+   324→          voice: spec.voice ?? 'jam',
+   325→          portraitArtifactId: art.id,
+   326→        },
+   327→        update: { portraitArtifactId: art.id },
+   328→      });
+   329→    }
+   330→  });
+   331→
+   332→  // ------------------------------------------------------- generate_shots
+   333→  const shotEngineLabels: string[] = [];
+   334→  let aiShots = 0;
+   335→  await ctx.runStep(
+   336→    'generate_shots',
+   337→    engine === 'ai_diffusion' ? `পারফরম্যান্স ক্লিপ জেনারেশন (${AI_VIDEO_MODEL})` : 'পারফরম্যান্স ক্লিপ জেনারেশন (স্টোরিবোর্ড+ক্যামেরা-মোশন)',
+   338→    async (step: StepHandle) => {
+   339→      // ট্রানজিশন-প্যাডিং সহ প্রয়োজনীয় দৈর্ঘ্য (timeline-ধাপের কাট-গণিত মেনে)
+   340→      const useXfade = shots.length <= 6;
+   341→      const T = useXfade ? 0.5 : 0;
+   342→      const valid: MvShot[] = [];
+   343→      for (let i = 0; i < shots.length; i++) {
+   344→        await ctx.checkCancelled();
+   345→        const shot = shots[i];
+   346→        const needPad = !useXfade ? 0 : i === 0 || i === shots.length - 1 ? T / 2 : T;
+   347→        const needed = round2(shot.durationSec + needPad);
+   348→        const artist = shot.character ? characters.find(c => c.name === shot.character && c.portraitDataUrl) : undefined;
+   349→        if (engine === 'ai_diffusion') {
+   350→          await step.setDetail(`শট ${i + 1}/${shots.length} জেনারেট হচ্ছে…`);
+   351→          try {
+   352→            const res = await generateAiShot({
+   353→              index: i,
+   354→              prompt: buildAiVideoPrompt(shot.description, visualStyle || spec.style, shot.cameraMove, SHOT_TYPE_HINT[shot.shotType]),
+   355→              neededSec: needed,
+   356→              fps,
+   357→              width: dims.w,
+   358→              height: dims.h,
+   359→              workingDir: wd,
+   360→              // i2v — শিল্পীর পোর্ট্রেট রেফারেন্স, চেহারা ধরে রাখতে
+   361→              imageUrl: artist?.portraitDataUrl,
+   362→              // §১০ আইডেম্পোটেন্সি: এই প্রোডাকশনের এই শট = একই request_id
+   363→              requestKey: `mv-${ctx.productionId}-shot-${i + 1}`,
+   364→              fallbackImagePrompt: imagePromptForShot(shot, visualStyle || spec.style),
+   365→              fallbackGenSize: genSize,
+   366→              fallbackReferenceUrl: artist?.portraitDataUrl,
+   367→              fallbackMove: shot.cameraMove,
+   368→              onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
+   369→            });
+   370→            if (res.usedAi) {
+   371→              aiShots++;
+   372→            } else if (res.framePath) {
+   373→              await ctx.registerArtifact({
+   374→                buffer: await readFile(res.framePath),
+   375→                kind: 'image',
+   376→                mimeType: 'image/png',
+   377→                fileName: `storyboard-shot-${i + 1}.png`,
+   378→                metaJson: {
+   379→                  shot: i + 1,
+   380→                  of: shots.length,
+   381→                  cameraMove: shot.cameraMove,
+   382→                  label: shot.label,
+   383→                  note: `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
+   384→                },
+   385→              });
+   386→            }
+   387→            shotEngineLabels.push(res.engineLabel);
+   388→            valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
+   389→          } catch (err) {
+   390→            ctx.partialNotes.push(
+   391→              `শট ${i + 1} তৈরি ব্যর্থ (${err instanceof Error ? err.message.slice(0, 140) : 'অজানা'}) — শট বাদ`
+   392→            );
+   393→          }
+   394→        } else {
+   395→          // cinematic_motion — চরিত্র-রেফারেন্স-কন্ডিশনড স্টোরিবোর্ড + Ken Burns
+   396→          await step.setDetail(`শট ${i + 1}/${shots.length} ফ্রেম${shot.character ? ` (${shot.character})` : ''}`);
+   397→          let buffer: Buffer | null = null;
+   398→          const tryGen = async (): Promise<Buffer> => {
+   399→            if (artist?.portraitDataUrl) {
+   400→              return (
+   401→                await editImageBuffer(
+   402→                  artist.portraitDataUrl,
+   403→                  `Place this same character in: ${shot.description}. Keep the face, hair and outfit identical to the reference. Consistent character.`,
+   404→                  genSize
+   405→                )
+   406→              ).buffer;
+   407→            }
+   408→            return (await generateImageBuffer(imagePromptForShot(shot, visualStyle || spec.style), genSize)).buffer;
+   409→          };
+   410→          try {
+   411→            buffer = await tryGen();
+   412→          } catch {
+   413→            try {
+   414→              buffer = await tryGen();
+   415→            } catch (err) {
+   416→              ctx.partialNotes.push(
+   417→                `শট ${i + 1}-এর ফ্রেম ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শট বাদ`
+   418→              );
+   419→              continue;
+   420→            }
+   421→          }
+   422→          const framePath = path.join(wd, `frame-${i}.png`);
+   423→          await writeFile(framePath, buffer);
+   424→          await ctx.registerArtifact({
+   425→            buffer,
+   426→            kind: 'image',
+   427→            mimeType: 'image/png',
+   428→            fileName: `storyboard-shot-${i + 1}.png`,
+   429→            metaJson: { shot: i + 1, of: shots.length, cameraMove: shot.cameraMove, label: shot.label },
+   430→          });
+   431→          await step.setDetail(`শট ${i + 1}/${shots.length} মোশন ক্লিপ (${shot.cameraMove})`);
+   432→          const clipPath = path.join(wd, `clip-${i}.mp4`);
+   433→          try {
+   434→            await kenBurnsClip(framePath, clipPath, {
+   435→              durationSec: needed,
+   436→              fps: fps as 24 | 25 | 30,
+   437→              width: dims.w,
+   438→              height: dims.h,
+   439→              move: shot.cameraMove,
+   440→            });
+   441→          } catch (err) {
+   442→            const msg = err instanceof Error ? err.message : String(err);
+   443→            try {
+   444→              await kenBurnsClip(framePath, clipPath, {
+   445→                durationSec: needed,
+   446→                fps: fps as 24 | 25 | 30,
+   447→                width: dims.w,
+   448→                height: dims.h,
+   449→                move: shot.cameraMove,
+   450→              });
+   451→            } catch {
+   452→              ctx.partialNotes.push(`শট ${i + 1}-এর ক্লিপ ব্যর্থ (${msg.slice(0, 120)}) — বাদ`);
+   453→              continue;
+   454→            }
+   455→          }
+   456→          shotEngineLabels.push(`শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`);
+   457→          valid.push({ ...shot, framePath, clipPath });
+   458→        }
+   459→      }
+   460→      if (valid.length === 0) throw new Error('কোনো পারফরম্যান্স ক্লিপই তৈরি হয়নি');
+   461→      shots = valid;
+   462→      await step.setDetail(`${valid.length}টি ক্লিপ সম্পন্ন`);
+   463→    }
+   464→  );
+   465→
+   466→  // ------------------------------------------------------- timeline
+   467→  let finalVideo = '';
+   468→  let finalDuration = 0;
+   469→  let srtContent: string | null = null;
+   470→  await ctx.runStep('timeline', 'বিট-মার্কারে টাইমলাইন অ্যাসেম্বলি', async (step: StepHandle) => {
+   471→    await step.setDetail('শট-ক্লিপ বিট-কাট-পয়েন্টে মাপ-ট্রিম');
+   472→    const useXfade = shots.length <= 6;
+   473→    const T = useXfade ? 0.5 : 0;
+   474→    const prepped: string[] = [];
+   475→    for (let i = 0; i < shots.length; i++) {
+   476→      const shot = shots[i];
+   477→      const needPad = !useXfade ? 0 : i === 0 || i === shots.length - 1 ? T / 2 : T;
+   478→      const want = round2(shot.durationSec + needPad);
+   479→      const dst = path.join(wd, `cut-${i}.mp4`);
+   480→      await runFfmpeg(
+   481→        [
+   482→          '-i', shot.clipPath!,
+   483→          '-t', want.toFixed(2),
+   484→          '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
+   485→          '-an', dst,
+   486→        ],
+   487→        { timeoutMs: 180_000, label: `শট ${i + 1} বিট-কাট ট্রিম` }
+   488→      );
+   489→      prepped.push(dst);
+   490→    }
+   491→    await step.setDetail(`${prepped.length}টি ক্লিপ জোড়া`);
+   492→    const silentPath = path.join(wd, 'assembled.mp4');
+   493→    await concatClips(prepped, silentPath, { transitionSec: T });
+   494→    const vInfo = await mediaInfo(silentPath);
+   495→    finalDuration = vInfo.durationSec;
+   496→    finalVideo = silentPath;
+   497→
+   498→    // গান = মাস্টার-অডিও (ফেড-আউট-সহ, ব্যবহৃত অংশ পর্যন্ত)
+   499→    if (songPath) {
+   500→      await step.setDetail('গান মাস্টার-অডিও হিসেবে বসানো (ফেড-আউট-সহ)');
+   501→      const withSong = path.join(wd, 'with-song.mp4');
+   502→      await muxAudio(finalVideo, songPath, withSong, { durationSec: finalDuration, fadeOutSec: 2 });
+   503→      finalVideo = withSong;
+   504→    }
+   505→
+   506→    // লিরিক্স-ওভারলে/সাবটাইটেল (ঐচ্ছিক)
+   507→    if (spec.subtitles && spec.text && spec.text.trim().length > 3) {
+   508→      await step.setDetail('লিরিক্স থেকে সাবটাইটেল');
+   509→      try {
+   510→        const cues = await segmentDialogueToCues(spec.text, { totalDurationSec: finalDuration });
+   511→        srtContent = makeSrt(cues);
+   512→        const srtPath = path.join(wd, 'lyrics.srt');
+   513→        await writeFile(srtPath, srtContent, 'utf-8');
+   514→        const burned = path.join(wd, 'subtitled.mp4');
+   515→        await burnSubtitles(finalVideo, srtPath, burned);
+   516→        finalVideo = burned;
+   517→      } catch (err) {
+   518→        srtContent = null;
+   519→        ctx.partialNotes.push(
+   520→          `সাবটাইটেল বার্ন ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'})`
+   521→        );
+   522→      }
+   523→    } else if (spec.subtitles && !spec.text) {
+   524→      ctx.partialNotes.push('সাবটাইটেল চাওয়া হলেও লিরিক্স (text) দেওয়া হয়নি — বাদ');
+   525→    }
+   526→    await step.setDetail(`টাইমলাইন: ${finalDuration.toFixed(1)} সেকেন্ড`);
+   527→  });
+   528→
+   529→  // ------------------------------------------------------- final_qc
+   530→  const result: Record<string, unknown> = {};
+   531→  await ctx.runStep('final_qc', 'চূড়ান্ত গুণমান-যাচাই (সমলয়/দৈর্ঘ্য)', async (step: StepHandle) => {
+   532→    // (ক) ভিডিওর দৈর্ঘ্য বনাম গানের ব্যবহৃত অংশ — >১.৫ সে. হলে মিলিয়ে দিন
+   533→    let info = await mediaInfo(finalVideo);
+   534→    const audioTarget = songPath ? songUseSec : targetDuration;
+   535→    const problems: string[] = [];
+   536→    if (Math.abs(info.durationSec - audioTarget) > 1.5) {
+   537→      await step.setDetail(
+   538→        `দৈর্ঘ্য মিলছে না (${info.durationSec.toFixed(1)} বনাম ${audioTarget.toFixed(1)} সে.) — ট্রিম দিয়ে মিলিয়ে হচ্ছে`
+   539→      );
+   540→      const fixed = path.join(wd, 'qc-trim.mp4');
+   541→      await runFfmpeg(
+   542→        [
+   543→          '-i', finalVideo,
+   544→          '-t', audioTarget.toFixed(2),
+   545→          '-c:v', 'libx264', '-preset', 'fast', '-crf', '21', '-pix_fmt', 'yuv420p',
+   546→          ...(info.hasAudio ? ['-c:a', 'aac', '-b:a', '160k'] : ['-an']),
+   547→          fixed,
+   548→        ],
+   549→        { timeoutMs: 180_000, label: 'দৈর্ঘ্য-সমন্বয় ট্রিম' }
+   550→      );
+   551→      finalVideo = fixed;
+   552→      info = await mediaInfo(fixed);
+   553→    }
+   554→    // ট্রিমের পরেও দৈর্ঘ্য না মিললে (শট-সীমার কারণে ভিডিও ছোট) — সৎ নোট
+   555→    if (Math.abs(info.durationSec - audioTarget) > 1.5) {
+   556→      ctx.partialNotes.push(
+   557→        `ভিডিও ${info.durationSec.toFixed(1)} সে. বনাম গানের ব্যবহৃত অংশ ${audioTarget.toFixed(1)} সে. — শট-সংখ্যার সীমার কারণে পুরো মেলানো যায়নি; গান ভিডিওর শেষে ফেড-আউট হয়`
+   558→      );
+   559→      problems.push('দৈর্ঘ্য-বিচ্যুতি (গান)');
+   560→    }
+   561→
+   562→    if (!info.hasVideo) problems.push('ভিডিও স্ট্রিম নেই');
+   563→    if (songPath && !info.hasAudio) problems.push('গান থাকা সত্ত্বেও অডিও ট্র্যাক নেই');
+   564→    if (info.width !== dims.w || info.height !== dims.h) {
+   565→      ctx.partialNotes.push(`রেজোলিউশন ${info.width}×${info.height} — প্রত্যাশিত ${dims.w}×${dims.h}`);
+   566→      problems.push('রেজোলিউশন-বিচ্যুতি');
+   567→    }
+   568→
+   569→    // (খ) অডিও-গুণমান — ক্লিপিং / দীর্ঘ নীরবতা
+   570→    let audioQ: Awaited<ReturnType<typeof audioQuality>> | null = null;
+   571→    if (info.hasAudio) {
+   572→      audioQ = await audioQuality(finalVideo);
+   573→      if (audioQ.peakDb != null && Number.isFinite(audioQ.peakDb) && audioQ.peakDb > -0.1) {
+   574→        problems.push(`ক্লিপিং-ঝুঁকি (পিক ${audioQ.peakDb.toFixed(1)} dB)`);
+   575→      }
+   576→      const silence = audioQ.silenceRanges.find(r => r.end - r.start > 3);
+   577→      if (silence && songPath) {
+   578→        problems.push(`দীর্ঘ নীরবতা ${silence.start.toFixed(1)}–${silence.end.toFixed(1)} সে.`);
+   579→      }
+   580→    }
+   581→
+   582→    // (গ) A/V সমলয় — স্ট্রিম-দৈর্ঘ্যের পার্থক্য < ০.৫ সে.
+   583→    let avSyncOk: boolean | null = null;
+   584→    if (info.hasAudio && info.hasVideo) {
+   585→      try {
+   586→        const probe = await ffprobeJson(finalVideo);
+   587→        const v = (probe.streams ?? []).find((s: { codec_type?: string }) => s.codec_type === 'video');
+   588→        const a = (probe.streams ?? []).find((s: { codec_type?: string }) => s.codec_type === 'audio');
+   589→        const vd = Number(v?.duration ?? 0);
+   590→        const ad = Number(a?.duration ?? 0);
+   591→        if (vd > 0 && ad > 0) {
+   592→          avSyncOk = Math.abs(vd - ad) < 0.5;
+   593→          if (!avSyncOk) problems.push(`A/V স্ট্রিম-দৈর্ঘ্যে অসমলয় (ভিডিও ${vd.toFixed(2)} / অডিও ${ad.toFixed(2)} সে.)`);
+   594→        }
+   595→      } catch {
+   596→        // ffprobe-সমলয় যাচাই ব্যর্থ — অ-বাধামূলক
+   597→      }
+   598→    }
+   599→
+   600→    // (ঘ) চূড়ান্ত artifact + গুণমান-প্রতিবেদন
+   601→    const honestLabel =
+   602→      engine === 'ai_diffusion'
+   603→        ? aiShots === shots.length
+   604→          ? `সব ${shots.length}টি শট প্রকৃত AI (${AI_VIDEO_MODEL}) — ক্লাউড ডিফিউশন ভিডিও`
+   605→          : `${aiShots}/${shots.length} শট প্রকৃত AI (${AI_VIDEO_MODEL}); বাকি ${shots.length - aiShots}টি স্টোরিবোর্ড+ক্যামেরা-মোশন ফলব্যাক`
+   606→        : 'cinematic_motion ইঞ্জিন — AI স্টোরিবোর্ড + ক্যামেরা-মোশন (প্রকৃত ডিফিউশন ভিডিও নয়)';
+   607→    notes.push('লিপ-সিঙ্ক নেই — "গায়কের মুখ নড়ছে" দাবি করা হয় না (§৫ সৎ-অবস্থা)।');
+   608→
+   609→    if (srtContent) {
+   610→      await ctx.registerArtifact({
+   611→        buffer: Buffer.from(srtContent, 'utf-8'),
+   612→        kind: 'text',
+   613→        mimeType: 'application/x-subrip',
+   614→        fileName: 'lyrics.srt',
+   615→        metaJson: { pipeline: 'music_video', kind: 'lyrics' },
+   616→      });
+   617→    }
+   618→
+   619→    await step.setDetail('চূড়ান্ত MP4 নিবন্ধন');
+   620→    const buf = await readFile(finalVideo);
+   621→    const artifact = await ctx.registerArtifact({
+   622→      buffer: buf,
+   623→      kind: 'video',
+   624→      mimeType: 'video/mp4',
+   625→      fileName: `${sanitize(spec.title || 'music-video').slice(0, 40)}.mp4`,
+   626→      metaJson: {
+   627→        pipeline: 'music_video',
+   628→        engine,
+   629→        aiModel: engine === 'ai_diffusion' && aiShots > 0 ? AI_VIDEO_MODEL : null,
+   630→        durationSec: info.durationSec,
+   631→        width: info.width,
+   632→        height: info.height,
+   633→        fps: info.fps,
+   634→        aspect,
+   635→        shots: shots.length,
+   636→        song: {
+   637→          source: spec.songArtifactId ? 'uploaded' : spec.musicSource === 'none' ? 'none' : 'procedural',
+   638→          label: musicSourceLabel,
+   639→          bpm: songBpm || null,
+   640→          artifactId: songArtifactId,
+   641→          ...(analysisLabel ? { analysis: analysisLabel } : {}),
+   642→        },
+   643→        cutPoints: shots.map(s => s.startSec),
+   644→        shotEngineLabels,
+   645→        subtitles: !!srtContent,
+   646→        avSyncOk,
+   647→        honestLabel,
+   648→        lipSync: false,
+   649→      },
+   650→    });
+   651→
+   652→    const verdict =
+   653→      problems.length === 0
+   654→        ? `চমৎকার — ${shots.length}টি শট, ${info.durationSec.toFixed(1)} সেকেন্ড, ${info.width}×${info.height}@${info.fps}FPS${info.hasAudio ? `, গান-সমন্বয়-সহ (${musicSourceLabel})` : ''}। (${honestLabel})`
+   655→        : `কার্যকর, তবে সতর্কতা: ${problems.join(', ')}। ${info.durationSec.toFixed(1)} সেকেন্ড, ${shots.length}টি শট।`;
+   656→    result.quality = verdict;
+   657→    result.artifactId = artifact.id;
+   658→    result.durationSec = info.durationSec;
+   659→    result.shots = shots.length;
+   660→    result.engine = engine;
+   661→    result.shotEngineLabels = shotEngineLabels;
+   662→    result.songBpm = songBpm || null;
+   663→    result.musicSource = musicSourceLabel;
+   664→    result.avSyncOk = avSyncOk;
+   665→    result.aspect = aspect;
+   666→    result.hasAudio = info.hasAudio;
+   667→    result.honestLabel = honestLabel;
+   668→    result.notes = notes;
+   669→  });
+   670→
+   671→  return { result };
+   672→};
+   673→
+   674→/** সেকশন-নাম → শক্তি-স্তর (প্রসিডিউরাল গানের intro/verse/chorus/outro) */
+   675→function sectionEnergy(name: string): string {
+   676→  if (name === 'chorus') return 'loud';
+   677→  if (name === 'intro' || name === 'outro') return 'quiet';
+   678→  return 'medium';
+   679→}
+   680→
+   681→/** LLM শট না দিলে সৎ সাধারণ বর্ণনা */
+   682→function fallbackDescription(i: number, total: number): string {
+   683→  if (i === 0) return 'Cinematic establishing shot introducing the world of the song';
+   684→  if (i === total - 1) return 'Emotional closing shot as the music resolves';
+   685→  return 'Atmospheric visual montage matching the energy of the music';
+   686→}
+   687→

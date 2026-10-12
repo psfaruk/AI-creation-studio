@@ -36,9 +36,28 @@ export interface SystemToolHealth {
   note?: string;
 }
 
+/** S9: রেট-লিমিট-কোঅর্ডিনেটরের একটি চ্যানেলের সৎ-স্ট্যাটাস (chat/image/tts/asr/video/search) */
+export interface RateLimitChannelStatus {
+  channel: string;
+  blocked: boolean;
+  blockedRemainingSec: number;
+  consecutive429: number;
+  total429: number;
+  last429AgoSec: number | null;
+  inFlight: number;
+}
+
+/** S9: কোন চ্যানেল এখন ব্লকড (৪২৯-কুলডাউন) — সাময়িক, লাইসেন্স-সমস্যা নয় */
+export interface RateLimitsStatus {
+  anyBlocked: boolean;
+  channels: RateLimitChannelStatus[];
+}
+
 export interface SystemInfo {
   hardware: SystemHardware;
   tools: SystemToolHealth[];
+  /** S9: রেট-লিমিট-কোঅর্ডিনেটর স্ট্যাটাস (/api/system-এর নতুন ফিল্ড) */
+  rateLimits?: RateLimitsStatus;
   checkedAt: string;
   note?: string;
 }

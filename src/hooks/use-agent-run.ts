@@ -28,6 +28,7 @@ const SSE_EVENT_NAMES = [
   'tool_start',
   'tool_end',
   'message',
+  'run_note',
   'run_finished',
 ] as const;
 
@@ -163,6 +164,12 @@ export function useAgentRun() {
           case 'message': {
             if (!inView || evt.conversationId !== conversationId) return;
             store.replaceMessage(pendingId, evt.message);
+            return;
+          }
+          case 'run_note': {
+            // S9: রান-স্ট্যাটাস নোট (যেমন রেট-লিমিট-অপেক্ষা) — pending bubble-এ অ্যাম্বার লাইন
+            if (!inView) return;
+            store.updateMessage(pendingId, (m) => ({ ...m, statusNote: evt.note }));
             return;
           }
           case 'run_finished': {

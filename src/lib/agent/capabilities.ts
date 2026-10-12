@@ -380,7 +380,19 @@ export function validateSpec(raw: unknown): SpecValidationResult {
   if (type === 'motion_video' || type === 'music_video' || type === 'short_film') {
     if (!spec.aspect) spec.aspect = type === 'short_film' ? '16:9' : '9:16';
     if (!spec.fps) spec.fps = type === 'short_film' ? 24 : 30;
-    if (!spec.sound) spec.sound = type === 'music_video' ? 'uploaded_song' : type === 'short_film' ? 'narration' : 'none';
+    // সততা: মিউজিক ভিডিওর শব্দ-ডিফল্ট কেবল তখনই 'uploaded_song' যখন আসল গান-আর্টিফ্যাক্ট আছে;
+    // না থাকলে অসংরক্ষিত থাকে — createProduction-এর অটো-ওয়্যার গান পেলে সেটি বসাবে, নইলে
+    // প্রসিডিউরাল পথ চলবে (musicSource-এ সৎ) এবং কার্ড মিথ্যা "আপলোড করা গান" দেখাবে না
+    if (!spec.sound) {
+      spec.sound =
+        type === 'music_video'
+          ? spec.songArtifactId
+            ? 'uploaded_song'
+            : undefined
+          : type === 'short_film'
+            ? 'narration'
+            : 'none';
+    }
     if (!spec.videoEngine) spec.videoEngine = 'ai_diffusion';
     if (!spec.language) spec.language = 'bn';
     if (type === 'short_film' && !spec.filmMode) spec.filmMode = 'short_film';
@@ -445,7 +457,14 @@ export function summarizeSpec(spec: CreativeJobSpec): string {
   if (spec.aspect) bits.push(`অনুপাত: ${spec.aspect}`);
   if (spec.durationSec) bits.push(`দৈর্ঘ্য: ${spec.durationSec}s`);
   if (spec.fps) bits.push(`FPS: ${spec.fps}`);
-  if (spec.sound && spec.sound !== 'none') bits.push(`শব্দ: ${spec.sound}`);
+  if (spec.sound && spec.sound !== 'none') {
+    const soundLabel: Record<string, string> = {
+      ambient: 'পরিবেশ-শব্দ',
+      narration: 'ভয়েসওভার',
+      uploaded_song: 'আপলোড করা গান',
+    };
+    bits.push(`শব্দ: ${soundLabel[spec.sound] ?? spec.sound}`);
+  }
   if (spec.voice) bits.push(`কণ্ঠ: ${spec.voice}`);
   if (spec.subtitles) bits.push('সাবটাইটেল: হ্যাঁ');
   return bits.join(' · ');

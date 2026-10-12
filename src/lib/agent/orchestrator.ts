@@ -9,9 +9,13 @@ import { db } from '@/lib/db';
 import { TOOL_CATALOG } from '@/lib/types';
 import { emit } from './events';
 import { chatComplete, parseToolCall, type LLMMessage } from './llm';
+import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
+import { isChannelBlocked } from './rate-limit-coordinator';
 import { SYSTEM_PROMPT } from './prompts';
 import { validateToolCall, type ToolOutput, type ToolSpec } from './registry';
 import { buildMessageView } from './serialize';
+import { createProduction } from './production/create';
+import type { CreativeJobSpec } from '@/lib/types';
 
 const MAX_STEPS = 12;
 const HISTORY_LIMIT = 20;
@@ -68,6 +72,177 @@ export function startAgentRun(runId: string): void {
       }
     });
   });
+}
+
+// ------------------------------------------------------------
+// S9: রেট-লিমিট-সৎ-অপেক্ষাসহ chatComplete + নিয়ম-ভিত্তিক ইন্টেন্ট-ফলব্যাক
+// ------------------------------------------------------------
+
+/**
+ * chatComplete + প্রতিটি রেট-লিমিট-অপেক্ষায় SSE run_note —
+ * ব্যবহারকারী দেখে "অপেক্ষা চলছে", নিঃশব্দ আটকে থাকা নয়।
+ */
+async function chatCompleteWithNotes(runId: string, context: LLMMessage[]): Promise<string> {
+  return chatComplete(context, {
+    onRateLimitWait: info => {
+      const sec = Math.max(1, Math.round(info.delayMs / 1000));
+      emit(runId, {
+        type: 'run_note',
+        runId,
+        level: 'waiting',
+        note:
+          `ক্লাউড LLM রেট-লিমিটেড (৪২৯ — সাময়িক, লাইসেন্স-সমস্যা নয়)। ` +
+          `পুনঃচেষ্টা ${info.attempt}/৬ — ${sec} সেকেন্ড অপেক্ষা করা হচ্ছে…`,
+      });
+    },
+  });
+}
+
+/** ইন্টেন্ট-ফলব্যাকের চেনা কাজের ধরন */
+type FallbackIntentType = 'music_video' | 'short_film' | 'motion_video';
+
+interface FallbackIntent {
+  type: FallbackIntentType;
+  title: string;
+  spec: CreativeJobSpec;
+}
+
+/** ব্যবহারকারীর বার্তা থেকে শিরোনাম-সদৃশ ছোট অংশ */
+function titleFromMessage(message: string, fallback: string): string {
+  const flat = message.replace(/\s+/g, ' ').trim();
+  if (!flat) return fallback;
+  return flat.slice(0, 40) + (flat.length > 40 ? '…' : '');
+}
+
+/**
+ * নিয়ম-ভিত্তিক ইন্টেন্ট-শনাক্তকরণ (LLM অনুপলব্ধ হলে ব্যবহৃত)।
+ * সততা: এটি সাধারণ প্যাটার্ন-ম্যাচ — "AI বোঝাপড়া" নয়; চূড়ান্ত
+ * বার্তায় স্পষ্ট বলা হয় নিয়ম-ভিত্তিক পরিকল্পনা ব্যবহৃত হয়েছে।
+ */
+export function detectProductionIntent(message: string): FallbackIntent | null {
+  const msg = (message ?? '').trim();
+  if (msg.length < 3) return null;
+  // ক্লাউড (ইমেজ/ভিডিও) ব্লকড থাকলে লোকাল-বান্ধব ইঞ্জিন — AI-সাবমিটে
+  // মিনিট পোড়ানো নয়, স্টোরিবোর্ড+ক্যামেরা-মোশন পথ (লোকাল-ফ্রেম-ফলব্যাকসহ)।
+  // এই ফলব্যাক-পথে আসার মানেই চ্যাট-চ্যানেল ব্লকড ছিল — স্যান্ডবক্স-ব্যাপী
+  // উইন্ডোর সম্ভাবনাই বেশি, তাই chat-ব্লকও লোকাল-ইঞ্জিনের সংকেত।
+  const cloudVisualsBlocked =
+    isChannelBlocked('chat') || isChannelBlocked('image') || isChannelBlocked('video');
+  const engine: 'ai_diffusion' | 'cinematic_motion' = cloudVisualsBlocked ? 'cinematic_motion' : 'ai_diffusion';
+
+  // মিউজিক ভিডিও — সবচেয়ে নির্দিষ্ট, তাই আগে
+  if (
+    /মিউজিক\s*ভিডিও|মিউজিকভিডিও|গানে?র?\s*(ভিডিও|ভিডও|video)|music\s*video|\bmv\b/i.test(msg)
+  ) {
+    return {
+      type: 'music_video',
+      title: titleFromMessage(msg, 'মিউজিক ভিডিও'),
+      spec: {
+        type: 'music_video',
+        title: titleFromMessage(msg, 'মিউজিক ভিডিও'),
+        idea: msg.slice(0, 2000),
+        durationSec: 40,
+        aspect: '9:16',
+        quality: 'standard',
+        videoEngine: engine,
+        musicSource: 'procedural',
+      } as CreativeJobSpec,
+    };
+  }
+  // শর্ট ফিল্ম / সিনেমা / চলচ্চিত্র
+  if (
+    /শর্ট\s*ফিল্ম|শর্টফিল্ম|ছোট\s*ফিল্ম|ফিল্ম|ফ্লিম|সিনেমা|চলচ্চিত্র|ছবি\s*বানাও|short\s*film|movie\b|film\b/i.test(
+      msg
+    )
+  ) {
+    return {
+      type: 'short_film',
+      title: titleFromMessage(msg, 'শর্ট ফিল্ম'),
+      spec: {
+        type: 'short_film',
+        title: titleFromMessage(msg, 'শর্ট ফিল্ম'),
+        story: msg.slice(0, 4000),
+        durationSec: 40,
+        aspect: '16:9',
+        quality: 'standard',
+        videoEngine: engine,
+      } as CreativeJobSpec,
+    };
+  }
+  // মোশন ভিডিও
+  if (/মোশন\s*ভিডিও|motion\s*video|ভিডিও\s*বানাও|এনিমেট/i.test(msg)) {
+    return {
+      type: 'motion_video',
+      title: titleFromMessage(msg, 'মোশন ভিডিও'),
+      spec: {
+        type: 'motion_video',
+        title: titleFromMessage(msg, 'মোশন ভিডিও'),
+        idea: msg.slice(0, 2000),
+        durationSec: 12,
+        aspect: '16:9',
+        quality: 'standard',
+        videoEngine: engine,
+      } as CreativeJobSpec,
+    };
+  }
+  return null;
+}
+
+/**
+ * S9 ইন্টেন্ট-ফলব্যাক: LLM পুরোপুরি অনুপলব্ধ হলেও মিউজিক-ভিডিও/
+ * ফিল্ম-অনুরোধ চিনে সরাসরি প্রোডাকশন-প্রস্তাব তৈরি করা হয় —
+ * সৎ লেবেলসহ (নিয়ম-ভিত্তিক পরিকল্পনা, ক্লাউড-ব্লকড হলে লোকাল-ইঞ্জিন)।
+ * @returns productionId — সফল হলে; null — ইন্টেন্ট মেলেনি
+ */
+async function tryIntentFallback(
+  run: AgentRun,
+  lastUserMessage: string,
+  stepsDone: number,
+  stats: { toolCalls: number }
+): Promise<string | null> {
+  if (stepsDone > 0) return null; // মাঝপথে নয় — শুধু প্রথম-সিদ্ধান্তে অনুপলব্ধ হলে
+  const intent = detectProductionIntent(lastUserMessage);
+  if (!intent) return null;
+
+  emit(run.id, {
+    type: 'run_note',
+    runId: run.id,
+    level: 'warn',
+    note:
+      'LLM সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট) — তবু অনুরোধ চেনা গেছে; ' +
+      'নিয়ম-ভিত্তিক পরিকল্পনায় প্রস্তাব তৈরি করা হচ্ছে…',
+  });
+
+  const created = await createProduction(intent.spec, run.conversationId);
+  if (!created.ok) return null;
+
+  const caps = created.caps;
+  const typeLabel: Record<FallbackIntentType, string> = {
+    music_video: 'মিউজিক ভিডিও',
+    short_film: 'শর্ট ফিল্ম',
+    motion_video: 'মোশন ভিডিও',
+  };
+  const finalText =
+    `⚠️ ক্লাউড LLM এখন রেট-লিমিটেড (৪২৯ — সাময়িক অবস্থা, লাইসেন্স-সমস্যা নয়)। ` +
+    `তাই এই প্রস্তাবটি **নিয়ম-ভিত্তিক পরিকল্পনাকারী** দিয়ে তৈরি — AI-সহায়ক সেটিংস-বাছাই নয়।\n\n` +
+    `🎬 **${typeLabel[intent.type]}**: ${caps.spec.title}\n` +
+    `- মোট দৈর্ঘ্য: ${caps.spec.durationSec ?? '?'} সেকেন্ড\n` +
+    `- আনুপাতিক মাধ্যম: ${caps.spec.aspect ?? '16:9'}\n` +
+    `- ইঞ্জিন: ${caps.spec.videoEngine === 'cinematic_motion' ? 'স্টোরিবোর্ড+ক্যামেরা-মোশন (ক্লাউড ব্লকড থাকায় লোকাল-বান্ধব)' : 'AI ডিফিউশন'}\n` +
+    (caps.notes.length > 0 ? `- নোট: ${caps.notes.slice(0, 3).join(' | ')}\n` : '') +
+    `\n` +
+    `নিচের কার্ডে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
+    `গান আপলোড করে থাকলে সেটি স্বয়ংক্রিয়ভাবে যুক্ত হয়েছে। ` +
+    `ক্লাউড প্রাপ্যতা ফিরলে পরে আরও উন্নত AI-সংস্করণ চাইলে আবার বলুন।`;
+
+  // প্রস্তাব-কার্ড যুক্ত চূড়ান্ত উত্তর
+  await finalizeRun(
+    run.id,
+    finalText,
+    { steps: 1, toolCalls: stats.toolCalls, durationMs: Date.now() - run.startedAt.getTime(), seq: 1000 },
+    created.productionId
+  );
+  return created.productionId;
 }
 
 interface RunStatsAccumulator {
@@ -247,10 +422,24 @@ async function runAgentLoop(runId: string): Promise<void> {
   let llmSteps = 0;
   let finalText: string | null = null;
   let forced = false;
+  /** S9: রেট-লিমিট-নিঃশেষে লুপ ভাঙা হয়েছে কি না */
+  let rateLimitExhausted = false;
 
-  for (let step = 1; step <= MAX_STEPS; step++) {
+  loop: for (let step = 1; step <= MAX_STEPS; step++) {
     const t0 = Date.now();
-    const text = await chatComplete(context);
+    let text: string;
+    try {
+      text = await chatCompleteWithNotes(runId, context);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof TemporarilyUnavailableError || isRateLimitErrorText(msg)) {
+        // S9: ৪২৯-উইন্ডো রিট্রাই-বাজেটও ছাড়িয়ে গেছে — লুপ ভাঙো;
+        // নিচে ইন্টেন্ট-ফলব্যাক/সৎ-ব্যর্থতা-পথ দেখবে
+        rateLimitExhausted = true;
+        break loop;
+      }
+      throw err;
+    }
     llmSteps++;
     const decisionSeq = nextSeq();
     await db.agentStep.create({
@@ -325,12 +514,33 @@ async function runAgentLoop(runId: string): Promise<void> {
     }
   }
 
-  // ---- ৪. MAX_STEPS ছাড়িয়ে গেলে বাধ্যতামূলক চূড়ান্ত উত্তর ----
+  // ---- ৪. S9: রেট-লিমিট-নিঃশেষ → ইন্টেন্ট-ফলব্যাক / সৎ-ব্যর্থতা ----
+  if (rateLimitExhausted && finalText === null) {
+    // মিউজিক-ভিডিও/ফিল্ম-অনুরোধ হলে নিয়ম-ভিত্তিক পরিকল্পনায় প্রস্তাব তৈরি
+    const fallbackProductionId = await tryIntentFallback(
+      run,
+      trigger?.content ?? '',
+      llmSteps,
+      stats
+    );
+    if (fallbackProductionId) {
+      proposedProductionId = fallbackProductionId;
+      return; // tryIntentFallback ইতিমধ্যে finalize করেছে
+    }
+    // ইন্টেন্ট মেলেনি — সৎ-ব্যর্থতা (৪২৯ সাময়িক, লাইসেন্স-সমস্যা নয়)
+    throw new TemporarilyUnavailableError(
+      'LLM (চ্যাট) — রেট-লিমিট-উইন্ডো রিট্রাই-বাজেটও পার করেছে। ' +
+        'এটি সাময়িক (কয়েক মিনিট পরে আবার পাঠালেই চলবে); লাইসেন্স-সমস্যা নয়। ' +
+        'তাড়াহুড়ো থাকলে স্টুডিও-ভিউ থেকে সরাসরি মিউজিক ভিডিও/শর্ট ফিল্ম তৈরি করা যায়।'
+    );
+  }
+
+  // ---- ৫. MAX_STEPS ছাড়িয়ে গেলে বাধ্যতামূলক চূড়ান্ত উত্তর ----
   if (finalText === null) {
     forced = true;
     context.push({ role: 'user', content: 'আর কোনো টুল ছাড়া এখনই চূড়ান্ত উত্তর দাও।' });
     const t0 = Date.now();
-    const text = await chatComplete(context);
+    const text = await chatCompleteWithNotes(runId, context);
     const forcedSeq = nextSeq();
     await db.agentStep.create({
       data: {
@@ -423,7 +633,16 @@ async function failRun(runId: string, errorMessage: string): Promise<void> {
   const toolCallCount = await db.toolCall.count({ where: { runId } });
   const existing = await db.message.findFirst({ where: { runId } });
   const finishedAt = new Date();
-  const content = `দুঃখিত, কাজটি সম্পন্ন করা যায়নি।\n\nত্রুটি: ${errorMessage.slice(0, 500)}`;
+  // S9: ৪২৯ = সাময়িক অবস্থা — ব্যবহারকারীকে পরিষ্কার বোঝাও ও বিকল্প-পথ বলো
+  const isTemporarilyUnavailable = /TEMPORARILY_UNAVAILABLE|429|rate.?limit/i.test(errorMessage);
+  const content = isTemporarilyUnavailable
+    ? `দুঃখিত, এই মুহূর্তে কাজটি সম্পন্ন করা যায়নি।\n\n` +
+      `ত্রুটি: ${errorMessage.slice(0, 400)}\n\n` +
+      `**এটি সাময়িক** — ক্লাউড API-র রেট-লিমিট (৪২৯); লাইসেন্স বা অনুমতির সমস্যা নয়।\n\n` +
+      `- কয়েক মিনিট পর একই বার্তা আবার পাঠালে সাধারণত কাজ করবে।\n` +
+      `- তাড়াহুড়ো থাকলে **স্টুডিও** ভিউ থেকে সরাসরি মিউজিক ভিডিও / শর্ট ফিল্ম তৈরি করা যায় (LLM ছাড়াই)।\n` +
+      `- রেট-লিমিট-উইন্ডোতেও লোকাল প্রসিডিউরাল গান + ভিজ্যুয়াল দিয়ে ভিডিও তৈরি হবে (সৎ লেবেলসহ)।`
+    : `দুঃখিত, কাজটি সম্পন্ন করা যায়নি।\n\nত্রুটি: ${errorMessage.slice(0, 500)}`;
 
   const ops: any[] = [
     db.agentRun.update({

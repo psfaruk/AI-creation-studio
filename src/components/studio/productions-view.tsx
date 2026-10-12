@@ -28,6 +28,8 @@ import {
 } from 'lucide-react';
 
 import { formatTimeBn, relativeTimeBn, toBnDigits } from '@/components/chat/bn-format';
+import { ProductionCard } from '@/components/studio/production-card';
+import { QuickCreateCard } from '@/components/studio/quick-create';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -78,7 +80,7 @@ const SECTION_FILTERS = [
 ] as const;
 
 const SECTION_EMPTY: Record<string, string> = {
-  all: 'এখনো কোনো প্রোডাকশন নেই — চ্যাটে মিউজিক ভিডিও/শর্টফিল্ম/ভয়েসওভার চাইলে এখানে দেখা যাবে।',
+  all: 'এখনো কোনো প্রোডাকশন নেই — উপরের “দ্রুত তৈরি” ফর্ম বা চ্যাট থেকে শুরু করুন।',
   active: 'এখন কোনো চলমান প্রোডাকশন নেই।',
   done: 'এখনো কোনো সম্পন্ন প্রোডাকশন নেই।',
   problem: 'কোনো সমস্যাযুক্ত প্রোডাকশন নেই।',
@@ -406,6 +408,14 @@ export function ProductionsView() {
         <p className="text-sm text-muted-foreground">সব ক্রিয়েটিভ কাজের অবস্থা, অগ্রগতি ও ফলাফল</p>
       </header>
 
+      {/* S9: ⚡ দ্রুত তৈরি — LLM ছাড়াই সরাসরি প্রস্তাব (রেট-লিমিটেড সময়ের সৎ-পথ) */}
+      <QuickCreateCard
+        onCreated={() => {
+          setSection('all');
+          setReload(n => n + 1);
+        }}
+      />
+
       {/* সেকশন ফিল্টার */}
       <div className="flex flex-wrap gap-2" role="group" aria-label="অবস্থা অনুযায়ী ফিল্টার">
         {SECTION_FILTERS.map(f => (
@@ -453,9 +463,16 @@ export function ProductionsView() {
         </p>
       ) : (
         <ul className="space-y-3">
-          {filtered.map(p => (
-            <ProductionMonitorCard key={p.id} summary={p} />
-          ))}
+          {filtered.map(p =>
+            p.status === 'awaiting_confirmation' ? (
+              // নিশ্চয়তার অপেক্ষায় — চ্যাট-কার্ডের বিদ্যমান নিশ্চিত-বাটনসহ সম্পূর্ণ কার্ড
+              <li key={p.id}>
+                <ProductionCard productionId={p.id} />
+              </li>
+            ) : (
+              <ProductionMonitorCard key={p.id} summary={p} />
+            ),
+          )}
         </ul>
       )}
     </div>

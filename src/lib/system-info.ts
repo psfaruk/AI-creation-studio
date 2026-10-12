@@ -9,7 +9,8 @@ import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import { statfs } from 'fs/promises';
 import { getZAI } from './agent/llm';
-import { synthesizeSpeech } from './agent/sdk-helpers';
+import { isRateLimitErrorText } from './agent/retry';
+import { channelBlockedMs, noteRateLimit } from './agent/rate-limit-coordinator';
 import type { HardwareReport } from '@/lib/types';
 
 // চুক্তি-টাইপ এখন types.ts-এ (shared contract) — পুরনো ইমপোর্টারদের জন্য পুনঃ-রপ্তানি
@@ -91,8 +92,18 @@ function healthCache(): Record<string, ToolHealth> {
   return g.__toolHealth;
 }
 
-/** LLM মাইক্রো-চেক: এক-শব্দের উত্তর */
+/** LLM মাইক্রো-চেক: এক-শব্দের উত্তর। S9: চ্যানেল-কুলডাউন চলছে কি-না আগে দেখো — রেট-লিমিটে অপচয়িত কল নয়, সৎ দ্রুত-রায় */
 async function checkLlm(): Promise<ToolHealth> {
+  const blockedMs = channelBlockedMs('chat');
+  if (blockedMs > 0) {
+    return {
+      key: 'llm',
+      label: 'LLM (চ্যাট/পরিকল্পনা)',
+      status: 'down',
+      checkedAt: new Date().toISOString(),
+      note: `রেট-লিমিট-কুলডাউন চলছে (${Math.ceil(blockedMs / 1000)} সে.) — সাময়িক, লাইসেন্স-সমস্যা নয়`,
+    };
+  }
   const t0 = Date.now();
   try {
     const zai = await getZAI();
@@ -112,35 +123,66 @@ async function checkLlm(): Promise<ToolHealth> {
       checkedAt: new Date().toISOString(),
     };
   } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    // S9: ৪২৯ দেখলে coordinator-কে জানাও — পরের কলগুলো কুলডাউন-অপেক্ষা করবে
+    if (isRateLimitErrorText(msg)) noteRateLimit('chat');
     return {
       key: 'llm',
       label: 'LLM (চ্যাট/পরিকল্পনা)',
       status: 'down',
       checkedAt: new Date().toISOString(),
-      note: String(err?.message ?? err).slice(0, 120),
+      note: msg.slice(0, 120),
     };
   }
 }
 
-/** TTS মাইক্রো-চেক: এক শব্দের অডিও */
+/**
+ * TTS মাইক্রো-চেক: এক শব্দের অডিও। S9: চ্যানেল-কুলডাউন চলছে কি-না আগে দেখো —
+ * synthesizeSpeech-এর নতুন রিট্রাই-বাজেট ৪২৯-এ মিনিট-অপেক্ষা করে, স্বাস্থ্য-চেকে
+ * সেটি অনাবশ্যক; কুলডাউন-রায়ই সৎ ও তাৎক্ষণিক।
+ */
 async function checkTts(): Promise<ToolHealth> {
-  const t0 = Date.now();
-  try {
-    const r = await synthesizeSpeech('hi', 'jam', 1);
-    return {
-      key: 'tts',
-      label: 'TTS (কণ্ঠ সংশ্লেষণ)',
-      status: r.buffer.length > 1000 ? 'ok' : 'degraded',
-      latencyMs: Date.now() - t0,
-      checkedAt: new Date().toISOString(),
-    };
-  } catch (err: any) {
+  const blockedMs = channelBlockedMs('tts');
+  if (blockedMs > 0) {
     return {
       key: 'tts',
       label: 'TTS (কণ্ঠ সংশ্লেষণ)',
       status: 'down',
       checkedAt: new Date().toISOString(),
-      note: String(err?.message ?? err).slice(0, 120),
+      note: `রেট-লিমিট-কুলডাউন চলছে (${Math.ceil(blockedMs / 1000)} সে.) — সাময়িক, লাইসেন্স-সমস্যা নয়`,
+    };
+  }
+  const t0 = Date.now();
+  try {
+    // S9: এক-কলের raw প্রোব (কোনো রিট্রাই-বাজেট নয় — স্বাস্থ্য-চেক দ্রুত ফেরে)
+    const zai = await getZAI();
+    const r = (await zai.audio.tts.create({
+      input: 'hi',
+      voice: 'jam',
+      speed: 1,
+      response_format: 'mp3',
+      stream: false,
+    } as any)) as unknown as { arrayBuffer?: () => Promise<ArrayBuffer> };
+    const size = r && typeof r.arrayBuffer === 'function'
+      ? new Uint8Array(await r.arrayBuffer()).length
+      : 0;
+    return {
+      key: 'tts',
+      label: 'TTS (কণ্ঠ সংশ্লেষণ)',
+      status: size > 1000 ? 'ok' : 'degraded',
+      latencyMs: Date.now() - t0,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    // S9: ৪২৯ দেখলে coordinator-কে জানাও — পরের কলগুলো কুলডাউন-অপেক্ষা করবে
+    if (isRateLimitErrorText(msg)) noteRateLimit('tts');
+    return {
+      key: 'tts',
+      label: 'TTS (কণ্ঠ সংশ্লেষণ)',
+      status: 'down',
+      checkedAt: new Date().toISOString(),
+      note: msg.slice(0, 120),
     };
   }
 }

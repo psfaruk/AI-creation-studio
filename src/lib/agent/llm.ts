@@ -1,10 +1,24 @@
 // ============================================================
 // LLM adapter — z-ai-web-dev-sdk singleton + Bengali system prompt
 // + tolerant JSON tool-call parser (native tool-calling নেই বলে JSON প্রোটোকল)।
+//
+// S9-গভীর-সমাধান (২০২৬-১০-১১-এর ৪২৯-ঘটনা থেকে):
+//  - chatComplete-এর পুরনো বাজেট ছিল ৪ চেষ্টা × ৩ সে. ≈ ১৬ সে. —
+//    মিনিট-দীর্ঘ ৪২৯-উইন্ডোতে রান ধাপ ০-তেই মরে যেত। এখন:
+//    ৮ চেষ্টা, base ৫ সে., max ১০০ সে. (সব-ব্যর্থ-ক্ষেত্রেও
+//    অপেক্ষা-বাজেট ≈ ৪ মিনিট — ১০-মিনিটের stale-sweepের মধ্যে)।
+//  - চ্যানেল 'chat' — coordinator-কুলডাউন সৎ-অপেক্ষা + সিরিয়ালাইজড।
+//  - onRateLimitWait-কলব্যাক — orchestrator এটি দিয়ে SSE-তে
+//    "রেট-লিমিট, অপেক্ষা চলছে" নোট পাঠায়।
+//  - ডিস্ক-ক্যাশ (storage/llm-chat/): একই context-এর পুনঃকল
+//    (৪২৯-রিট্রাই, backtest-রিপ্লে) বিনা-API-খরচে ফেরে।
 // ============================================================
 
 import ZAI from 'z-ai-web-dev-sdk';
-import { withRetry } from './retry';
+import { createHash } from 'crypto';
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import path from 'path';
+import { withRetry, type RetryWaitInfo } from './retry';
 
 export interface LLMMessage {
   role: 'user' | 'assistant';
@@ -22,15 +36,88 @@ export function getZAI(): Promise<ZAI> {
   return g.__zaiSingleton;
 }
 
+// ------------------------------------------------------------
+// S9: LLM-উত্তরের ডিস্ক-ক্যাশ — একই context = একই উত্তর (নির্ধারক)
+// ------------------------------------------------------------
+
+const PROJECT_ROOT = process.cwd();
+const LLM_CACHE_DIR = path.join(PROJECT_ROOT, 'storage', 'llm-chat');
+/** ক্যাশ-এন্ট্রির সময়সীমা */
+const LLM_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // ১২ ঘণ্টা
+
+export interface LlmCacheStats {
+  hits: number;
+  misses: number;
+}
+
+const gStats = globalThis as unknown as { __llmCacheStats?: LlmCacheStats };
+function stats(): LlmCacheStats {
+  if (!gStats.__llmCacheStats) gStats.__llmCacheStats = { hits: 0, misses: 0 };
+  return gStats.__llmCacheStats;
+}
+
+export function llmCacheStats(): LlmCacheStats {
+  return { ...stats() };
+}
+
+function cacheKeyOf(messages: LLMMessage[]): string {
+  return createHash('sha1').update(JSON.stringify(messages)).digest('hex');
+}
+
+async function readLlmCache(key: string): Promise<string | null> {
+  try {
+    const raw = await readFile(path.join(LLM_CACHE_DIR, `${key}.json`), 'utf8');
+    const parsed = JSON.parse(raw) as { text?: string; createdAt?: string };
+    if (typeof parsed?.text !== 'string' || parsed.text.length === 0) return null;
+    const age = parsed.createdAt ? Date.now() - Date.parse(parsed.createdAt) : Infinity;
+    if (!Number.isFinite(age) || age > LLM_CACHE_TTL_MS) return null;
+    return parsed.text;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLlmCache(key: string, text: string): Promise<void> {
+  try {
+    await mkdir(LLM_CACHE_DIR, { recursive: true });
+    await writeFile(
+      path.join(LLM_CACHE_DIR, `${key}.json`),
+      JSON.stringify({ text, createdAt: new Date().toISOString() }),
+      'utf8'
+    );
+  } catch {
+    // নীরব — ক্যাশ-ব্যর্থতা মূল ফলাফলকে স্পর্শ করবে না
+  }
+}
+
+export interface ChatCompleteOptions {
+  /** রেট-লিমিট-অপেক্ষার নোট (UI-স্ট্যাটাসের জন্য) */
+  onRateLimitWait?: (info: RetryWaitInfo) => void;
+  /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু) */
+  skipCache?: boolean;
+}
+
 /**
  * Non-streaming chat completion (thinking disabled)।
- * §১০-সংশোধন (S8-3): আগের পুরনো নির্দিষ্ট-বিরতির রিট্রাই-র বদলে এখন
- * retry.ts-র withRetry — Retry-After-সচেতন + full-jitter ব্যাকঅফ (৪ চেষ্টা);
- * ৪২৯-নিঃশেষে TemporarilyUnavailableError (সাময়িক, লাইসেন্স-সমস্যা নয়)।
+ * S9: ৬ চেষ্টা + চ্যানেল-কুলডাউন-সৎ-অপেক্ষা + full-jitter ব্যাকঅফ
+ * (মোট বাজেট ≈৪–৫ মিনিট); ৪২৯-নিঃশেষে TemporarilyUnavailableError
+ * (সাময়িক, লাইসেন্স-সমস্যা নয়)। একই context ডিস্ক-ক্যাশ থেকে ফেরে।
  */
-export async function chatComplete(messages: LLMMessage[]): Promise<string> {
+export async function chatComplete(
+  messages: LLMMessage[],
+  opts?: ChatCompleteOptions
+): Promise<string> {
+  const key = cacheKeyOf(messages);
+  if (!opts?.skipCache) {
+    const cached = await readLlmCache(key);
+    if (cached != null) {
+      stats().hits++;
+      return cached;
+    }
+  }
+  stats().misses++;
   const zai = await getZAI();
-  return withRetry(
+  const text = await withRetry(
     async () => {
       const res = await zai.chat.completions.create({
         messages,
@@ -40,9 +127,19 @@ export async function chatComplete(messages: LLMMessage[]): Promise<string> {
       return typeof content === 'string' ? content : '';
     },
     'LLM (চ্যাট)',
-    4,
-    3000
+    6, // S9: ৬ চেষ্টা — মোট অপেক্ষা-বাজেট ≈৪–৫ মিনিট (১০-মিনিটের stale-sweepের মধ্যে)
+    4000, // base ৪ সে.
+    {
+      maxDelayMs: 60_000, // একক সর্বোচ্চ অপেক্ষা ৬০ সে.
+      channel: 'chat',
+      cooldownBudgetMs: 90_000, // প্রতি চেষ্টায় কুলডাউন-অপেক্ষার সীমা ৯০ সে.
+      ...(opts?.onRateLimitWait ? { onWait: opts.onRateLimitWait } : {}),
+    }
   );
+  if (text && text.length > 0) {
+    await writeLlmCache(key, text);
+  }
+  return text;
 }
 
 // ------------------------------------------------------------
@@ -87,7 +184,7 @@ function extractToolCall(obj: unknown): ToolCallRequest | null {
  * টেক্সট থেকে টুল কল বের করে। কৌশল (tolerant):
  *  ১) পুরো trimmed টেক্সটকে JSON হিসেবে
  *  ২) ```json ...``` fenced ব্লক
- *  ৩) প্রথম \`{\` থেকে শেষ \`}\` পর্যন্ত
+ *  ৩) প্রথম `{` থেকে শেষ `}` পর্যন্ত
  * কোনোটা গ্রহণযোগ্য হলে {tool, arguments}, নাহলে null (= চূড়ান্ত উত্তর)।
  */
 export function parseToolCall(text: string): ToolCallRequest | null {

@@ -1,0 +1,212 @@
+   440→- পূর্ণ অডিট: SDK v0.0.18-র সম্পূর্ণ API surface (index.d.ts) ম্যাপিং — ১০টি প্রকাশিত মেথড: chat.completions.create, createVision, audio.tts.create, audio.asr.create, images.generations.create/edit, images.search.create, video.generations.create, async.result.query, functions.invoke(web_search|page_reader)
+   441→- **লাইভ-প্রোব সফল (tmp-sprint2/probe-sdk-catalog.ts):** (ক) `images.search.create` SDK মেথড কাজ করে — ৩ ফলাফল ৯.৫ সে.-এ (আগে CLI-only ভাবা হত!); (খ) `video.generations.create({with_audio:true})` → ৫.২ সে. MP4-তে **প্রকৃত AAC অডিও-স্ট্রিম (16kHz mono)** ffprobe-নিশ্চিত; (গ) `request_id` প্যারামিটার গৃহীত ও echo-হয়ে ফেরে — **idempotency সমর্থিত**
+   442→- লাইসেন্স-যাচাই (web-search, §২-এর বাধ্যতামূলক নিয়ম): MusicGen ওয়েট CC-BY-NC 4.0 নিশ্চিত (HuggingFace মডেল-কার্ড); YuE ওয়েট CC-BY-NC 4.0; Wan2.2 মূলত Apache-2.0
+   443→- ভুল-সিদ্ধান্ত সংশোধন: MusicGen "blocked"(লাইসেন্স) → `allowed_noncommercial` + প্রকৃত বাধা `unavailable_hardware` + `not_exposed_by_sdk`; singing-tts-ও একই সংশোধন। রেজিস্ট্রিতে এখন কেউই blocked_by_license নয় — কোনো অ-বাণিজ্যিক-মডেল অযথা অবরুদ্ধ নেই
+   444→- prisma/schema.prisma: ModelEntry-তে ১০টি নতুন কলাম (licenseStatus, providerStatus, integrationStatus, runtimeStatus, apiEndpoint, apiModelId, lastTestedAt, lastTestNote, errorReason, toolsJson) + db:push; dev-server daemonize-রিস্টার্ট (পুরোনো Prisma-client ক্যাশ)
+   445→- types.ts: LicenseStatus/ProviderStatus/IntegrationStatus/RuntimeStatus টাইপ + ModelEntryView-সম্প্রসারণ + AvailabilityMatrixRow/Response (MatrixOverall: available|available_with_limits|experimental|unavailable_here|future)
+   446→- model-registry-data.ts: সম্পূর্ণ পুনর্লিখন — ২২ এন্ট্রি (নতুন: platform-image-search, platform-video-audio, platform-functions), প্রতিটিতে ৪-মাত্রিক স্ট্যাটাস + apiEndpoint + lastTestNote + errorReason + tools তালিকা
+   447→- availability-matrix.ts (নতুন): §৫-এর ঐক্য ক্ষমতা-টেবিল — ২৩ সারি (speech থেকে short_film পর্যন্ত), প্রতিটিতে ৪-মাত্রিক রায় + overall + honestNote + fallback; matrixRowForTask() + availabilityMatrixResponse() (usageMode + legend-সহ)
+   448→- /api/availability (নতুন GET): ম্যাট্রিক্স-প্রতিক্রিয়া; /api/registry: নতুন ফিল্ডসহ idempotent upsert (প্রতি কলে রিফ্রেশ) — curl-যাচাই: ২২ এন্ট্রি সব নতুন ফিল্ডসহ ✓, ম্যাট্রিক্স ২৩ সারি ✓
+   449→- capability-শ্রেণির সৎ রায়: TTS=available_with_limits (bn-প্রিভিউ বাধ্যতামূলক), instrumental=experimental (প্রসিডিউরাল-সৎ), full_song/টকিং-পোর্ট্রেট/গান-লিপসিঙ্ক=future/unavailable_here (কারণ-ভাঙনসহ), t2v/i2v/video_native_audio=available (প্রোব-যাচাইকৃত)
+   450→
+   451→Stage Summary:
+   452→- **প্রথম Deliverable তৈরি ও লাইভ:** Model & Tool Availability Matrix (/api/availability) — সব মডেলের license/provider/integration/runtime/hardware/final-status একসাথে
+   453→- তিনটি নতুর আবিষ্কার SDK-তে: images.search SDK-মেথড, with_audio নেটিভ-অডিও, request_id idempotency — এগুলো এখন পাইপলাইনে যুক্ত হবে
+   454→- Task 2-b (backend) ও 2-c (frontend) সাবএজেন্টের জন্য প্রস্তুত; কাজের বিস্তারিত নিচের টাস্ক-বরাদ্দে
+   455→
+   456→---
+   457→Task ID: 2-b (Unlock Master Plan — Backend Hardening)
+   458→Agent: full-stack-developer (backend)
+   459→Task: §১০ রিট্রাই-নীতি ওভারহল (Retry-After + ফুল-জিটার এক্সপোনেনশিয়াল) + SDK-প্রথম ছবি-সার্চ + ভিডিও আইডেম্পোটেন্সি/নেটিভ-অডিও-যাচাই + লিপ-সিঙ্ক ৪-মাত্রিক ভাঙন — সব সৎ-রায়, ৪২৯ কখনো লাইসেন্স-সমস্যা নয়
+   460→
+   461→Work Log:
+   462→- sdk-helpers.ts: withRetry পুনর্লিখন — ত্রুটি-বস্তু থেকে Retry-After পার্স (err.retryAfter / headers['retry-after'] / বার্তা-টেক্সট; সেকেন্ড-সংখ্যা বা HTTP-date), Retry-After না থাকলে ফুল-জিটার এক্সপোনেনশিয়াল ব্যাকঅফ delay=random(baseMs/2, baseMs×2^attempt) ছাদ ৯০ সে., চেষ্টা-সংখ্যা কনফিগারযোগ্য (ডিফল্ট ৪); ৪২৯-নিঃশেষে নতুন এক্সপোর্টেড TemporarilyUnavailableError (বার্তা-প্রিফিক্স `TEMPORARILY_UNAVAILABLE:`) — UI এখন "সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট)" দেখাতে পারবে, ৫xx/টাইমআউট-নিঃশেষে আগের সৎ-বার্তাই; নতুন imageSearchSdkFirst(query,count) — SDK zai.images.search.create প্রাথমিক (প্রোব-যাচাইকৃত), ব্যর্থে CLI ফলব্যাক (z-ai image-search, ১৫০ সে. টাইমআউট), ফলাফল {results:[{url,caption,source,width?,height?}], via:'sdk'|'cli'}; parseRetryAfterMs/fullJitterDelayMs/isRateLimitErrorText-ও এক্সপোর্টেড; সব পুরনো এক্সপোর্ট অক্ষত
+   463→- registry.ts: search_images টুল এখন imageSearchSdkFirst ব্যবহার করে — একই নাম/প্যারামিটার/artifact-আকৃতি, resultJson-এ নতুন via:'sdk'|'cli' (সারাংশেও কোন পথ বলে), টুল-টাইমআউট ২৪০ সে.-এ (SDK+CLI উভয় পথের জন্য)
+   464→- ai_video.ts (§৭.১+§১০): AiVideoRequest-এ requestKey? — deriveRequestId (sanitized চাবি + প্রম্পটের sha1-হ্যাশ) থেকে নির্ধারক request_id, লুপের বাইরে একবারই তৈরি তাই ৪২৯-পুনঃসাবমিটেও একই id (প্রোভাইডার ডিডুপ্লিকেট করে — S1-প্রোবে request_id echo-যাচাইকৃত ছিল); validateVideoBuffer-র VideoValidation {ok, issues, info, hasAudio, audioCodec?} + expectAudio প্যারামিটার — 'অডিও-স্ট্রিম নেই' issue কেবল with_audio চাওয়া হলে, অন্যথা অডিও-অনুপস্থিতি কখনো ব্যর্থতা নয়; AiVideoClip-এ nativeAudio ফিল্ড; সাবমিট-ব্যাকঅফ এখন Retry-After-সচেতন + এক্সপোনেনশিয়াল+জিটার (৬০ সে. ভিত্তি → ৯০ সে. ছাদ), ৪২৯-নিঃশেষে TEMPORARILY_UNAVAILABLE:, ৫xx/টাইমআউটে আলাদা সৎ-বার্তা
+   465→- lip_sync_module.ts (§৮): LIP_SYNC_STATUS-এ ৪+১-মাত্রিক বাধা-ভাঙন — license:'needs_review' (Wav2Lip একাডেমিক-কেবল শর্ত, SadTalker/MuseTalk আলাদা), provider:'not_exposed_by_sdk' (SDK-তে লিপ-সিঙ্ক API নেই), hardware:'unavailable_hardware' (৪–১২GB VRAM, GPU নেই), integration:'not_integrated', benchmark:'not_done' (+গানে আলাদা বেঞ্চমার্ক-নোট) + প্রতি-মাত্রার ব্যাখ্যা LIP_SYNC_BLOCKAGE_NOTES-এ; lipSyncCapabilityReport() পুরনো আকৃতি + নতুন blockageDimensions ফিল্ড; runLipSync-এর সৎ-ত্রুটিতে ৪ মাত্রা + বিকল্প (সংলাপ-অডিও + AI-দৃশ্য আলাদা, মুখ-নড়াচড়ার দাবি নেই)
+   466→- capability_router.ts: নতুন রুট-ধরন video_native_audio — tool 'generate_video/image_to_video (withAudio)', ইঞ্জিন 'CogVideoX-3 with_audio (ক্লাউড ডিফিউশন + নেটিভ অডিও)', ready, নোটে প্রোব-যাচাইকৃত AAC-স্ট্রিম + ffprobe-যাচাই; VideoRequestKind টাইপ ও capabilityRouterTableBn() লেবেলসহ হালনাগাদ
+   467→- system-info.ts: স্ট্যাটিক স্বাস্থ্যে নতুন {image-search: ok, 'SDK-মেথড প্রোব-যাচাইকৃত (২০২৬-১০-১১); CLI-ফলব্যাক আছে'} ও {video-audio: ok, 'প্রোব-যাচাইকৃত: প্রকৃত AAC স্ট্রিম আসে'}; লিপ-সিঙ্ক নোট → '৪-মাত্রিক বাধা: SDK-তে API নেই · GPU নেই · অ্যাডাপ্টার নেই · বাংলা বেঞ্চমার্ক হয়নি'
+   468→- prompts.ts: সততা-অংশে ২টি নতুন নিয়ম — (ক) ভিডিওতে পরিবেশ-শব্দ চাইলে withAudio-তে প্রকৃত নেটিভ AAC অডিও আসে (ffprobe-যাচাইকৃত; নেটিভ বনাম প্রসিডিউরাল সৎভাবে জানাতে), (খ) ৪২৯/রেট-লিমিট = "সাময়িক রেট-লিমিট" — কখনো লাইসেন্স/অনুমতির সমস্যা নয়; TEMPORARILY_UNAVAILABLE দেখলে সেটিই বলতে; বাকি সব সততা-নিয়ম অক্ষত
+   469→- পাইপলাইন (হালকা স্পর্শ, কাঠামো অপরিবর্তিত): motion_video-র AiShotRequest-এ requestKey? (generateVideoClip-এ পাস-থ্রু) + ৩টি কল-সাইটে §১০ চাবি — motion: `${productionId}-shot-${i+1}`, music_video: `mv-…`, short_film: `sf-…` (productionId PipelineContext-এ প্রত্যেক পাইপলাইনের স্কোপে আছে)
+   470→- যাচাই: bunx tsc --noEmit → src/-এ ০ এরর (আগের এরর কেবল examples/, skills/, tmp-task2d/ — অস্পৃষ্ট); bunx eslint (১০টি স্পর্শিত ফাইল) → ০; bun run lint (পুরো প্রজেক্ট) → ০; ধূম-স্ক্রিপ্ট tmp-sprint2/retry-policy-smoke.ts (bun) → ২১/২১ পাস — জিটার-সীমা [floor,ছাদ] ১০০০ নমুনায়, এক্সপোনেনশিয়াল ছাদ-বৃদ্ধি, নিরন্তর ৪২৯→TemporarilyUnavailableError+প্রিফিক্স, নিরন্তর ৫০৩→সাধারণ সৎ-ব্যর্থতা, Retry-After পার্স (সংখ্যা/headers/বার্তা/HTTP-date) ও ব্যাকঅফে সম্মান, বাস্তব imageSearchSdkFirst কল → via:'sdk' ৩ ফলাফল ২.২ সে.-এ; curl: /api/tools ২০০, /api/registry ২০০, /api/availability ২০০, /api/system ২০০ (নতুন image-search/video-audio স্ট্যাটিক এন্ট্রি লাইভ প্রতিক্রিয়ায় দেখা গেছে); dev.log-এ কম্পাইল-এরর নেই; ধূম-স্ক্রিপ্ট DB স্পর্শ করে না — পরিষ্কার করার টেস্ট-ডেটা নেই
+   471→
+   472→Stage Summary:
+   473→- §১০ পুরোণোভাবে বাস্তবায়িত: Retry-After-সচেতন ফুল-জিটার এক্সপোনেনশিয়াল রিট্রাই (৯০ সে. ছাদ) + আইডেম্পোটেন্সি-চাবি (request_id) + ৪২৯-নিঃশেষে TEMPORARILY_UNAVAILABLE সৎ-রায় — ৪২৯ আর কখনো লাইসেন্স-সমস্যা হিসেবে দেখাবে না
+   474→- তিনটি SDK-আবিষ্কার (S1-প্রোব) এখন উৎপাদন-পথে: images.search SDK-মেথড (via:'sdk'|'cli'), with_audio নেটিভ-AAC-যাচাই (expectAudio→hasAudio/nativeAudio), request_id ডিডুপ্লিকেশন — পাইপলাইন-শটে স্বয়ংক্রিয়
+   475→- লিপ-সিঙ্ক এখন ৪-মাত্রিক সৎ-ভাঙনসহ (license/provider/hardware/integration + benchmark) — registry/matrix/UI-তে blockageDimensions থেকে নেওয়া যাবে
+   476→- সীমা: tools/video.ts-এর generate_video/image_to_video স্কিমায় withAudio প্যারামিটার এখনো নেই (সে ফাইল এই টাস্কের স্কোপে ছিল না) — মডিউল/পাইপলাইন স্তরে ক্ষমতাটি চালু ও video_native_audio রুটে বিজ্ঞাপিত; ফ্রন্টএন্ড TEMPORARILY_UNAVAILABLE প্রিফিক্স ধরে নতুন বাংলা বার্তা দেখাতে পারবে (2-c-এর কাজ হতে পারে)
+   477→
+   478→---
+   479→Task ID: 2-c (Unlock Master Plan — Availability Matrix UI)
+   480→Agent: full-stack-developer (frontend)
+   481→Task: মাস্টার প্ল্যান §১৫/§১১ অনুযায়ী Availability Matrix UI — রেজিস্ট্রিতে ২৩-সারির চার-মাত্রিক ম্যাট্রিক্স-প্যানেল, স্টুডিও-মোড-কার্ডে লাইভ ম্যাট্রিক্স-নির্ণীত সৎ স্ট্যাটাস, গাইডে Router+DoD সততা-আপডেট।
+   482→
+   483→Work Log:
+   484→- নতুন `src/hooks/use-availability.ts`: useAvailability() — useQuery (use-system.ts-এর প্যাটার্ন: staleTime ৫ মি., retry ১, refetchOnWindowFocus বন্ধ), type-only import @/lib/types থেকে; ফেরত দেয় { data, isLoading, error, refetch }
+   485→- নতুন `src/components/studio/availability-badges.tsx` (শেয়ার্ড): OVERALL/LICENSE/PROVIDER/INTEGRATION/RUNTIME মেটা-ম্যাপ (emerald=চালু/স্বাস্থ্যবান, amber=সীমা/যাচাই-বাকি/আংশিক, stone=এই-পরিবেশে-অনুপলব্ধ, dashed stone=ভবিষ্যৎ, কেবল blocked_by_license=লাল) + OverallBadge + DimensionChip উপাদান — রেজিস্ট্রি ও স্টুডিও উভয়ে পুনঃব্যবহৃত
+   486→- bn-format.ts-এ নতুন formatDateBn() ("১১ অক্টোবর ২০২৬" — শুধু-তারিখ ISO-তে টাইমজোন-নিরাপে); বাকি সব অপরিবর্তিত
+   487→- registry-view.tsx: শীর্ষে নতুন "মডেল ও টুল অ্যাভেইলেবিলিটি ম্যাট্রিক্স" প্যানেল — usageMode-ঘোষণা (পরিবেশ+ব্যবহার+নোট), ৬টি ফিল্টার-চিপ সংখ্যাসহ (সব ২৩/চালু ১২/সীমাসহ ৪/পরীক্ষামূলক ৩/অনুপলব্ধ ২/ভবিষ্যৎ ২, min-h-11), ডেস্কটপে ৬-কলাম টেবিল-গ্রিড (ক্ষমতা+মডেল+টুল-চিপ | ৪ মাত্রা | সামগ্রিক) বনাম মোবাইলে স্ট্যাকড কার্ড (চিপ-র‍্যাপ), সারি-প্রসারণে (Collapsible) চার-মাত্রিক বিশ্লেষণ (legend-টেক্সটসহ — কোন মাত্রা বাধা স্পষ্ট) + apiEndpoint/apiModelId + শেষ পরীক্ষা (বাংলা তারিখ) + lastTestNote + honestNote + fallback + errorReason (amber সতর্ক-বক্স), max-h-[28rem] কাস্টম-স্ক্রলবার, লেজেন্ড-চিপস (২৪টি); QueryClientProvider রেজিস্ট্রি-ভিউয়ের শীর্ষে উত্তোলিত (use-system + use-availability একই ক্লায়েন্ট)
+   488→- ModelEntryCard-সম্প্রসারণ: চার-মাত্রিক চিপ + tools-চিপ + apiEndpoint/apiModelId (mono) + "শেষ পরীক্ষা: <তারিখ> — নোট" + errorReason (amber, "অনুপলব্ধতার প্রকৃত কারণ:") — §৯.১ কী-রেন্ডার অক্ষুণ্ণ
+   489→- সারাংশ-স্ট্রিপে সৎ নোট: "কোনো মডেল লাইসেন্স-অবরুদ্ধ নয় — অনুপলব্ধতার প্রকৃত কারণ… ম্যাট্রিক্সে দেখুন"; 'অবরুদ্ধ' সেকশন এখন শূন্য-হলে লুকানোই (গণনা-লেবেল "অবরুদ্ধ (লাইসেন্সে)")
+   490→- studio-view.tsx (§১১): ModeStatus সম্প্রসারিত (active/limited/experimental/unavailable/future) — statusFromOverall() ম্যাপ; প্রতিটি মোডে matrixKey (audio→cap-speech/cap-instrumental/cap-full-song; video→cap-t2v/cap-i2v/cap-video-audio/cap-character-motion/cap-talking-portrait/cap-singing-lipsync/cap-video-editing; film→cap-short-film/cap-music-video/cap-motion-video) — ম্যাট্রিক্স লোড হলে overall-রায়ই ব্যাজ (TTS/ভয়েসওভার→"সীমাসহ", পূর্ণ-গান→"ভবিষ্যৎ", লিপ-সিঙ্ক→"অনুপলব্ধ (এখানে)", ফিল্ম→"সীমাসহ"/"চালু"), না লোড হলে হার্ডকোডেড সৎ ফলব্যাক; কার্ডে চার-মাত্রিক চিপ + "শেষ পরীক্ষা: <তারিখ>" চিপ + অফ-মোডে "কারণ: <errorReason>" (stone) ও "বিকল্প: <fallback>" (emerald) নোট; নতুন ৭ম ভিডিও-মোড "নেটিভ-অডিওসহ AI ভিডিও" (cap-video-audio, CogVideoX-3 with_audio — S1-আবিষ্কৃত লাইভ ক্ষমতা, draft-সহ); লোকাল QueryClientProvider-র‍্যাপার
+   491→- guide-view.tsx: §৪.৩ Capability Router ৮ সারি — নতুন "ভিডিওর সাথে নেটিভ অডিও" → generate_video (withAudio) → "CogVideoX-3 with_audio (ক্লাউড)" → চালু; 'অবরুদ্ধ'→'অনুপলব্ধ' শব্দচুক্তি; §১৪ DoD-এ blocked→unavailable ("অনুপলব্ধ") + দুই সারিতে "বাধা: GPU/API (লাইসেন্স নয়)" + নতুন সৎ নোট ("লাইসেন্স-কারণে অবরুদ্ধ মডেল নেই…ম্যাট্রিক্সে দেখুন") + item-১৫-এ ম্যাট্রিক্স-উল্লেখ; Phase 5 'অবরুদ্ধ-সৎ'→'অনুপলব্ধ-সৎ' (কারণ-ভাঙনসহ); CAPABILITIES/HONESTY-তে নেটিভ-অডিও ও লাইসেন্স-স্পষ্টতা
+   492→- যাচাই: bunx tsc --noEmit → src/-এ ০ এরর (examples/skills/tmp-এর পুরোনো এরর অ-সংশ্লিষ্ট); bunx eslint (৬টি স্পর্শিত ফাইল) → ০; agent-browser E2E: ম্যাট্রিক্স ২৩ সারি+ফিল্টার-গণনা সঠিক, "অনুপলব্ধ" ফিল্টার→২ সারি, সারি-প্রসারণে চার-মাত্রিক বিশ্লেষণ+কারণ+বিকল্প ✓, সৎ নোট ✓, ModelEntryCard-চিপ ✓, স্টুডিও ৩ ট্যাবে ম্যাট্রিক্স-নির্ণীত ব্যাজ+চিপ+শেষ-পরীক্ষা+কারণ+বিকল্প ✓, নতুন নেটিভ-অডিও মোড ✓, গাইড ৮-সারি রাউটার+DoD-নোট ✓; মোবাইল ৩৯০×৮৪৪: গাইড/রেজিস্ট্রি/স্টুডিও — কোনো horizontal overflow নেই (390 vs 390); console/page errors শূন্য; dev.log-এ কম্পাইল-এরর নেই (সব API 200)
+   493→
+   494→Stage Summary:
+   495→- পরিবর্তিত ফাইল: src/hooks/use-availability.ts (নতুন), src/components/studio/availability-badges.tsx (নতুন), src/components/studio/registry-view.tsx, src/components/studio/studio-view.tsx, src/components/studio/guide-view.tsx, src/components/chat/bn-format.ts (শুধু নতুন formatDateBn-সংযোজন) — src/lib/**, src/app/api/**, prisma/ স্পর্শ করা হয়নি
+   496→- §১৫-এর প্রথম Deliverable এখন UI-তে লাইভ: প্রতিটি ক্ষমতার license/provider/integration/runtime/overall রঙ-কোডেড, প্রসারণযোগ্য বিস্তারিতসহ; কোনো মডেল "লাইসেন্স-অবরুদ্ধ" দেখায় না — প্রকৃত কারণ মাত্রা-ভিত্তিক
+   497→- স্টুডিও-ব্যাজ এখন হার্ডকোডেড নয় — /api/availability-র overall থেকে নির্ণীত (ফলব্যাকসহ); ১৬→১৭ মোড (নেটিভ-অডিওসহ AI ভিডিও নতুন)
+   498→- বিস্তার নোট: টাস্ক-বর্ণনায় "১৬ মোড-কার্ড" ছিল; cap-video-audio-কে ম্যাপ করতে ৭ম ভিডিও-মোড যোগ করা হয়েছে (S1-প্রোব-যাচাইকৃত লাইভ ক্ষমতা — ব্যবহারকারীর অ্যাক্সেসের জন্য); audio-bn-voiceover→cap-speech ম্যাপ (TTSই মূল ইঞ্জিন, ASR-সীমা honestNote-এ অন্তর্ভুক্ত)
+   499→
+   500→---
+   501→Task ID: S2 (Unlock Master Plan — Sprint 2–7: API Integration, Retry/Idempotency, Native Audio, UI Matrix, ফাইনাল যাচাই)
+   502→Agent: main (Z.ai Code orchestrator) + subagents 2-b (backend), 2-c (frontend)
+   503→
+   504→Task: সাবএজেন্ট-ফল ইন্টিগ্রেশন + tools/video.ts-এ withAudio/native_ai সম্পূর্ণতা + ব্রাউজার-E2E + ফাইনাল রিপোর্ট
+   505→
+   506→Work Log (subagent 2-b, backend):
+   507→- sdk-helpers.ts: withRetry পুনর্লিখন — Retry-After (সেকেন্ড/HTTP-date) সম্মান, full-jitter exponential backoff (90 সে. ক্যাপ), TemporarilyUnavailableError ('TEMPORARILY_UNAVAILABLE:' প্রিফিক্স) — 429 কখনো লাইসেন্স-সমস্যা হিসেবে দেখায় না; imageSearchSdkFirst() (SDK-প্রাথমিক + CLI-ফলব্যাক)
+   508→- registry.ts: search_images এখন SDK-পথে (resultJson-এ via: 'sdk'|'cli')
+   509→- ai_video.ts: requestKey → নির্ধারক request_id (deriveRequestId, রিট্রাই-চক্রের বাইরে একবার তৈরি — ৪২৯-পুনঃসাবমিটে একই id → provider-side ডিডুপ); validateVideoBuffer-এ expectAudio + hasAudio/audioCodec; AiVideoClip.nativeAudio; সাবমিট-ব্যাকঅফ Retry-After-সচেতন
+   510→- lip_sync_module.ts: ৪-মাত্রিক বাধা-ভাঙন (license: needs_review, provider: not_exposed_by_sdk, hardware: unavailable_hardware, integration: not_integrated + benchmark: not_done) — blockageDimensions ফিল্ড
+   511→- capability_router.ts: নতুন video_native_audio রুট (৮ রুট); system-info.ts: image-search/video-audio স্বাস্থ্য + লিপ-সিঙ্ক ৪-মাত্রিক নোট; prompts.ts: withAudio + 429-সততা নিয়ম
+   512→- পাইপলাইন: motion_video/music_video/short_film-এ requestKey থ্রেডিং (${productionId}-shot-N)
+   513→- ধূমপরীক্ষা 21/21 (jitter-বাউন্ড, 429→TemporarilyUnavailableError, 503→সাধারণ সৎ-ত্রুটি, Retry-After পার্সিং, প্রকৃত imageSearchSdkFirst → via:'sdk')
+   514→
+   515→Work Log (subagent 2-c, frontend):
+   516→- use-availability.ts (নতুন hook) + availability-badges.tsx (শেয়ার্ড রং-চুক্তি: emerald=চালু, amber=সীমা/যাচাই, stone=অনুপলব্ধ/ভবিষ্যৎ)
+   517→- registry-view.tsx: ম্যাট্রিক্স প্যানেল (২৩ ক্ষমতা, ৬ ফিল্টার-চিপ, সম্প্রসারিত সারিতে ৪-মাত্রিক বিশ্লেষণ + API + শেষ-পরীক্ষা + কারণ + বিকল্প), ModelEntryCard-এ ৪-মাত্রিক চিপ, খালি 'blocked' গ্রুপ লুকানো + সৎ নোট
+   518→- studio-view.tsx: ১৭টি মোড-কার্ড এখন ম্যাট্রিক্স-চালিত স্ট্যাটাস + শেষ-পরীক্ষা + কারণ/বিকল্প; নতুন ১৭তম কার্ড 'নেটিভ-অডিওসহ AI ভিডিও'
+   519→- guide-view.tsx: ৮-সারির router টেবিল + DoD সৎ-হালনাগাদ
+   520→
+   521→Work Log (main, ইন্টিগ্রেশন):
+   522→- tools/video.ts: generate_video-র sound-এ নতুন 'native_ai' মোড — AI-শটে withAudio+requestKey, অডিও-সংরক্ষী স্বাভাবিকীকরণ (-ar 44100 -ac 2), concatClipsKeepAudio (নতুন হেল্পার: নীরব ক্লিপে নীরব-ট্র্যাক যোগ → concat-demuxer; এই মোডে ট্রানজিশন নেই — সৎ নোট), nativeAudioShots গণনা + সৎ honestLabel/summary ('নেটিভ-অডিও আসেনি' হলে প্রতারণা নয়)
+   523→- image_to_video: withAudio প্যারামিটার + সৎ নেটিভ-অডিও লেবেল + requestKey
+   524→- bunx tsc --noEmit: src/-এ শূন্য (পুরোনো tmp-task2d/examples/skills-এর এরর অপ্রাসঙ্গিক); bun run lint: শূন্য
+   525→- ব্রাউজার-E2E: হোম ✓; রেজিস্ট্রি-ম্যাট্রিক্স (২৩ সারি + ফিল্টার-গণনা + সম্প্রসারিত বিস্তার + 'কোনো মডেল লাইসেন্স-অবরুদ্ধ নয়') ✓; অনুপলব্ধ-ফিল্টারে লিপ-সিঙ্ক ৪-মাত্রিক ভাঙন ✓; স্টুডিও-কার্ড (শেষ-পরীক্ষা ১১ অক্টোবর ২০২৬, কারণ, বিকল্প) ✓; চ্যাট golden path: 'পাহাড়ের ছবি খুঁজে আনো' → search_images SDK-পথে ৩.০ সে. (z-cdn URL) → ৪ artifact + প্রিভিউ ✓; গাইড ৮-সারির রাউটার ✓; মোবাইল ৩৯০×৮৪৪: কোনো overflow নেই, ফুটার ৮৪৪-এ ✓; console/page errors শূন্য ✓; টেস্ট-কথোপকথন মুছে ফেলা ✓
+   526→
+   527→Stage Summary:
+   528→- §১৪-এর ১২ দফা� অবস্থা: (১) ভুল-ব্লক নেই ✓ (২) লাইসেন্স-সিদ্ধান্তে সূত্র ✓ (৩) API-মডেলের বাস্তব endpoint প্রোব-যাচাইকৃত ✓ (৪) হার্ডওয়্যারে-অসম্ভব মডেল 'ready' নয় ✓ (৫) bn-TTS/instrumental/রিয়েল AI-ভিডিও E2E পাস ✓ (৬) full-song/lip-sync/singing পৃথক-সৎ ✓ (৭) সৎ এরর+ফলব্যাক ✓ (৮) 429-হ্যান্ডলিং (Retry-After/jitter/idempotency/TEMPORARILY_UNAVAILABLE) ✓ (৯) কোনো bypass নয় ✓ (১০) UI-তে permission/capability/runtime পৃথক ✓ (১১) generation_mode লেবেল ✓ (১২) কোনো fake success নয় ✓
+   529→- নতুন-চালু ক্ষমতা: SDK ইমেজ-সার্চ (৩ সে.), ভিডিও নেটিভ AI-অডিও (with_audio, প্রোব-যাচাইকৃত AAC), request_id idempotency
+   530→- মিথ্যা-ব্লক সংশোধিত: MusicGen ও YuE এখন allowed_noncommercial — প্রকৃত বাধা হার্ডওয়্যার/API, UI-তে স্পষ্ট
+   531→
+   532→---
+   533→Task ID: S8-0 (session-8 kickoff)
+   534→Agent: main
+   535→Task: নতুন ১৫-ধাপী "AI Creative Studio — Local-First সমস্যা সমাধান পরিকল্পনা" গ্রহণ; Phase-1/2 কাজের চুক্তি প্রস্তুত
+   536→
+   537→Work Log:
+   538→- types.ts: QualityStatus (পাঁচম মাত্রা — quality_status) + ModelEntryView.qualityStatus + AvailabilityMatrixRow.quality; HardwareReport স্থানান্তরিত types.ts-এ (system-info.ts re-export করে); HardwareVerdict (৯-অবস্থা)/HardwareModelAssessment/HardwareManagerResponse; BnBenchmarkCategory/BnBenchmarkSentence/TtsBenchmarkAudioChecks/TtsBenchmarkSentenceResult/TtsBenchmarkReport
+   539→- availability-matrix.ts: ২৩ সারিতে quality মান যোগ (cloud-পথ = machine_checked, bn-speech/ASR + প্রাসিডিউরাল ইঞ্জিন = not_verified — ব্যবহারকারীর smoke/functional/quality ত্রিস্তরের সংজ্ঞা মেনে); cap-full-song → ACE-Step(প্রার্থী #১, রিপো Apache-2.0/ওয়েট-যাচাই বাকি) + YuE(প্রার্থী #২, CC-BY-NC 4.0) বিভাজন; legend-এ গুণমান-মাত্রা; cap-speech নোটে বেঞ্চমার্ক-ল্যাবের উল্লেখ
+   540→- types.ts TOOL_CATALOG: generate_singing/separate_stems/lip_sync-এর ভুল "লাইসেন্সের কারণে অবরুদ্ধ" বিবরণ সংশোধন — প্রকৃত কারণ GPU/SDK-API/ইন্টিগ্রেশন
+   541→- system-info.ts: HardwareReport import+re-export; singing স্ট্যাটিক-নোট সংশোধন (লাইসেন্স অ-বাণিজ্যিকে অনুমোদিত)
+   542→
+   543→Stage Summary:
+   544→- চুক্তি (একমাত্র সত্যের উৎস) প্রস্তুত: src/lib/types.ts
+   545→- সমান্তরাল টাস্ক: S8-2a (অডিট-ডকুমেন্ট: AUDIT_REPORT.md/FEATURE_MATRIX.json/KNOWN_BUGS.md), S8-2b (হার্ডওয়্যার-গেট + /api/hardware + TTS-ক্যাশ + রেজিস্ট্রিতে qualityStatus/ACE-Step/YuE/MMS-bn-TTS সংযোজন + prisma), S8-2c (বাংলা TTS বেঞ্চমার্ক সাবসিস্টেম: নর্মালাইজার+উচ্চারণ-অভিধান+৬০ বাক্য+রানার+API), S8-2d (ফ্রন্টএন্ড: quality চিপ+হার্ডওয়্যার প্যানেল+বেঞ্চমার্ক ল্যাব)
+   546→- ইন্টিগ্রেশন ও যাচাই main agent করবে (S8-3/4/5)
+   547→
+   548→---
+   549→Task ID: S8-2a
+   550→Agent: subagent (audit docs)
+   551→Task: Phase-1 অডিট-ডেলিভারেবল — docs/AUDIT_REPORT.md + docs/FEATURE_MATRIX.json + docs/KNOWN_BUGS.md + scripts/gen-feature-matrix.ts (পুনর্জেনারেশন-স্ক্রিপ্ট, চালিত)
+   552→
+   553→Work Log:
+   554→- worklog.md (Sprint-era + S8-0 kickoff) ও src/lib/types.ts (চুক্তি: QualityStatus, HardwareReport, HardwareVerdict, বেঞ্চমার্ক-টাইপ) পড়ে প্রেক্ষাপট গ্রহণ
+   555→- সোর্স-অডিট (সব ফাইল পড়ে, dev-server/build চালানো হয়নি): registry.ts + tools/{image,audio,video,production}.ts (৪১ টুলের প্রতিটি হ্যান্ডলার), availability-matrix.ts (২৩ সারি), model-registry-data.ts, sdk-helpers.ts (withRetry/TemporarilyUnavailableError), llm.ts, orchestrator.ts, runner.ts, ৫টি পাইপলাইন, সব ১৮টি API রুট-ফাইল, prisma/schema.prisma, system-info.ts, limits.ts, storage.ts, package.json, .env (শুধু কী-নাম — DATABASE_URL; মান কখনো ছাপা হয়নি)
+   556→- scripts/gen-feature-matrix.ts লেখা (আপেক্ষিক ইমপোর্ট ../src/lib/... — bun-এ path-alias সমাধান হয় না বলে; IMPLEMENTATION_MAP হার্ডকোড কিন্তু registry/tools ফাইল পড়ে যাচাইকৃত, মন্তব্যসহ) — `bun scripts/gen-feature-matrix.ts` চালিয়ে docs/FEATURE_MATRIX.json জেনারেট (৪১ টুল: ১৯ sdk_cloud/৯ ffmpeg/৯ local_engine/৩ honest_gated/১ planning_only; ২৪ মডেল; ২৩ ম্যাট্রিক্স-সারি + legend + usageMode)
+   557→- docs/AUDIT_REPORT.md (বাংলা, ১২ সেকশন): স্থাপত্য + Prisma-মডেল + স্টোরেজ; ২০-সারির API-ইনভেন্টরি; ৪১ টুলের বাস্তবায়ন-ম্যাপ; ৩ ভিডিও-পাইপলাইনের ধাপ/ইঞ্জিন/ফলব্যাক/generation_mode-লেবেলিং; এরর-হ্যান্ডলিং নিরীক্ষা (নীরব-ফলব্যাক লেবেল-সূচি); পরিবেশ/ডিপেন্ডেন্সি; ম্যাট্রিক্স-সারাংশ (blocked_by_license=০; machine_checked ১৫/not_verified ৮/human_verified ০; unavailable_hardware=৪); S8-0-পরিবর্তন; রিগ্রেশন-স্যুট অবস্থা; অবশিষ্টাংশ-তালিকা
+   558→- docs/KNOWN_BUGS.md (বাংলা, ১০ এন্ট্রি — প্রতিটিতে উপসর্গ/মূল কারণ/প্রশমন/সৎ অবস্থা): TTS ৪২৯-উইন্ডো (S8-2b TTS-ক্যাশ + S8-2c skipped_rate_limited-নোটসহ), bn-TTS অনির্ণীত (মানব-শ্রবণ-গেট), bn-ASR দুর্বল (উপদেশমূলক), লিপ-সিঙ্ক ৪-মাত্রিক, পূর্ণ-গান/স্টেম হার্ডওয়্যার-বাধা + নতুন আবিষ্কার: transcribe_audio-এ ২৮-সে. চাঙ্কিং-ফাঁক, chatComplete-এর পুরনো রিট্রাই-নীতি, রুট-অবশিষ্টাংশ (tmp-sprint2/tmp-task2d/mixrepro-* ১০.৭MB/tool-results/upload/অরফান artifacts), স্থায়ী টেস্ট-হার্নেস নেই, ছোট সৎ-সীমা
+   559→- scripts-film-smoke.ts পরিদর্শন (লোকাল-অনলি, ক্লাউড/DB-স্পর্শ নেই) → চালিয়ে সব-পাস নিশ্চিত (kenBurns ৫ মুভ, xfade/ডিমাক্সার concat, ambient/duck-মিক্স, mux AAC, বাংলা সাবটাইটেল-বার্ন, ইউটিলিটি); tests/-এর ৩টি শেল-স্ক্রিপ্ট = স্যান্ডবক্স-অবকাঠামো, অ্যাপ-রিগ্রেশন নয় — নথিভুক্ত
+   560→- সমান্তরাল-এজেন্ট পর্যবেক্ষণ: অডিট-চলাকালে S8-2b রেজিস্ট্রি-সীড বদলায় (qualityStatus + ace-step/yue/mms-tts-ben — ২২→২৪); পুনঃচালনায় স্ক্রিপ্ট স্বয়ংক্রিয়ভাবে নতুন অবস্থা তুলে নিয়েছে (রিপোর্টে লাইভ-প্রমাণ হিসেবে লেখা)
+   561→- src/** সম্পূর্ণ অস্পৃষ্ট; ডকুমেন্টে দুটি ভাঙা অক্ষর (U+FFFD) ধরা পড়ে সংশোধন; JSON python-দিয়ে ভ্যালিডেটেড
+   562→
+   563→Stage Summary:
+   564→- তৈরি: docs/AUDIT_REPORT.md (৩২৭ লাইন), docs/FEATURE_MATRIX.json (৯০KB, জেনারেটেড), docs/KNOWN_BUGS.md (১০ বাগ-এন্ট্রি), scripts/gen-feature-matrix.ts — docs/ ডিরেক্টরি নতুন
+   565→- মূল অডিট-সত্য: ৪১ টুলের ৩৮টি প্রকৃত-বাস্তবায়িত + ৩টি সৎ-গেটেড (GPU/API-বাধা, লাইসেন্স নয়); blocked_by_license=০; ম্যাট্রিক্স ২৩ সারি (available ১২/সীমাসহ ৪/পরীক্ষামূলক ৩/ভবিষ্যৎ ২/অনুপলব্ধ ২); human_verified=০ — সৎ স্বীকারোক্তি
+   566→- নতুন আবিষ্কার (S8-3-এর জন্য অ্যাকশন-আইটেম): (১) transcribe_audio টুলে transcribeBuffer-চাঙ্কিং যোগ দরকার; (২) chatComplete-কে withRetry-মোড়ানো; (৩) রুট-পরিচ্ছন্নতা (mixrepro-* ১০.৭MB, tmp-*, tool-results/, upload/, অরফান mv*-artifacts, /api Hello-world স্ক্যাফোল্ড); (৪) স্মোক-স্ক্রিপ্টগুলোর স্থায়ী tests/-হার্নেসে স্থানান্তর
+   567→---
+   568→Task ID: S8-2d
+   569→Agent: subagent (frontend)
+   570→Task: পাঁচম মাত্রা (গুণমান) চিপ + হার্ডওয়্যার প্যানেল + বাংলা TTS বেঞ্চমার্ক-ল্যাব — রেজিস্ট্রি/স্টুডিও/গাইড ভিউতে ফ্রন্টএন্ড
+   571→Work Log:
+   572→- availability-badges.tsx (সম্পাদনা): QUALITY_META (quality_machine_checked/human_verified=emerald, not_verified=amber, not_applicable=stone) + QualityBadge উপাদান (OverallBadge-এর ভিজ্যুয়াল চুক্তিতে, রানটাইম-অজানা মানে সৎ 'অজানা' ফলব্যাক); রঙ-চুক্তি অপরিবর্তিত (blue/indigo নেই)
+   573→- src/hooks/use-hardware.ts (নতুন): GET /api/hardware → HardwareManagerResponse; useState/useEffect, মাউন্টে অটো-লোড + ম্যানুয়াল refresh; expose { data, loading, error, refresh }; !json.profile শেপ-মিসম্যাচে বাংলা এরর-স্টেট (ক্র্যাশ-নিরাপদ)
+   574→- src/components/studio/hardware-panel.tsx (নতুন, 'use client'): 'হার্ডওয়্যার-পরিমাপ ও মডেল-রায়' — সেকশন A: ৬টি প্রোফাইল-কার্ড (CPU কোর+মডেল, RAM মোট/খালি, ডিস্ক, GPU note, FFmpeg/ffprobe, প্ল্যাটফর্ম+Node); সেকশন B: ৯-অবস্থার HardwareVerdict ব্যাজ (ready/ready_with_limits=emerald, needs_gpu/needs_more_ram/needs_model_download=stone, license_review_required/provider_rate_limited/integration_incomplete/quality_not_verified=amber) + বাংলা কারণ + বিকল্প-পথ; max-h-96 পাতলা কাস্টম স্ক্রলবার (ম্যাট্রিক্স-তালিকার মতো); সৎ ফুটার 'GPU নেই মানে স্থায়ীভাবে নিষ্ক্রিয় নয়…' + probedAt; loading=স্কেলিটন, error=ইনলাইন+আবার
+   575→- src/hooks/use-benchmark.ts (নতুন): GET /api/benchmark/tts → { current, latest }; পোলিং প্রতি ২.৫সে কেবল current?.status==='running' হলে (নীরব-মোডে, loading-ফ্লিকার নেই); start(scope)=POST {scope} — ৪০৯/ব্যর্থতায় বাংলা বার্তা রিটার্ন (বডির error/message থাকলে তা-ই), cancel()=DELETE; expose { current, latest, starting, start, cancel, loading, error, refresh }
+   576→- src/components/studio/benchmark-panel.tsx (নতুন, 'use client'): 'বাংলা TTS মান-যাচাই ল্যাব (৬০ বাক্যের বেঞ্চমার্ক)' — স্থায়ী amber সৎ-ব্যানার ('কোনো কণ্ঠই বাংলা-প্রশিন্নত নয়…মানব-শ্রবণ বাধ্যতামূলক'); 'দ্রুত প্রোব (৮ বাক্য)'/'পূর্ণ বেঞ্চমার্ক (৬০ বাক্য)' (running-এ ডিজেইবল+স্পিনার) + 'বাতিল করুন' + রেট-লিমিট-নোট; চলমান রানে done/total+% বার (emerald Progress) + চলতি শ্রেণি; সারসংক্ষেপ-কার্ড (পাস emerald/সতর্কতা amber/ব্যর্থ red/স্কিপ stone/ত্রুটি red) + বড় 'মানব-শ্রবণ যাচাই বাকি' amber ব্যাজ + honestNote + শুরু/শেষ সময়; ফলাফল-সারণী ৮-কলাম (# / শ্রেণি-ব্যাজ / বাক্য truncate+title / কণ্ঠ / রায়-ব্যাজ / দৈর্ঘ্য সে. / নীরবতা % / <audio controls h-8>) — max-h-96 overflow-y-auto পাতলা স্ক্রলবার + min-w-[52rem] টেবিল; সারি-ক্লিকে প্রসারণ (মূল+নর্মালাইজড বাক্য, সব নোট, ASR-ট্রান্সক্রিপ্ট + 'ASR-উপদেশ মাত্র — বাংলা ASR দুর্বল'); ব্যর্থ/বাতিল রানে সৎ-নোট; খালি-স্টেট (কী করে + ৬ শ্রেণির চিপ + 'প্রথমবার দ্রুত প্রোব চালিয়ে দেখুন'); GET-ব্যর্থতায় প্যানেল-শেল বজায় + ইনলাইন এরর+আবার (ক্র্যাশ-নিরাপদ)
+   577→- registry-view.tsx (সম্পাদনা, additive): (a) প্রসারিত ম্যাট্রিক্স-সারির বিশ্লেষণে 'গুণমান:' লাইন + QualityBadge + legend-টেক্সট; (b) ModelEntryCard-এ qualityStatus থাকলে QualityBadge চিপ (hasDims-এ qualityStatus যুক্ত); (c) ম্যাট্রিক্স-হেডারের নিচে ৫-মাত্রার রায়ের ঘোষণা-লাইন; প্যানেল-বিন্যাস: ম্যাট্রিক্স → BenchmarkPanel → HardwarePanel → SystemPanel
+   578→- studio-view.tsx (সম্পাদনা, additive): StudioMode-এ extraNote? ফিল্ড; শুধু TTS ('টেক্সট-টু-স্পিচ') মোড-কার্ডে amber লাইন 'বাংলা মান-যাচাই: বেঞ্চমার্ক-ল্যাবে (রেজিস্ট্রি ভিউ)' (মোড-নোটের একই স্টাইলে, কার্ড-কাঠামো অপরিবর্তিত)
+   579→- guide-view.tsx (সম্পাদনা, minimal): DoD-নোটের নিচে এক লাইন — 'পাঁচ-মাত্রার স্ট্যাটাস (লাইসেন্স/প্রোভাইডার/ইন্টিগ্রেশন/রানটাইম/গুণমান) + বাংলা TTS বেঞ্চমার্ক-ল্যাব (রেজিস্ট্রি ভিউ)।'
+   580→- যাচাই: bunx tsc --noEmit → src/ এ ০ এরর (৮টি এরর কেবল অন্য এজেন্টদের ফোল্ডারে: examples/, scripts/gen-feature-matrix.ts, skills/, tmp-task2d/ — স্পর্শ করা হয়নি); bun run lint + ফাইল-টার্গেটেড eslint → পরিষ্কার; agent-browser (headless) দিয়ে রেজিস্ট্রি/স্টুডিও/গাইড ভিউ লাইভ-যাচাই — সব নতুন স্ট্রিং রেন্ডার, প্যানেল-ক্রম সঠিক, console/page error নেই
+   581→- চুক্তি-সমীক্ষা: /api/hardware কাজের মাঝে ল্যান্ড করেছে (S8-2b) — HardwareManagerResponse-শেপ হুবহু মিলে যায় (profile+assessments+probedAt, ২৪ রায়); /api/availability-র ২৩ সারিতে quality + legend-এ quality_* কী — ম্যাট্রিক্স-লাইন লাইভ কাজ করছে; /api/benchmark/tts এই মুহূর্তে ৪০৪ (S8-2c সমান্তরাল) — প্যানেল সৎ-ব্যানারসহ ইনলাইন এরর+আবার দেখায়, ক্র্যাশ করে না (ঠিক যেমন চাওয়া হয়েছিল)
+   582→Stage Summary:
+   583→- নতুন: src/hooks/use-hardware.ts, src/hooks/use-benchmark.ts, src/components/studio/hardware-panel.tsx, src/components/studio/benchmark-panel.tsx
+   584→- সম্পাদনা: availability-badges.tsx (QUALITY_META+QualityBadge), registry-view.tsx (গুণমান-মাত্রা + কার্ড-চিপ + ৫-মাত্রা-ঘোষণা + প্যানেল-বসানো: ম্যাট্রিক্স→বেঞ্চমার্ক-ল্যাব→হার্ডওয়্যার), studio-view.tsx (TTS-কার্ডে amber মান-যাচাই-লাইন), guide-view.tsx (এক লাইন)
+   585→- tsc: src/ ০ এরর; lint: পরিষ্কার; agent-browser লাইভ-যাচাই পাস; সব রং emerald/amber/stone/red টোন, dark-mode ভ্যারিয়েন্টসহ, মোবাইল-ফার্স্ট (টেবিল min-w + অভিক্ষীর্ণ-স্ক্রল, প্যানেল স্ট্যাক)
+   586→
+   587→---
+   588→Task ID: S8-2b
+   589→Agent: subagent (backend infra)
+   590→Task: হার্ডওয়্যার-গেট + /api/hardware (§১০) + TTS ডিস্ক-ক্যাশ/in-flight ডিডুপ (§১১) + রেজিস্ট্রিতে qualityStatus/ACE-Step/YuE-বিভাজন/MMS-bn-TTS + prisma
+   591→Work Log:
+   592→- নতুন src/lib/agent/hardware-gate.ts: ModelHardwareRequirement + MODEL_HARDWARE_REQUIREMENTS (২৪ এন্ট্রি — ১০ cloud_sdk, ৫ local_engine, ৯ local_model; রেজিস্ট্রি-কী-এর সাথে ১:১ মিল যাচাইকৃত) + computeHardwareVerdicts(profile) — §১০-প্রাধিকার: cloud_sdk→ready (কারণ: বাস্তব-স্বাস্থ্য /api/system-এ) · local_engine→RAM-সীমা· local_model→needs_gpu / needs_more_ram / needs_model_download; mms-tts-ben বিশেষ-কারণ (Python+torch রানটাইম-অনুপস্থিতি, CPU-সম্ভাব্যতা ব্যবহারকারীর মেশিনে); প্রতিটি অবরুদ্ধ মডেলে ম্যাট্রিক্স-সামঞ্জস্যপূর্ণ সৎ বাংলা fallback; রায়ে কখনোই "লাইসেন্স-অবরুদ্ধ" নয় (ধূমে ০-লিচ যাচাইকৃত)
+   593→- নতুন src/app/api/hardware/route.ts (GET): measureHardware() + computeHardwareVerdicts() → HardwareManagerResponse; প্রোব-ফল globalThis-এ ৬০ সে. TTL ক্যাশ + সমান্তরাল-কলে একটিই প্রোব (in-flight promise-যোগ); কোনো স্বাস্থ্য-মডেল API-কল নেই (হালকা রুট); probedAt = ক্যাশে-প্রোবের ISO-সময়
+   594→- নতুন src/lib/agent/tts-cache.ts (§১১): কী = sha1(`${voice}|${speed.toFixed(2)}|${text}`); ডিস্ক-অবস্থান storage/tts-cache/<২>/<২>/<hash>.<ext> + <hash>.meta.json সাইডকার {voice,speed,mimeType,ext,createdAt,chars}; HMR-নিরাপদ globalThis stats {hits,misses,inFlight} → ttsCacheStats(); cachedSynthesizeSpeech — synthesizeSpeech-এর সমান চুক্তি, ক্রম: in-flight-ম্যাপে যোগ → ডিস্ক-ক্যাশ → API+best-effort ক্যাশ-লেখা (লেখা-ব্যর্থতায় কল কখনো ব্যর্থ নয়); ইমপোর্ট-চক্র-নেই (sdk-helpers অপরিবর্তিত, tts-cache একমুখী ইমপোর্ট করে)
+   595→- কলার-সুইচ: production/pipelines/audio.ts (২ কল-সাইট), short_film.ts (২), motion_video.ts (১) এখন cachedSynthesizeSpeech ব্যবহার করে; স্বাস্থ্য-পরীক্ষা (system-info.ts) ও ভাষা-নিয়ন্ত্রক (language_controller.ts — অন্য এজেন্টের ফাইল, স্পর্শ করা হয়নি) খাঁটি synthesizeSpeech-এ থাকল — স্বাস্থ্য-প্রোব প্রকৃত API ছোঁবে, এটিই সৎ; language_controller-এর ক্যাশে-যাওয়া মূল-এজেন্ট ইন্টিগ্রেশনের জন্য রাখা
+   596→- model-registry-data.ts: SeedModelEntry-তে qualityStatus?: QualityStatus + ২৪ প্রতিটি এন্ট্রিতে মান — ক্লাউড TTS/ASR = quality_not_verified (ইংরেজি যন্ত্র-যাচাইকৃত/বাংলা অ-যাচাইকৃত — কোড-টীকায় ব্যাখ্যা), বাকি ৮ ক্লাউড = quality_machine_checked, প্রাসিডিউরাল ২ ইঞ্জিন = quality_not_verified (ফাংশনাল ধূম ≠ গুণমান), ffmpeg/sharp/noto = quality_not_applicable, স্তর-৩ সবাই = quality_not_verified; 'singing-tts' প্রতিস্থাপিত → 'ace-step' (প্রার্থী #১, licenseStatus needs_review — রিপো Apache-2.0 দেখা গেছে কিন্তু checkpoint/dependency-শর্ত যাচাই বাকি, ব্যবহারকারীর নির্দেশনা; sortOrder 75) + 'yue' (প্রার্থী #২, allowed_noncommercial, sortOrder 76) — উভয়ে errorReason-এ লাইসেন্স/হার্ডওয়্যার/API-মাত্রা পৃথক; নতুন 'mms-tts-ben' (লোকাল বাংলা-TTS shortlist, §৪; needs_model_download-কারণ, sortOrder 36)
+   597→- prisma/schema.prisma: ModelEntry-এ qualityStatus String? → bun run db:push সফল (Prisma Client রিজেনারেটসহ); registry/route.ts: upsert-ডেটা + ModelEntryView-ম্যাপিং-য়ে qualityStatus; seed-এ বাদ-পড়া key (পুরোনো singing-tts) deleteMany(notIn) — নইলে GET অবচিত পুরোনো এন্ট্রি ফিরিত
+   598→- ধূম-যাচাই (সাময়িক স্ক্রিপ্ট, পরে মুছে ফেলা + storage/tts-cache পরীক্ষা-এন্ট্রিসহ পরিষ্কার): (১) hardware-gate ১৬/১৬ প্রত্যাশিত রায় (২৪ রায়, ০ লাইসেন্স-লিচ; কল্পিত ১৬GB+GPU মেশিনে musicgen/demucs/mms → needs_model_download সঠিক); (২) ক্যাশ-পড়া-পথ: ডিস্ক-হিট বাফার-অভিন্ন, hits+১/misses-একই, speed-ভেদে ভিন্ন কী; (৩) preload-fake-SDK-তে ক্যাশ-লেখা+ডিডুপ: ৩ সমান্তরাল কল → ১টিই API-কল, পুনঃকল ডিস্ক-থেকে, stats নকশানুযায়ী নির্ভুল; (৪) ensureSeeded-সিমুলেশন সরাসরি DB-তে: ২৪ সারি, singing-tts-প্রান্তিকরণ ✓, qualityStatus-মান সব সঠিক; প্রকৃত API-পথের TTS-ধূম সরাসরি করতে গেলে লাইভ ৪২৯ (স্যান্ডবক্স-ব্যাপী) — withRetry সঠিকভাবে TEMPORARILY_UNAVAILABLE-এ শেষ, এটিই §১১-এর প্রেরণা
+   599→- যাচাই: bunx tsc --noEmit → src/-এ ০ এরর (পুরোনো অ-সংশ্লিষ্ট: examples/, skills/, tmp-task2d/, scripts/gen-feature-matrix.ts — শেষোক্তটি S8-2a-এর ফাইল, ImportMeta.dir-এ টাইপ-এরর, স্পর্শ করিনি); bun run lint (পুরো প্রজেক্ট) → ০; dev-server/build চালানো হয়নি; কোনো স্থায়ী টেস্ট-ফাইল রাখা হয়নি
+   600→
+   601→Stage Summary:
+   602→- /api/hardware আকৃতি: { profile: HardwareReport, assessments: [{modelKey,name,verdict,reason,requires:{minRamGb?,minVramGb?,gpuRequired,localWeights?},fallback?}] ×২৪, probedAt } — ৬০ সে. TTL ক্যাশ, ৪ রায়-ধরন বাস্তবে আসে (ready ১৫ · needs_gpu ৭ · needs_more_ram ১ · needs_model_download ১ — এই স্যান্ডবক্সে)
+   603→- tts-cache: cachedSynthesizeSpeech(text,voice,speed)→SpeechResult; ttsCacheStats()→{hits,misses,inFlight} — hits=ডিস্ক-হিট, misses=প্রকৃত API-কল, inFlight=চলমান অনন্য কাজ (ডিডুপ-যোগদানকারী কাউন্ট করে না); পাইপলাইন-কলার ৩টি সুইচড, স্বাস্থ্য/ভাষা-নিয়ন্ত্রক খাঁটি পথে
+   604→- রেজিস্ট্রি: ২৪ এন্ট্রি (ace-step+yue বিভাজন, mms-tts-ben নতুন), প্রতিটিতে পঞ্চম মাত্রা qualityStatus (machine_checked ৮ · not_verified ১৩ · not_applicable ৩), DB-স্কিমা+রুট-ম্যাপিং সম্পূর্ণ
+   605→- মূল-এজেন্টের জন্য রাখা: language_controller.ts-এর cachedSynthesizeSpeech-সুইচ, /api/hardware-এর ফ্রন্টএন্ড-প্যানেল সংযোগ (S8-2c-এর hardware-panel), ttsCacheStats-এর কোনো API/UI-উন্মোচন (এখন শুধু এক্সপোর্ট), availability-matrix-এর cap-full-song modelKey 'ace-step' এখন রেজিস্ট্রি-সারির সাথে মেলে
+   606→
+   607→---
+   608→Task ID: S8-2c
+   609→Agent: subagent (bn-tts benchmark) — টাইম-আউটে বিঘ্নিত; মূল-এজেন্ট যাচাঈ ও সম্পূর্ণ করেছে
+   610→Task: বাংলা TTS মান-যাচাই বেঞ্চমার্ক সাবসিস্টেম (পরিকল্পনা §৪ — তৃতীয় ধাপ)
+   611→
+   612→Work Log:
+   613→- সাব-এজেন্ট টাইম-আউটের আগে সব ফাইল লিখে ফেলেছিল; মূল-এজেন্ট প্রতিটি ফাইল পড়ে ও ধূমপরীক্ষা চালিয়ে সম্পূর্ণতা নিশ্চিত করেছে
+   614→- নতুন src/lib/agent/audio/bn-text-normalizer.ts: NFC-ইউনিকোড, ইমোজি/মার্কডাউন পরিষ্কার, বাংলা+ASCII সংখ্যা→শব্দ (০–৯৯,৯৯,৯৯,৯৯৯; কুড়ি-ব্যবস্থা, হাজার/লাখ/কোটি, দশমিক), তারিখ (ডিডি/এমএম/বছর, ISO YYYY-MM-DD), সময় (H:MM → 'নয় টা ত্রিশ'), %→শতাংশ, punctuation→বিরতি-সমন্বয়, ইংরেজি শব্দ→ধ্বন্যাত্মক বানান, নিরাপত্তা-শর্ত (৪০%+ বাংলা-অক্ষর হারালে বাতিল)
+   615→- নতুন src/lib/agent/audio/bn-pronunciation-dictionary.ts: ৫০ ইংরেজি শব্দের ধ্বন্যাত্মক-রূপ (PHONETIC-ONLY নীতি) + ১৭টি সংরক্ষণাত্মক বাংলা উচ্চারণ-ওভাররাইড (প্রতিটিতে কারণ-কমেন্ট)
+   616→- নতুন src/lib/agent/audio/bn-benchmark-suite.ts: ঠিক ৬০ বাক্য (৬ শ্রেণি × ১০: কথোপকথন/নাটকীয়/আবেগ/বাংলা-ইংরেজি মিশ্র/সংখ্যা-তারিখ/গল্পপাঠ), QUICK_BENCHMARK_IDS ৮টি, numbers_dates-এ expected-ফিল্ডসহ
+   617→- নতুন src/lib/agent/audio/tts-benchmark-runner.ts: ব্যাকগ্রাউন্ড-জব (globalThis-HMR-নিরাপদ), jam/douji পর্যায়ক্রম, প্রতি বাক্যে নর্মালাইজ→TTS→অডিও-যন্ত্র-পরিমাপ (দৈর্ঘ্য/নীরবতা-অনুপাত/ক্লিপিং/নীরব-পরিসর)→রায় (pass/warn/fail/skipped_rate_limited/error), প্রথম ৩ সফল বাক্যে উপদেশমূলক ASR (bnCharRatio), ৪-পরপর-৪২৯-এ ৪৫ সে. বিরতি (সর্বোচ্চ ২, বাতিল-সচেতন), প্রতি বাক্যে report.json স্ন্যাপশট, রান-ডিরেক্টরি অডিওসহ সংরক্ষিত (মানব-শ্রবণের জন্য), latest.json পয়েন্টার; 'pass'-এ সর্বদা 'মানব-শ্রবণে যাচাই বাকি' নোট
+   618→- নতুন src/app/api/benchmark/tts/route.ts (GET/POST/DELETE — ২০২/৪০৯/৪০০) ও .../audio/route.ts (run/file কঠোর regex-যাচায়িত — path-traversal অসম্ভব)
+   619→- language_controller.ts-এ সংযোগ: bn-হলে synthesizeVerifiedSpeech-এ নর্মালাইজেশন (ভাষা-শনাক্তকরণ মূল স্ক্রিপ্টেই); যাচাই-নোটে সমন্বয়-সারাংশ
+   620→- মূল-এজেন্ট ইন্টিগ্রেশন (S8-3): language_controller + benchmark-runner এখন cachedSynthesizeSpeech (§১১ ডিস্ক-ক্যাশ/ডিডুপ-পথ; পুনঃরানে API-খরচ নয়, ক্যাশ-হিটে একই অডিও=একই রায় — সৎ)
+   621→- ধূমপরীক্ষা (bun -e): ২৫→পঁচিশ ✓ ১৫/০১/২০২৬→পনেরো জানুয়ারি দুই হাজার ছাব্বিশ ✓ ৯:৩০→নয় টা ত্রিশ ✓ ১২৫০→বারোশো পঞ্চাশ ✓ ১৫%→পনেরো শতাংশ ✓ লাখ/কোটি ✓ phone→ফোন ✓ MP4 ল্যাটিন-থাকা ✓ ISO-তারিখ ✓ ...→। ✓; স্যুট: ৬০ বাক্য/১০×৬ শ্রেণি/অনন্য আইডি/৮ কুইক-আইডি ✓; /api/benchmark/tts GET {current:null,latest:null} ✓
+   622→- বাস্তব-সীমা: TTS API বর্তমানে স্যান্ডবক্স-ব্যাপী ৪২৯-উইন্ডোতে — রানার প্রতি বাক্যে সৎ skipped_rate_limited রেকর্ড করে (কোনো মিথ্যা সফলতা নয়); উইন্ডো রিসেট হলে UI থেকে দ্রুত-প্রোব চালানো যাবে
+   623→
+   624→Stage Summary:
+   625→- বেঞ্চমার্ক সাবসিস্টেম সম্পূর্ণ: নর্মালাইজার+অভিধান+৬০ বাক্য+রানার+২টি API; রায়-নীতি কেবল যন্ত্র-পরীক্ষার ভিত্তিতে — 'মানব-শ্রবণ বাকি' সর্বদা ঘোষিত
+   626→- bn-TTS-এর প্রকৃত উন্নতি এখনই চালু: সব bn কণ্ঠ-তৈরির পথে নর্মালাইজেশন (সংখ্যা/তারিখ/সময়/ইংরেজি-শব্দ ঠিকমতো বলা)
+   627→- বাকি: ৪২৯-উইন্ডো রিসেটের পর পূর্ণ ৬০-বাক্যের বাস্তব রান + মানব-শ্রবণ পর্যালোচনা (এটি ব্যবহারকারীর হাতে)
+   628→
+   629→---
+   630→Task ID: S8-3/4/5 (ইন্টিগ্রেশন + যাচাই + রিপোর্ট)
+   631→Agent: main
+   632→Task: S8-২ সমান্তরাল ফলাফলের ইন্টিগ্রেশন, অডিট-সংশোধন, tsc/lint/ব্রাউজার-E2E ও চূড়ান্ত রিপোর্ট
+   633→
+   634→Work Log:
+   635→- নতুন src/lib/agent/retry.ts: §১০-র পুনঃচেষ্টা-নীতি sdk-helpers থেকে বিশুদ্ধ মূলে সরানো (llm.ts-ও ব্যবহার করতে পারে, import-cycle নেই); sdk-helpers পুনঃ-রপ্তানি করে — সব পুরনো ইমপোর্টার অক্ষত
+   636→- llm.ts chatComplete: পুরনো নির্দিষ্ট-বিরতি রিট্রাই → withRetry (Retry-After-সচেতন, full-jitter, ৪ চেষ্টা; ৪২৯-নিঃশেষে TemporarilyUnavailableError) — অডিট-ফাইন্ডিং #৩ সমাধান
+   637→- sdk-helpers chatJson: নেটওয়ার্ক-কল withRetry-তে (JSON-পার্স-পুনঃচেষ্টা-লুপ অপরিবর্তিত)
+   638→- registry.ts transcribe_audio (অডিট-ফাইন্ডিং #২): সরাসরি asr.create-র বদলে transcribeBuffer (২৮-সে. চাঙ্কিং + ৪২৯-ব্যাকঅফ) + timeout ১৮০→৩০০ সে.
+   639→- language_controller + tts-benchmark-runner → cachedSynthesizeSpeech-এ সুইচ (S8-2b-এর রেখে-যাওয়া কাজ; পুনঃরানে API-খরচ নয়)
+   640→- scripts/gen-feature-matrix.ts: import.meta.dir → fileURLToPath (tsc-সামঞ্জস্য); পুনর্জেনারেট সফল (৪১ টুল + ২৪ মডেল + ২৩ সারি)
+   641→- /api/system GET-তে ttsCache পরিসংখ্যান {hits, misses, inFlight}
+   642→- tsc: src/-এ ০ এরর; lint: PASS
+   643→- ব্রাউজার-E2E (agent-browser): হোম ✓ কনসোল-এরর নেই ✓; রেজিস্ট্রি-ভিউ: ৫-মাত্রার ঘোষণা + ২৩ সারি + ACE-Step/YuE ভাগ + প্রসারিত সারিতে গুণমান-মাত্রা ✓; বেঞ্চমার্ক-ল্যাব: দ্রুত-প্রোব চালু → running ০/৮ → UI অগ্রগতি ১/৮ + skipped_rate_limited সৎ-প্রদর্শন + রেট-লিমিট-নোট → বাতিল → cancelled (২ স্কিপ, সারসংক্ষেপ humanListeningPending:true, latest.json বাতিল-রানে লেখা হয়নি — সঠিক) → প্রোব-বোতাম পুনরায় সক্রিয় ✓; হার্ডওয়্যার-প্যানেল: ২৪ রায় বাংলা-লেবেলে ✓; স্টুডিও TTS-কার্ডে নতুন amber লাইন ✓; গাইডে পাঁচ-মাত্রা+ল্যাব-উল্লেখ ✓; মোবাইল ৩৯০×৮৪৪ আড়াআড়ি-স্ক্রল নেই, ফুটার নিচে ✓; পৃষ্ঠা-এরর নেই ✓
+   644→- বাস্তব-সীমার সৎ দলিল: TTS API পুরো E2E-চলাকালীন স্যান্ডবক্স-ব্যাপী ৪২৯-উইন্ডোতে ছিল — তাই 'pass' রায় ব্রাউজারে প্রদর্শিত হয়নি; রানারের সৎ-স্কিপ পথ বাস্তবে প্রমাণিত হয়েছে। উইন্ডো রিসেটের পর UI থেকে দ্রুত-প্রোব চালালে pass/warn-ফলাফল আসবে (ডিস্ক-ক্যাশের কারণে পুনঃরান বিনা-খরচে)
+   645→
+   646→Stage Summary:
+   647→- ব্যবহারকারীর ১৫-ধাপী পরিকল্পনার Phase-1 (অডিট+স্থিতিশীলতা) সম্পূর্ণ: docs/AUDIT_REPORT.md + docs/FEATURE_MATRIX.json + docs/KNOWN_BUGS.md + রিজেনারেশন-স্ক্রিপ্ট
+   648→- Phase-2-এর অবকাঠামো সম্পূর্ণ: ৫-মাত্রিক স্ট্যাটাস (quality_status সহ), হার্ডওয়্যার-সচেতন মডেল-ম্যানেজার (/api/hardware, ৯-অবস্থার রায়), বাংলা TTS বেঞ্চমার্ক-ল্যাব (৬০ বাক্য + নর্মালাইজার + উচ্চারণ-অভিধান + ASR-উপদেশ + মানব-শ্রবণ-গেট), §১১-নির্ভরযোগ্যতা (retry.ts-এর একক নীতি, TTS ডিস্ক-ক্যাশ/ডিডুপ, /api/system-এ ক্যাশ-পরিসংখ্যান)
+   649→- রেজিস্ট্রি: ২৪ মডেল (ACE-Step #১ needs_review-ওয়েট-শর্তসহ, YuE #২ allowed_noncommercial, MMS-bn-TTS লোকাল-shortlist নতুন) — কেউই লাইসেন্স-অবরুদ্ধ নয়
+   650→- ব্যবহারকারীর জন্য বাকি: ৪২৯-উইন্ডো রিসেটে পূর্ণ বেঞ্চমার্ক-রান + মানব-শ্রবণ পর্যালোচনা; GPU-সমৃদ্ধ পরিবেশে ACE-Step/YuE/MMS-এর ইন্টিগ্রেশন (Phase ৩–৬)
+   651→

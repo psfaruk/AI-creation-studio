@@ -4,6 +4,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { measureHardware, runToolHealthChecks } from '@/lib/system-info';
 import { ttsCacheStats } from '@/lib/agent/tts-cache';
+import { llmCacheStats } from '@/lib/agent/llm';
+import { coordinatorStatus } from '@/lib/agent/rate-limit-coordinator';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
 
 export const runtime = 'nodejs';
@@ -21,6 +23,10 @@ export async function GET() {
       tools,
       // §১১: TTS ডিস্ক-ক্যাশ/ডিডুপ-পরিসংখ্যান (hits=ক্যাশ-থেকে, misses=প্রকৃত API-কল)
       ttsCache: ttsCacheStats(),
+      // S9: LLM-উত্তরের ডিস্ক-ক্যাশ পরিসংখ্যান
+      llmCache: llmCacheStats(),
+      // S9: রেট-লিমিট-কোঅর্ডিনেটরের সৎ-স্ট্যাটাস (কোন চ্যানেল কতক্ষণ ব্লকড)
+      rateLimits: coordinatorStatus(),
       checkedAt: new Date().toISOString(),
       note: 'স্বাস্থ্য-চেক আসল মাইক্রো-কল দিয়ে (LLM/TTS) — ব্যয়বহুল মডেল (ছবি/ভিডিও) রেজিস্ট্রি-স্ট্যাটাস থেকে।',
     });

@@ -1,0 +1,873 @@
+     1→// ============================================================
+     2→// SHARED CONTRACT — Agentic AI Creative Studio
+     3→// এই ফাইলটি frontend ও backend উভয়ের জন্য একমাত্র সত্যের উৎস।
+     4→// কোনো এজেন্ট পক্ষ চুক্তি ছাড়া এটি পরিবর্তন করবে না।
+     5→// ============================================================
+     6→
+     7→export type ToolCategory =
+     8→  | 'research'
+     9→  | 'media'
+    10→  | 'vision'
+    11→  | 'audio'
+    12→  | 'memory'
+    13→  | 'image_studio'
+    14→  | 'audio_studio'
+    15→  | 'video_studio'
+    16→  | 'production';
+    17→
+    18→export interface ToolInfo {
+    19→  name: string;
+    20→  title: string; // Bengali display title
+    21→  description: string; // Bengali short description
+    22→  icon: string; // lucide icon name
+    23→  category: ToolCategory;
+    24→}
+    25→
+    26→// ------------------------------------------------------------
+    27→// Tool Catalog — সম্পূর্ণ তালিকা (মাস্টার প্ল্যানের সব স্টুডিও)
+    28→// ------------------------------------------------------------
+    29→
+    30→export const TOOL_CATALOG: ToolInfo[] = [
+    31→  // ---- মূল এজেন্ট টুল (আগের ৮টি) ----
+    32→  {
+    33→    name: 'web_search',
+    34→    title: 'ওয়েব সার্চ',
+    35→    description: 'ইন্টারনেট থেকে সর্বশেষ তথ্য খুঁজে আনে',
+    36→    icon: 'Globe',
+    37→    category: 'research',
+    38→  },
+    39→  {
+    40→    name: 'read_web_page',
+    41→    title: 'ওয়েব পেজ পড়া',
+    42→    description: 'নির্দিষ্ট URL-এর পুরো বিষয়বস্তু পড়ে বোঝে',
+    43→    icon: 'FileText',
+    44→    category: 'research',
+    45→  },
+    46→  {
+    47→    name: 'generate_image',
+    48→    title: 'ছবি তৈরি',
+    49→    description: 'টেক্সট বর্ণনা থেকে AI দিয়ে নতুন ছবি আঁকে',
+    50→    icon: 'ImagePlus',
+    51→    category: 'media',
+    52→  },
+    53→  {
+    54→    name: 'search_images',
+    55→    title: 'ছবি খোঁজা',
+    56→    description: 'ওয়েব থেকে প্রাসঙ্গিক বাস্তব ছবি খুঁজে আনে',
+    57→    icon: 'Images',
+    58→    category: 'media',
+    59→  },
+    60→  {
+    61→    name: 'analyze_image',
+    62→    title: 'ছবি বিশ্লেষণ',
+    63→    description: 'ছবি দেখে প্রশ্নের উত্তর দেয়',
+    64→    icon: 'ScanEye',
+    65→    category: 'vision',
+    66→  },
+    67→  {
+    68→    name: 'text_to_speech',
+    69→    title: 'কণ্ঠ তৈরি (TTS)',
+    70→    description: 'লেখাকে স্বাভাবিক কণ্ঠের অডিওতে রূপ দেয়',
+    71→    icon: 'AudioLines',
+    72→    category: 'audio',
+    73→  },
+    74→  {
+    75→    name: 'speech_synthesis',
+    76→    title: 'ভাষা-নিশ্চিত কণ্ঠ (যাচাইসহ)',
+    77→    description: 'ভাষা শনাক্ত করে সঠিক কণ্ঠে TTS + ASR ব্যাক-চেক দিয়ে যাচাই করে',
+    78→    icon: 'Languages',
+    79→    category: 'audio',
+    80→  },
+    81→  {
+    82→    name: 'analyze_audio',
+    83→    title: 'অডিও বিশ্লেষণ',
+    84→    description: 'গান/অডিওর বিট-মার্কার, এনার্জি-বিভাগ ও টেম্পো বের করে',
+    85→    icon: 'AudioWaveform',
+    86→    category: 'audio_studio',
+    87→  },
+    88→  {
+    89→    name: 'transcribe_audio',
+    90→    title: 'অডিও লিপিবদ্ধকরণ',
+    91→    description: 'অডিও শুনে লেখিত রূপে রূপান্তর করে',
+    92→    icon: 'Mic',
+    93→    category: 'audio',
+    94→  },
+    95→  {
+    96→    name: 'search_conversations',
+    97→    title: 'স্মৃতি খোঁজা',
+    98→    description: 'পুরনো কথোপকথন থেকে প্রাসঙ্গিক তথ্য খুঁজে আনে',
+    99→    icon: 'History',
+   100→    category: 'memory',
+   101→  },
+   102→
+   103→  // ---- Image Studio (মাস্টার প্ল্যান §৩ — ১২টি প্রয়োজনের সবকটি) ----
+   104→  {
+   105→    name: 'edit_image',
+   106→    title: 'ছবি সম্পাদনা',
+   107→    description: 'আপলোড করা ছবিতে স্বাভাবিক ভাষার নির্দেশে পরিবর্তন আনে',
+   108→    icon: 'Paintbrush',
+   109→    category: 'image_studio',
+   110→  },
+   111→  {
+   112→    name: 'inpaint_image',
+   113→    title: 'নির্দিষ্ট অংশ পূরণ',
+   114→    description: 'ছবির নির্দিষ্ট অংশ বর্ণনা অনুযায়ী নতুন করে আঁকে (generative fill)',
+   115→    icon: 'Brush',
+   116→    category: 'image_studio',
+   117→  },
+   118→  {
+   119→    name: 'remove_background',
+   120→    title: 'ব্যাকগ্রাউন্ড পরিবর্তন',
+   121→    description: 'পটভূমি সরিয়ে ফেলে বা নতুন পটভূমি বসায়',
+   122→    icon: 'Scissors',
+   123→    category: 'image_studio',
+   124→  },
+   125→  {
+   126→    name: 'remove_object',
+   127→    title: 'বস্তু অপসারণ',
+   128→    description: 'ছবি থেকে অবাঞ্ছিত বস্তু মুছে ফেলে',
+   129→    icon: 'Eraser',
+   130→    category: 'image_studio',
+   131→  },
+   132→  {
+   133→    name: 'restyle_image',
+   134→    title: 'স্টাইল রূপান্তর',
+   135→    description: 'ছবিকে নতুন শৈলীতে রূপান্তর করে (image-to-image)',
+   136→    icon: 'Wand2',
+   137→    category: 'image_studio',
+   138→  },
+   139→  {
+   140→    name: 'enhance_image',
+   141→    title: 'ছবি উন্নতকরণ',
+   142→    description: 'আপস্কেল, শার্পেন ও ডিনয়েজ করে ছবির মান বাড়ায়',
+   143→    icon: 'ZoomIn',
+   144→    category: 'image_studio',
+   145→  },
+   146→  {
+   147→    name: 'color_grade_image',
+   148→    title: 'রং সংশোধন',
+   149→    description: 'উজ্জ্বলতা, স্যাচুরেশন, হিউ ও কনট্রাস্ট নিয়ন্ত্রণ করে',
+   150→    icon: 'Palette',
+   151→    category: 'image_studio',
+   152→  },
+   153→  {
+   154→    name: 'transform_image',
+   155→    title: 'ক্রপ/রিসাইজ/ঘোরানো',
+   156→    description: 'ছবি ক্রপ, রিসাইজ, ঘোরানো, ফ্লিপ ও অনুপাত বদলায়',
+   157→    icon: 'Crop',
+   158→    category: 'image_studio',
+   159→  },
+   160→  {
+   161→    name: 'compose_text_image',
+   162→    title: 'টাইপোগ্রাফি/পোস্টার',
+   163→    description: 'ছবিতে বাংলা/ইংরেজি লেখা বসিয়ে পোস্টার, থাম্বনেইল, ব্যানার বানায়',
+   164→    icon: 'Type',
+   165→    category: 'image_studio',
+   166→  },
+   167→  {
+   168→    name: 'export_image',
+   169→    title: 'ফরম্যাট রপ্তানি',
+   170→    description: 'PNG, JPEG বা WebP ফরম্যাটে মানসম্মত রপ্তানি করে',
+   171→    icon: 'FileOutput',
+   172→    category: 'image_studio',
+   173→  },
+   174→  {
+   175→    name: 'inspect_image',
+   176→    title: 'ছবির গুণমান পরীক্ষা',
+   177→    description: 'মাত্রা, ফরম্যাট, ঝাপসা ভাব ইত্যাদি পরীক্ষা করে রিপোর্ট দেয়',
+   178→    icon: 'ScanSearch',
+   179→    category: 'image_studio',
+   180→  },
+   181→
+   182→  // ---- Audio Studio (মাস্টার প্ল্যান §৪) ----
+   183→  {
+   184→    name: 'plan_music',
+   185→    title: 'গানের কাঠামো পরিকল্পনা',
+   186→    description: 'গানের কথা, সুরের ধরন, টেম্পো ও সেকশন-পরিকল্পনা তৈরি করে',
+   187→    icon: 'Music4',
+   188→    category: 'audio_studio',
+   189→  },
+   190→  {
+   191→    name: 'generate_instrumental',
+   192→    title: 'ইনস্ট্রুমেন্টাল (পরীক্ষামূলক)',
+   193→    description: 'মুড/টেম্পো-সচেতন প্রসিডিউরাল সংগীত-সংশ্লেষণ + বিট-মার্কার',
+   194→    icon: 'Piano',
+   195→    category: 'audio_studio',
+   196→  },
+   197→  {
+   198→    name: 'generate_singing',
+   199→    title: 'কণ্ঠসংগীত (ভবিষ্যৎ)',
+   200→    description:
+   201→      'গান-জেনারেশন মডেল (ACE-Step/YuE) — লাইসেন্স অ-বাণিজ্যিকে অনুমোদিত, কিন্তু GPU-হীন এই পরিবেশে ও SDK-API-তে চালু নয়',
+   202→    icon: 'MicVocal',
+   203→    category: 'audio_studio',
+   204→  },
+   205→  {
+   206→    name: 'separate_stems',
+   207→    title: 'স্টেম পৃথকীকরণ (ভবিষ্যৎ)',
+   208→    description:
+   209→      'কণ্ঠ/বাদ্য পৃথক করার মডেল (Demucs) — এই পরিবেশে মডেল-ইনস্টল/হার্ডওয়্যার-বাধায় চালু নয়',
+   210→    icon: 'Split',
+   211→    category: 'audio_studio',
+   212→  },
+   213→  {
+   214→    name: 'process_audio',
+   215→    title: 'অডিও সম্পাদনা',
+   216→    description: 'ট্রিম, জোড়া, ফেড, ভলিউম, নরমালাইজ, ইকুয়ালাইজ, কমপ্রেস, রিভার্ব, রূপান্তর',
+   217→    icon: 'SlidersHorizontal',
+   218→    category: 'audio_studio',
+   219→  },
+   220→  {
+   221→    name: 'mix_audio',
+   222→    title: 'অডিও মিক্সিং',
+   223→    description: 'একাধিক ট্র্যাক মিক্স করে (ভলিউম ব্যালেন্স, ডাকিং, ক্রসফেড)',
+   224→    icon: 'Blend',
+   225→    category: 'audio_studio',
+   226→  },
+   227→  {
+   228→    name: 'validate_audio',
+   229→    title: 'অডিও গুণমান পরীক্ষা',
+   230→    description: 'দৈর্ঘ্য, স্যাম্পল-রেট, পিক, ক্লিপিং, নীরবতা ও লাউডনেস যাচাই করে',
+   231→    icon: 'AudioWaveform',
+   232→    category: 'audio_studio',
+   233→  },
+   234→  {
+   235→    name: 'inspect_media',
+   236→    title: 'মিডিয়া পরিদর্শন',
+   237→    description: 'অডিও/ভিডিও ফাইলের মেটাডেটা (দৈর্ঘ্য, কোডেক, রেজোলিউশন) দেখায়',
+   238→    icon: 'FileSearch',
+   239→    category: 'audio_studio',
+   240→  },
+   241→
+   242→  // ---- Video Studio (মাস্টার প্ল্যান §৫) ----
+   243→  {
+   244→    name: 'plan_video',
+   245→    title: 'দৃশ্য-পরিকল্পনা',
+   246→    description: 'আইডিয়াকে দৃশ্য ও শট-তালিকায় ভাগ করে (ক্যামেরা, দৈর্ঘ্য, অভিনয়)',
+   247→    icon: 'Clapperboard',
+   248→    category: 'video_studio',
+   249→  },
+   250→  {
+   251→    name: 'generate_video',
+   252→    title: 'রিয়েল AI ভিডিও',
+   253→    description: 'CogVideoX-3 ডিফিউশন মডেলে লেখা থেকে প্রকৃত চলমান দৃশ্য',
+   254→    icon: 'Film',
+   255→    category: 'video_studio',
+   256→  },
+   257→  {
+   258→    name: 'image_to_video',
+   259→    title: 'ছবি → রিয়েল AI ভিডিও',
+   260→    description: 'রেফারেন্স ছবি থেকে CogVideoX-3 দিয়ে চলমান দৃশ্য তৈরি',
+   261→    icon: 'ImagePlay',
+   262→    category: 'video_studio',
+   263→  },
+   264→  {
+   265→    name: 'animate_image',
+   266→    title: 'ছবি থেকে ভিডিও',
+   267→    description: 'স্থির ছবিতে ক্যামেরা-মুভমেন্ট যোগ করে চলমান দৃশ্য বানায়',
+   268→    icon: 'ImagePlay',
+   269→    category: 'video_studio',
+   270→  },
+   271→  {
+   272→    name: 'process_video',
+   273→    title: 'ভিডিও সম্পাদনা',
+   274→    description: 'ট্রিম, জোড়া, স্পিড, ক্রপ, রেজোলিউশন, ট্রানজিশন ও অডিও সংযোজন',
+   275→    icon: 'ScissorsLineDashed',
+   276→    category: 'video_studio',
+   277→  },
+   278→  {
+   279→    name: 'enhance_video',
+   280→    title: 'ভিডিও উন্নতকরণ',
+   281→    description: 'কালার গ্রেডিং, শার্পেন, ডিনয়েজ ও স্ট্যাবিলাইজ করে',
+   282→    icon: 'Sparkle',
+   283→    category: 'video_studio',
+   284→  },
+   285→  {
+   286→    name: 'interpolate_video',
+   287→    title: 'ফ্রেম ইন্টারপোলেশন',
+   288→    description: 'ফ্রেম-রেট বাড়িয়ে মোশন মসৃণ করে (minterpolate)',
+   289→    icon: 'Gauge',
+   290→    category: 'video_studio',
+   291→  },
+   292→  {
+   293→    name: 'generate_subtitles',
+   294→    title: 'সাবটাইটেল তৈরি',
+   295→    description: 'স্ক্রিপ্ট/সংলাপ থেকে SRT সাবটাইটেল ফাইল বানায়',
+   296→    icon: 'Captions',
+   297→    category: 'video_studio',
+   298→  },
+   299→  {
+   300→    name: 'validate_video',
+   301→    title: 'ভিডিও গুণমান পরীক্ষা',
+   302→    description: 'দৈর্ঘ্য, রেজোলিউশন, FPS, স্ট্রিম ও অডিও-সিঙ্ক যাচাই করে',
+   303→    icon: 'BadgeCheck',
+   304→    category: 'video_studio',
+   305→  },
+   306→  {
+   307→    name: 'lip_sync',
+   308→    title: 'লিপ-সিঙ্ক (ভবিষ্যৎ)',
+   309→    description:
+   310→      'ঠোঁট-মিলানো মডেল — ৪-মাত্রিক বাধায় চালু নয় (SDK-API নেই · GPU নেই · অ্যাডাপ্টার নেই · বেঞ্চমার্ক হয়নি)',
+   311→    icon: 'SmilePlus',
+   312→    category: 'video_studio',
+   313→  },
+   314→
+   315→  // ---- Production / Film Director (মাস্টার প্ল্যান §৬, D) ----
+   316→  {
+   317→    name: 'propose_job',
+   318→    title: 'প্রোডাকশন প্রস্তাব',
+   319→    description: 'বড় কাজের সেটিংস-সহ নিশ্চিতকরণ কার্ড তৈরি করে (Creative Job Spec)',
+   320→    icon: 'ClipboardCheck',
+   321→    category: 'production',
+   322→  },
+   323→  {
+   324→    name: 'create_character',
+   325→    title: 'চরিত্র সৃষ্টি',
+   326→    description: 'চরিত্রের পরিচয়পত্র ও রেফারেন্স পোর্ট্রেট তৈরি করে (Character Bible)',
+   327→    icon: 'UserRoundCog',
+   328→    category: 'production',
+   329→  },
+   330→];
+   331→
+   332→export function getToolInfo(name: string): ToolInfo | undefined {
+   333→  return TOOL_CATALOG.find(t => t.name === name);
+   334→}
+   335→
+   336→// ------------------------------------------------------------
+   337→// Chat contract (আগেরটির সম্প্রসারণ — পশ্চাদসম্পাতী)
+   338→// ------------------------------------------------------------
+   339→
+   340→export type RunStatus = 'running' | 'completed' | 'failed' | 'interrupted';
+   341→export type ActivityStatus = 'running' | 'done' | 'failed';
+   342→
+   343→export interface ArtifactMeta {
+   344→  id: string;
+   345→  kind: 'image' | 'audio' | 'video' | 'text';
+   346→  mimeType: string;
+   347→  fileName: string;
+   348→  size: number; // bytes (0 if external)
+   349→  url: string; // always /api/artifacts/{id}/file (redirects if external)
+   350→  external: boolean; // true → url redirects to a remote image
+   351→  /** মিডিয়া-মেটাডেটা (যাচাই-রায়, ইঞ্জিন-লেবেল, বিট-মার্কার ইত্যাদি) — §২.৩ প্রিভিউ-কার্ডের জন্য */
+   352→  meta?: Record<string, unknown>;
+   353→}
+   354→
+   355→export interface AttachmentView {
+   356→  kind: 'image' | 'audio' | 'video';
+   357→  name: string;
+   358→  url: string;
+   359→}
+   360→
+   361→export interface RunStats {
+   362→  steps: number;
+   363→  toolCalls: number;
+   364→  durationMs: number;
+   365→}
+   366→
+   367→export interface ActivityView {
+   368→  id: string; // toolCall id
+   369→  tool: string; // tool name (key into TOOL_CATALOG)
+   370→  title: string; // Bengali title from TOOL_CATALOG
+   371→  icon: string;
+   372→  status: ActivityStatus;
+   373→  input: string; // human-readable summary of arguments
+   374→  output?: string; // human-readable summary of result
+   375→  error?: string;
+   376→  artifacts?: ArtifactMeta[];
+   377→  durationMs?: number;
+   378→}
+   379→
+   380→export interface ChatMessage {
+   381→  id: string;
+   382→  role: 'user' | 'assistant';
+   383→  content: string;
+   384→  createdAt: string; // ISO string
+   385→  attachments?: AttachmentView[]; // user-uploaded files
+   386→  activities?: ActivityView[]; // tool executions for this assistant turn
+   387→  artifacts?: ArtifactMeta[]; // all artifacts produced in this assistant turn
+   388→  runStats?: RunStats | null; // assistant messages only
+   389→  productionId?: string; // এই বার্তায় দেখানো production কার্ড
+   390→}
+   391→
+   392→export interface ConversationSummary {
+   393→  id: string;
+   394→  title: string;
+   395→  createdAt: string;
+   396→  lastMessageAt: string;
+   397→  messageCount: number;
+   398→}
+   399→
+   400→export interface ConversationDetail {
+   401→  conversation: ConversationSummary;
+   402→  messages: ChatMessage[];
+   403→}
+   404→
+   405→export interface ChatRequest {
+   406→  conversationId: string; // '' → backend creates a new conversation
+   407→  content: string;
+   408→  attachments?: {
+   409→    kind: 'image' | 'audio' | 'video';
+   410→    name: string;
+   411→    dataUrl: string; // data:...;base64,....
+   412→  }[];
+   413→}
+   414→
+   415→export interface ChatResponse {
+   416→  runId: string;
+   417→  conversationId: string;
+   418→  userMessage: ChatMessage;
+   419→}
+   420→
+   421→// ---------------- SSE events (GET /api/runs/{id}/events) ----------------
+   422→
+   423→export type RunEvent =
+   424→  | { type: 'run_started'; runId: string; conversationId: string }
+   425→  | {
+   426→      type: 'tool_start';
+   427→      activityId: string;
+   428→      tool: string;
+   429→      title: string;
+   430→      icon: string;
+   431→      input: string;
+   432→    }
+   433→  | {
+   434→      type: 'tool_end';
+   435→      activityId: string;
+   436→      status: 'done' | 'failed';
+   437→      output?: string;
+   438→      error?: string;
+   439→      artifacts?: ArtifactMeta[];
+   440→      durationMs?: number;
+   441→    }
+   442→  | { type: 'message'; conversationId: string; message: ChatMessage }
+   443→  | {
+   444→      /** S9: রান-স্ট্যাটাস নোট — যেমন "রেট-লিমিট, অপেক্ষা চলছে (৪০ সে.)" */
+   445→      type: 'run_note';
+   446→      runId: string;
+   447→      note: string;
+   448→      level?: 'info' | 'waiting' | 'warn';
+   449→    }
+   450→  | {
+   451→      type: 'run_finished';
+   452→      runId: string;
+   453→      conversationId: string;
+   454→      status: RunStatus;
+   455→      error?: string;
+   456→    }
+   457→  | { type: 'ping' };
+   458→
+   459→// ------------------------------------------------------------
+   460→// Creative Job Specification (মাস্টার প্ল্যান পার্ট E, §১৩–১৫)
+   461→// টাইপড প্যারামিটার — শুধু প্রম্পট-টেক্সট নয় (§১৫ নিয়ম)
+   462→// ------------------------------------------------------------
+   463→
+   464→export type ProductionType = 'image' | 'audio' | 'motion_video' | 'music_video' | 'short_film';
+   465→export type QualityPreset = 'draft' | 'standard' | 'high';
+   466→export type AspectRatio = '1:1' | '4:5' | '3:2' | '16:9' | '9:16';
+   467→export type OutputResolution = '720p' | '1080p';
+   468→export type VideoSound = 'none' | 'ambient' | 'narration' | 'uploaded_song';
+   469→export type VoicePreset = 'tongtong' | 'jam' | 'kazi' | 'chuichui' | 'xiaochen' | 'douji' | 'luodo';
+   470→export type CameraMove = 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'static';
+   471→export type SpeechLanguage = 'bn' | 'en';
+   472→export type VideoEngine = 'ai_diffusion' | 'cinematic_motion';
+   473→export type FilmMode = 'short_film' | 'dialogue_scene' | 'trailer' | 'story';
+   474→export type MusicMood = 'sad' | 'romantic' | 'joyful' | 'suspense' | 'action' | 'peaceful';
+   475→export type MusicSource = 'procedural' | 'uploaded_song' | 'none';
+   476→
+   477→export interface CreativeJobSpec {
+   478→  type: ProductionType;
+   479→  title: string;
+   480→  quality: QualityPreset;
+   481→  // --- image ---
+   482→  instructions?: string; // তৈরি/সম্পাদনার নির্দেশনা
+   483→  sourceArtifactId?: string; // সম্পাদনার উৎস-ছবি
+   484→  overlayText?: string; // টাইপোগ্রাফি/পোস্টারের লেখা
+   485→  aspect?: AspectRatio;
+   486→  format?: 'png' | 'jpeg' | 'webp';
+   487→  // --- audio ---
+   488→  audioOperation?: 'voiceover' | 'music_plan' | 'process' | 'instrumental';
+   489→  text?: string; // ভয়েসওভার স্ক্রিপ্ট / গানের কথা
+   490→  voice?: VoicePreset;
+   491→  sourceAudioArtifactIds?: string[]; // প্রসেসিং-এর ইনপুট
+   492→  // --- video / film ---
+   493→  idea?: string; // সৃজনশীল ব্রিফ / আইডিয়া
+   494→  story?: string; // শর্টফিল্মের গল্প
+   495→  durationSec?: number;
+   496→  fps?: 24 | 25 | 30;
+   497→  sound?: VideoSound;
+   498→  subtitles?: boolean;
+   499→  songArtifactId?: string; // মিউজিক ভিডিওর আপলোড করা গান
+   500→  sourceImageArtifactId?: string; // image-to-video উৎস
+   501→  cameraMove?: CameraMove;
+   502→  style?: string; // ভিজ্যুয়াল স্টাইল
+   503→  // --- নতুন মাস্টার প্ল্যান §২,৪,৩,১০ ---
+   504→  language?: SpeechLanguage; // সংলাপ/ভয়েসওভারের ভাষা (ডিফল্ট bn)
+   505→  videoEngine?: VideoEngine; // ai_diffusion (প্রকৃত CogVideoX-3) | cinematic_motion (স্টোরিবোর্ড+ক্যামেরা-মোশন)
+   506→  filmMode?: FilmMode; // শর্টফিলম | সংলাপ-দৃশ্য | ট্রেইলার | গল্প
+   507→  mood?: MusicMood | string; // আবেগ (স্কোর/মিউজিক নির্বাচনে)
+   508→  genre?: string; // গান/ভিডিওর ধরন
+   509→  tempoBpm?: number; // ৬০–১৭০
+   510→  musicSource?: MusicSource; // মিউজিক ভিডিওর গান: আপলোড না করলে প্রসিডিউরাল ইনস্ট্রুমেন্টাল
+   511→}
+   512→
+   513→export interface SpecAdjustment {
+   514→  field: string;
+   515→  from: string;
+   516→  to: string;
+   517→  reason: string;
+   518→}
+   519→
+   520→export interface ValidatedSpec {
+   521→  spec: CreativeJobSpec; // নরমালাইজড
+   522→  adjustments: SpecAdjustment[]; // স্বয়ংক্রিয় সমন্বয় (§১৫)
+   523→  notes: string[]; // সীমাবদ্ধতার ব্যাখ্যা
+   524→  plannedSteps: { key: string; title: string }[]; // পাইপলাইন ধাপের প্রিভিউ
+   525→}
+   526→
+   527→// ------------------------------------------------------------
+   528→// Production (Creative Job) — status machine §৭:
+   529→// awaiting_confirmation → queued → running → validating →
+   530→// completed | failed | partial | cancelled
+   531→// ------------------------------------------------------------
+   532→
+   533→export type ProductionStatus =
+   534→  | 'awaiting_confirmation'
+   535→  | 'queued'
+   536→  | 'running'
+   537→  | 'validating'
+   538→  | 'completed'
+   539→  | 'failed'
+   540→  | 'partial'
+   541→  | 'cancelled'
+   542→  | 'cancelling';
+   543→
+   544→export interface ProductionStepView {
+   545→  id: string;
+   546→  seq: number;
+   547→  key: string;
+   548→  title: string;
+   549→  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+   550→  detail?: string;
+   551→  error?: string;
+   552→  durationMs?: number;
+   553→}
+   554→
+   555→export interface ProductionView {
+   556→  id: string;
+   557→  conversationId: string;
+   558→  type: ProductionType;
+   559→  title: string;
+   560→  status: ProductionStatus;
+   561→  spec: CreativeJobSpec;
+   562→  progress: number; // 0-100
+   563→  currentStepKey?: string;
+   564→  error?: string;
+   565→  resultJson?: string;
+   566→  parentProductionId?: string;
+   567→  createdAt: string;
+   568→  startedAt?: string;
+   569→  finishedAt?: string;
+   570→  steps: ProductionStepView[];
+   571→  artifacts: ArtifactMeta[];
+   572→}
+   573→
+   574→export interface ProductionSummary {
+   575→  id: string;
+   576→  type: ProductionType;
+   577→  title: string;
+   578→  status: ProductionStatus;
+   579→  progress: number;
+   580→  createdAt: string;
+   581→  finishedAt?: string;
+   582→  artifactCount: number;
+   583→}
+   584→
+   585→// ---------------- SSE events (GET /api/productions/{id}/events) ----------------
+   586→
+   587→export type ProductionEvent =
+   588→  | { type: 'production_started'; productionId: string }
+   589→  | {
+   590→      type: 'step_start';
+   591→      productionId: string;
+   592→      stepId: string;
+   593→      seq: number;
+   594→      key: string;
+   595→      title: string;
+   596→    }
+   597→  | {
+   598→      type: 'step_end';
+   599→      productionId: string;
+   600→      stepId: string;
+   601→      key: string;
+   602→      status: 'done' | 'failed' | 'skipped';
+   603→      detail?: string;
+   604→      error?: string;
+   605→      durationMs?: number;
+   606→    }
+   607→  | {
+   608→      type: 'production_progress';
+   609→      productionId: string;
+   610→      progress: number;
+   611→      currentStepKey?: string;
+   612→    }
+   613→  | {
+   614→      type: 'production_finished';
+   615→      productionId: string;
+   616→      status: 'completed' | 'failed' | 'partial' | 'cancelled';
+   617→      error?: string;
+   618→    }
+   619→  | { type: 'ping' };
+   620→
+   621→// ------------------------------------------------------------
+   622→// Model & License Registry (§৮) + Availability Matrix (নতুন পরিকল্পনা §২/§৫)
+   623→// ------------------------------------------------------------
+   624→
+   625→export type ModelStatus = 'enabled' | 'experimental' | 'blocked' | 'planned';
+   626→
+   627→/** §২ — লাইসেন্স-মাত্রা (ব্যবহারের ধরন: Z.ai স্যান্ডবক্স, ব্যক্তিগত/অ-বাণিজ্যিক) */
+   628→export type LicenseStatus =
+   629→  | 'allowed'
+   630→  | 'allowed_noncommercial'
+   631→  | 'allowed_with_conditions'
+   632→  | 'provider_api_only'
+   633→  | 'needs_review'
+   634→  | 'blocked_by_license';
+   635→
+   636→/** §২/§৪ — প্রোভাইডার-মাত্রা: স্যান্ডবক্স SDK এই মডেলের API প্রকাশ করে কি না; local_engine = বাইরের প্রোভাইডার লাগে না */
+   637→export type ProviderStatus = 'exposed_by_sdk' | 'not_exposed_by_sdk' | 'local_engine' | 'unknown';
+   638→
+   639→/** §২ — ইন্টিগ্রেশন-মাত্রা: অ্যাপে অ্যাডাপ্টার/পাইপলাইন কতটা তৈরি */
+   640→export type IntegrationStatus = 'integrated' | 'partial' | 'not_integrated';
+   641→
+   642→/** §২ — রানটাইম-মাত্রা: এই হার্ডওয়্যারে এখন চলছে কি না */
+   643→export type RuntimeStatus =
+   644→  | 'healthy'
+   645→  | 'degraded'
+   646→  | 'temporarily_unavailable'
+   647→  | 'unavailable_hardware'
+   648→  | 'not_applicable';
+   649→
+   650→/**
+   651→ * নতুন পরিকল্পনা §১ — quality_status মাত্রা (পাঁচম মাত্রা):
+   652→ * বাস্তব আউটপুটের গুণমান-পরীক্ষায় কতদূর উত্তীর্ণ।
+   653→ *  - quality_not_verified: কোনো বাস্তব মান-পরীক্ষা হয়নি
+   654→ *  - quality_machine_checked: যন্ত্র-পরীক্ষা (দৈর্ঘ্য/নীরবতা/ASR/ffprobe) পাস — মানব-শ্রবণ বাকি
+   655→ *  - quality_human_verified: মানব-শ্রবণ/দেখা পরীক্ষাতেও উত্তীর্ণ
+   656→ *  - quality_not_applicable: মান-ধারণা প্রযোজ্য নয় (অবকাঠামো/টুলিং)
+   657→ */
+   658→export type QualityStatus =
+   659→  | 'quality_not_verified'
+   660→  | 'quality_machine_checked'
+   661→  | 'quality_human_verified'
+   662→  | 'quality_not_applicable';
+   663→
+   664→export interface ModelEntryView {
+   665→  id: string;
+   666→  key: string;
+   667→  name: string;
+   668→  category: 'llm' | 'image' | 'audio' | 'video' | 'utility' | 'infrastructure';
+   669→  provider: string;
+   670→  license: string;
+   671→  licenseUrl?: string;
+   672→  commercialUse: 'allowed' | 'restricted' | 'unknown' | 'not_applicable';
+   673→  status: ModelStatus;
+   674→  licenseStatus?: LicenseStatus;
+   675→  providerStatus?: ProviderStatus;
+   676→  integrationStatus?: IntegrationStatus;
+   677→  runtimeStatus?: RuntimeStatus;
+   678→  /** নতুন পরিকল্পনা §১ — quality_status (পাঁচম মাত্রা) */
+   679→  qualityStatus?: QualityStatus;
+   680→  apiEndpoint?: string;
+   681→  apiModelId?: string;
+   682→  lastTestedAt?: string;
+   683→  lastTestNote?: string;
+   684→  errorReason?: string;
+   685→  tools?: string[];
+   686→  capabilities: Record<string, unknown>;
+   687→  hardwareNotes?: string;
+   688→  notes?: string;
+   689→  verifiedAt?: string;
+   690→}
+   691→
+   692→// ------------------------------------------------------------
+   693→// Model & Tool Availability Matrix (§১৫-এর প্রথম Deliverable)
+   694→// ------------------------------------------------------------
+   695→
+   696→/** ম্যাট্রিক্স-সারির সামগ্রিক রায় */
+   697→export type MatrixOverall = 'available' | 'available_with_limits' | 'experimental' | 'unavailable_here' | 'future';
+   698→
+   699→export interface AvailabilityMatrixRow {
+   700→  /** ক্ষমতার স্থিতিশীল কী */
+   701→  key: string;
+   702→  /** বাংলা নাম */
+   703→  capability: string;
+   704→  /** §৫-এর টাস্ক-শ্রেণি */
+   705→  taskType: string;
+   706→  /** কোন কোন টুল/পাইপলাইন এই ক্ষমতা ব্যবহার করে */
+   707→  tools: string[];
+   708→  /** রেজিস্ট্রি-মডেলের কী */
+   709→  modelKey: string;
+   710→  model: string;
+   711→  license: LicenseStatus;
+   712→  provider: ProviderStatus;
+   713→  integration: IntegrationStatus;
+   714→  runtime: RuntimeStatus;
+   715→  /** নতুন পরিকল্পনা §১ — quality_status (পাঁচম মাত্রা) */
+   716→  quality: QualityStatus;
+   717→  apiEndpoint?: string;
+   718→  apiModelId?: string;
+   719→  lastTestedAt?: string;
+   720→  lastTestNote?: string;
+   721→  /** অনুপলব্ধ হলে প্রকৃত কারণ — লাইসেন্স/প্রোভাইডার/হার্ডওয়্যার/ইন্টিগ্রেশন/গুণমান আলাদা করে */
+   722→  errorReason?: string;
+   723→  overall: MatrixOverall;
+   724→  /** সৎ নোট (যেমন: প্রসিডিউরাল ≠ নিউরাল) */
+   725→  honestNote?: string;
+   726→  /** অনুপলব্ধ ক্ষমতার বিকল্প-পথ */
+   727→  fallback?: string;
+   728→}
+   729→
+   730→export interface AvailabilityMatrixResponse {
+   731→  matrix: AvailabilityMatrixRow[];
+   732→  generatedAt: string;
+   733→  usageMode: {
+   734→    /** এই অ্যাপের ঘোষিত ব্যবহার-ধরন — লাইসেন্স-যাচাই এই ভিত্তিতে */
+   735→    environment: string;
+   736→    usage: string;
+   737→    note: string;
+   738→  };
+   739→  legend: Record<string, string>;
+   740→}
+   741→
+   742→// ------------------------------------------------------------
+   743→// Hardware-aware Model Manager (নতুন পরিকল্পনা §১০ — দশম ধাপ)
+   744→// ------------------------------------------------------------
+   745→
+   746→/** বাস্তব হার্ডওয়্যার পরিমাপ (system-info.ts থেকে পূরণ হয়) */
+   747→export interface HardwareReport {
+   748→  cpuCores: number;
+   749→  cpuModel: string;
+   750→  totalMemGb: number;
+   751→  freeMemGb: number;
+   752→  diskTotalGb: number;
+   753→  diskFreeGb: number;
+   754→  gpu: { present: boolean; note: string };
+   755→  ffmpeg: string | null;
+   756→  ffprobe: string | null;
+   757→  nodeVersion: string;
+   758→  platform: string;
+   759→}
+   760→
+   761→/** §১০-এর নির্ধারিত ৯-অবস্থার রায় — প্রতি মডেলের জন্য */
+   762→export type HardwareVerdict =
+   763→  | 'ready'
+   764→  | 'ready_with_limits'
+   765→  | 'needs_model_download'
+   766→  | 'needs_gpu'
+   767→  | 'needs_more_ram'
+   768→  | 'license_review_required'
+   769→  | 'provider_rate_limited'
+   770→  | 'integration_incomplete'
+   771→  | 'quality_not_verified';
+   772→
+   773→export interface HardwareModelAssessment {
+   774→  modelKey: string;
+   775→  name: string;
+   776→  verdict: HardwareVerdict;
+   777→  /** বাংলা ব্যাখ্যা — কেন এই রায় */
+   778→  reason: string;
+   779→  requires: {
+   780→    minRamGb?: number;
+   781→    minVramGb?: number;
+   782→    gpuRequired: boolean;
+   783→    /** লোকাল ওয়েট লাগলে তার পরিচয় */
+   784→    localWeights?: string;
+   785→  };
+   786→  /** এই পরিবেশে ব্যবহারযোগ্য বিকল্প-পথ */
+   787→  fallback?: string;
+   788→}
+   789→
+   790→export interface HardwareManagerResponse {
+   791→  profile: HardwareReport;
+   792→  assessments: HardwareModelAssessment[];
+   793→  probedAt: string;
+   794→}
+   795→
+   796→// ------------------------------------------------------------
+   797→// বাংলা TTS মান-যাচাই বেঞ্চমার্ক (নতুন পরিকল্পনা §৪ — তৃতীয় ধাপ)
+   798→// ------------------------------------------------------------
+   799→
+   800→/** বেঞ্চমার্ক বাক্যের শ্রেণি — ব্যবহারকারীর নির্দিষ্ট তালিকামতো */
+   801→export type BnBenchmarkCategory =
+   802→  | 'conversation' // সাধারণ কথোপকথন
+   803→  | 'dramatic' // নাটকীয় সংলাপ
+   804→  | 'emotion' // প্রশ্ন/বিস্ময়/রাগ/কান্না/আনন্দ
+   805→  | 'mixed_bn_en' // বাংলা-ইংরেজি মিশ্র
+   806→  | 'numbers_dates' // সংখ্যা/তারিখ/নাম/যুক্তাক্ষর
+   807→  | 'long_reading'; // দীর্ঘ বর্ণনা ও গল্পপাঠ
+   808→
+   809→export interface BnBenchmarkSentence {
+   810→  id: string;
+   811→  category: BnBenchmarkCategory;
+   812→  /** মূল বাক্য */
+   813→  text: string;
+   814→  /** নর্মালাইজেশন-পরে প্রত্যাশিত রূপ (ঐচ্ছিক — numbers_dates-এ) */
+   815→  expected?: string;
+   816→}
+   817→
+   818→export interface TtsBenchmarkAudioChecks {
+   819→  durationSec: number;
+   820→  expectedSec: number;
+   821→  durationOk: boolean;
+   822→  peakDb?: number;
+   823→  /** মোট সময়ের যত অংশ নীরব */
+   824→  silenceRatio: number;
+   825→  clippingSuspected: boolean;
+   826→  silenceRanges: { start: number; end: number }[];
+   827→}
+   828→
+   829→export interface TtsBenchmarkSentenceResult {
+   830→  sentenceId: string;
+   831→  category: BnBenchmarkCategory;
+   832→  text: string;
+   833→  /** নর্মালাইজার-পরে TTS-এ পাঠানো রূপ */
+   834→  normalizedText: string;
+   835→  voice: string;
+   836→  status: 'pass' | 'warn' | 'fail' | 'skipped_rate_limited' | 'error';
+   837→  checks?: TtsBenchmarkAudioChecks;
+   838→  /** ASR ব্যাক-চেক — কেবল উপদেশমূলক (বাংলা ASR দুর্বল) */
+   839→  asr?: { transcript: string; bnCharRatio: number; advisoryOnly: boolean };
+   840→  notes: string[];
+   841→  /** প্রতি-বাক্য অডিও-প্লেয়ার URL */
+   842→  audioUrl?: string;
+   843→  durationMs: number;
+   844→}
+   845→
+   846→export interface TtsBenchmarkReport {
+   847→  id: string;
+   848→  scope: 'quick' | 'full';
+   849→  status: 'running' | 'completed' | 'failed' | 'cancelled';
+   850→  startedAt: string;
+   851→  finishedAt?: string;
+   852→  progress: { done: number; total: number };
+   853→  voices: string[];
+   854→  results: TtsBenchmarkSentenceResult[];
+   855→  summary?: {
+   856→    pass: number;
+   857→    warn: number;
+   858→    fail: number;
+   859→    skipped: number;
+   860→    error: number;
+   861→    machineChecked: boolean;
+   862→    /** সবসময় true — মানব-শ্রবণ পরীক্ষা আলাদা বাধ্যতামূলক ধাপ */
+   863→    humanListeningPending: boolean;
+   864→  };
+   865→  honestNote: string;
+   866→}
+   867→
+   868→// ------------------------------------------------------------
+   869→// UI view switching (শেল)
+   870→// ------------------------------------------------------------
+   871→
+   872→export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'guide';
+   873→

@@ -40,7 +40,8 @@ import {
   normalizeShotDurations,
   segmentDialogueToCues,
 } from '../../film-helpers';
-import { generateImageBuffer, editImageBuffer, chatJson, visionCompare } from '../../sdk-helpers';
+import { generateImageBuffer, editImageBuffer, chatJson, visionCompare, isRateLimitErrorText } from '../../sdk-helpers';
+import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
 import { cachedSynthesizeSpeech } from '../../tts-cache';
 import type { TtsVoice } from '../../sdk-helpers';
 import type { CameraMove, FilmMode } from '@/lib/types';
@@ -173,7 +174,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   const characterAppearance: Record<string, string> = {};
   await ctx.runStep('script_breakdown', 'চিত্রনাট্য ও দৃশ্য-বিভাজন (৮-স্তর §৭)', async (step: StepHandle) => {
     const dialogueBudget = Math.round(durationSec * 2.5);
-    const { data } = await chatJson<{
+    // S11: চিত্রনাট্য-LLM অচল (৪২৯-উইন্ডো) হলেও পাইপলাইন মরবে না —
+    // নিচে গল্পের তিন-অংশের সরল বিভাজন (কোনো বানানো সংলাপ/কণ্ঠ নয়)।
+    let data: {
       title: string;
       logline: string;
       characters: { name: string; appearancePrompt: string; voice?: string }[];
@@ -189,7 +192,26 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         estimatedSec?: number;
         dialogues: { character: string; text: string; emotion?: string }[];
       }[];
-    }>([
+    } | null = null;
+    let scriptErr: string | null = null;
+    try {
+      ({ data } = await chatJson<{
+        title: string;
+        logline: string;
+        characters: { name: string; appearancePrompt: string; voice?: string }[];
+        scenes: {
+          location: string;
+          timeOfDay: string;
+          characters: string[];
+          action: string;
+          actingNotes?: string;
+          cameraWork?: string;
+          ambientSound?: string;
+          musicCue?: string;
+          estimatedSec?: number;
+          dialogues: { character: string; text: string; emotion?: string }[];
+        }[];
+      }>([
       {
         role: 'assistant',
         content:
@@ -206,9 +228,37 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           'শুধু JSON: {"title":"...","logline":"...","characters":[{"name":"...","appearancePrompt":"...","voice":"jam"}],"scenes":[{"location":"...","timeOfDay":"...","characters":["নাম"],"action":"...","actingNotes":"...","cameraWork":"...","ambientSound":"...","musicCue":"...","estimatedSec":10,"dialogues":[{"character":"...","text":"...","emotion":"..."}]}]}',
       },
       { role: 'user', content: `গল্প: ${spec.story ?? spec.idea ?? spec.title}`.slice(0, 4000) },
-    ]);
+      ]));
+    } catch (err) {
+      scriptErr = err instanceof Error ? err.message : String(err);
+    }
     if (!data || !Array.isArray(data.scenes) || data.scenes.length === 0) {
-      throw new Error('চিত্রনাট্য তৈরি হয়নি');
+      // সৎ নির্ধারক ফলব্যাক — গল্প-টেক্সট বাক্য-সীমায় প্রায়-সমান তিন ভাগে;
+      // সংলাপ ইচ্ছাকৃতভাবে খালি — নীরব সিনেম্যাটিক দৃশ্য (সংলাপ/কণ্ঠ বানানো অসৎ হবে)
+      if (scriptErr) {
+        ctx.partialNotes.push(
+          isRateLimitErrorText(scriptErr)
+            ? 'চিত্রনাট্য-রেট-লিমিটেড — গল্পের তিন-অংশের সরল বিভাজন (AI-চিত্রনাট্য নয়)।'
+            : `চিত্রনাট্য-তৈরি ব্যর্থ (${scriptErr.slice(0, 120)}) — গল্পের তিন-অংশের সরল বিভাজন (AI-চিত্রনাট্য নয়)।`
+        );
+      } else {
+        ctx.partialNotes.push('LLM চিত্রনাট্য দেয়নি — গল্পের তিন-অংশের সরল বিভাজন (AI-চিত্রনাট্য নয়)।');
+      }
+      const chunks = splitStoryIntoThreeChunks(`${spec.story ?? ''} ${spec.idea ?? ''}`.trim() || spec.title || '');
+      const per = Math.max(3, Math.round((durationSec / 3) * 10) / 10);
+      data = {
+        title: spec.title,
+        logline: '',
+        characters: [],
+        scenes: chunks.map(chunk => ({
+          location: 'মূল দৃশ্য',
+          timeOfDay: 'দিন',
+          characters: [],
+          action: chunk.slice(0, 600),
+          estimatedSec: per,
+          dialogues: [],
+        })),
+      };
     }
     title = String(data.title ?? title).slice(0, 120);
     logline = String(data.logline ?? '').slice(0, 400);
@@ -245,9 +295,15 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     const maxShotCount = maxShots('short_film', spec.quality, engine);
     const segCap = engine === 'ai_diffusion' ? 9 : 7;
     const count = Math.max(3, Math.min(maxShotCount, Math.ceil(durationSec / segCap)));
-    const { data: sd } = await chatJson<{
+    // S11: শট-বিভাজন-LLM ব্যর্থ (৪২৯-সহ) হলে sd=null — নিচের প্রতি-দৃশ্যে-এক-শট
+    // সৎ ফলব্যাক পথ চালু থাকে; ধাপ মরবে না।
+    let sd: {
       shots: { sceneIndex: number; description: string; label?: string; cameraMove: string; durationSec: number; characters?: string[] }[];
-    }>([
+    } | null = null;
+    try {
+      ({ data: sd } = await chatJson<{
+        shots: { sceneIndex: number; description: string; label?: string; cameraMove: string; durationSec: number; characters?: string[] }[];
+      }>([
       {
         role: 'assistant',
         content:
@@ -270,7 +326,16 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             )
             .join('\n'),
       },
-    ]);
+      ]));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.partialNotes.push(
+        isRateLimitErrorText(msg)
+          ? 'শট-বিভাজন LLM রেট-লিমিটেড — প্রতি দৃশ্যে একটি করে শট (AI-বিভাজন নয়)।'
+          : `শট-বিভাজন ব্যর্থ (${msg.slice(0, 120)}) — প্রতি দৃশ্যে একটি করে শট।`
+      );
+      sd = null;
+    }
     const rawShots = Array.isArray(sd?.shots) ? sd.shots : [];
     shots = rawShots
       .filter(s => String(s?.description ?? '').trim())
@@ -362,17 +427,25 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       }
       await step.setDetail(`${name} — পোর্ট্রেট তৈরি (${i + 1}/${selected.length})`);
       const entry: BibleEntry = { name, reused: false };
+      // S11: ক্লাউড-পোর্ট্রেট ব্যর্থ (৪২৯-সহ) হলে লোকাল প্রসিডিউরাল পোর্ট্রেট —
+      // সৎ লেবেলসহ; Character-টেবিলে কেবল প্রকৃত AI-পোর্ট্রেট ঢোকে।
+      let aiBuffer: Buffer | null = null;
+      let portraitErr = '';
       try {
-        const { buffer } = await generateImageBuffer(
+        ({ buffer: aiBuffer } = await generateImageBuffer(
           portraitPrompt(name, characterAppearance[name] ?? `character "${name}"`),
           '864x1152'
-        );
-        entry.portraitDataUrl = `data:image/png;base64,${buffer.toString('base64')}`;
+        ));
+      } catch (err) {
+        portraitErr = err instanceof Error ? err.message : String(err);
+      }
+      if (aiBuffer) {
+        entry.portraitDataUrl = `data:image/png;base64,${aiBuffer.toString('base64')}`;
         const p = path.join(wd, `bible-${i}.png`);
         entry.portraitPath = p;
-        await writeFile(p, buffer);
+        await writeFile(p, aiBuffer);
         const art = await ctx.registerArtifact({
-          buffer,
+          buffer: aiBuffer,
           kind: 'image',
           mimeType: 'image/png',
           fileName: `bible-${sanitize(name) || i + 1}.png`,
@@ -399,10 +472,49 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           update: { portraitArtifactId: art.id },
         });
         bible.push(entry);
-      } catch (err) {
-        ctx.partialNotes.push(
-          `চরিত্র "${name}"-এর পোর্ট্রেট ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — দৃশ্য-প্রম্পট ব্যবহৃত হবে`
-        );
+      } else {
+        // লোকাল প্রসিডিউরাল পোর্ট্রেট — সৎ লেবেলসহ (AI পোর্ট্রেট নয়;
+        // স্থায়ী Character-রেকর্ড নয় — সৎ সীমা)
+        try {
+          const local = await generateLocalFrame({
+            seed: `sf-char-${name}`,
+            width: 864,
+            height: 1152,
+            outputPath: path.join(wd, `bible-${i}-local.png`),
+            mood: String(spec.mood ?? ''),
+            label: name,
+          });
+          const buf = await readFile(local.path);
+          entry.portraitPath = local.path;
+          entry.portraitDataUrl = `data:image/png;base64,${buf.toString('base64')}`;
+          await ctx.registerArtifact({
+            buffer: buf,
+            kind: 'image',
+            mimeType: 'image/png',
+            fileName: `bible-${sanitize(name) || i + 1}-local.png`,
+            metaJson: {
+              characterName: name,
+              voice: characterVoices[name],
+              pipeline: 'short_film',
+              kind: 'local-procedural',
+              honestLabel: LOCAL_FRAME_LABEL,
+              note: 'local-procedural — AI পোর্ট্রেট নয়',
+            },
+          });
+          bible.push(entry);
+          ctx.partialNotes.push(
+            isRateLimitErrorText(portraitErr)
+              ? `চরিত্র ${name}-এর পোর্ট্রেট ক্লাউড-রেট-লিমিটেড — ${LOCAL_FRAME_LABEL}`
+              : `চরিত্র ${name}-এর পোর্ট্রেট ক্লাউডে ব্যর্থ (${portraitErr.slice(0, 100)}) — ${LOCAL_FRAME_LABEL}`
+          );
+          await step.setDetail(`${name} — লোকাল প্রসিডিউরাল পোর্ট্রেট (ক্লাউড-রেট-লিমিটেড)`);
+        } catch (localErr) {
+          ctx.partialNotes.push(
+            `চরিত্র "${name}"-এর পোর্ট্রেট ব্যর্থ (${portraitErr.slice(0, 120)}; লোকাল-ফ্রেম: ${
+              localErr instanceof Error ? localErr.message.slice(0, 80) : 'অজানা'
+            }) — দৃশ্য-প্রম্পট ব্যবহৃত হবে`
+          );
+        }
       }
     }
     await step.setDetail(
@@ -412,7 +524,11 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
 
   // ------------------------------------------------------- ৩ acting_plan
   await ctx.runStep('acting_plan', 'অভিনয়-পরিকল্পনা (প্রতি শটে)', async (step: StepHandle) => {
-    const { data } = await chatJson<{ shots: { index: number; who?: string; action?: string; gaze?: string; bodyHands?: string; facialExpression?: string; speaks?: boolean; cameraMotion?: string }[] }>([
+    // S11: অভিনয়-পরিকল্পনা-LLM ব্যর্থ (৪২৯-সহ) হলে data=null —
+    // নিচের প্রতি-শট ডিফল্ট-হ্যান্ডলিং (দৃশ্য-নোট/ফাঁকা) চলতে থাকে।
+    let data: { shots: { index: number; who?: string; action?: string; gaze?: string; bodyHands?: string; facialExpression?: string; speaks?: boolean; cameraMotion?: string }[] } | null = null;
+    try {
+      ({ data } = await chatJson<{ shots: { index: number; who?: string; action?: string; gaze?: string; bodyHands?: string; facialExpression?: string; speaks?: boolean; cameraMotion?: string }[] }>([
       {
         role: 'assistant',
         content:
@@ -433,7 +549,16 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             )
             .join('\n')}`,
       },
-    ]);
+      ]));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.partialNotes.push(
+        isRateLimitErrorText(msg)
+          ? 'অভিনয়-পরিকল্পনা LLM রেট-লিমিটেড — দৃশ্য-নোট থেকে সরল নির্দেশনা (AI-অভিনয়-পরিকল্পনা নয়)।'
+          : `অভিনয়-পরিকল্পনা ব্যর্থ (${msg.slice(0, 120)}) — দৃশ্য-নোট থেকে সরল নির্দেশনা।`
+      );
+      data = null;
+    }
     const raw = Array.isArray(data?.shots) ? data.shots : [];
     let matched = 0;
     shots.forEach((shot, i) => {
@@ -743,6 +868,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               fallbackGenSize: genSize,
               fallbackReferenceUrl: matching?.portraitDataUrl,
               fallbackMove: shot.cameraMove,
+              fallbackMood: String(spec.mood ?? ''),
               onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
             });
             if (res.usedAi) {
@@ -759,7 +885,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
                   sceneIndex: shot.sceneIndex,
                   cameraMove: shot.cameraMove,
                   label: shot.label,
-                  note: `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
+                  note: res.frameLocal
+                    ? `ক্লাউড AI-জেনারেশন ও ফলব্যাক-ফ্রেম ব্যর্থ — লোকাল প্রসিডিউরাল ফ্রেম (${LOCAL_FRAME_LABEL})`
+                    : `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
                 },
               });
             }
@@ -772,6 +900,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           }
         } else {
           // cinematic_motion — চরিত্র-রেফারেন্স-কন্ডিশনড স্টোরিবোর্ড + Ken Burns
+          // S11: শট-বাদের আগে শেষ-উপায় — লোকাল প্রসিডিউরাল ফ্রেম (সৎ লেবেলসহ)
+          let frameIsLocal = false;
+          let frameFailReason = '';
           await step.setDetail(`শট ${i + 1}/${shots.length} ফ্রেম${shot.characters.length > 0 ? ` (${shot.characters.join(', ')})` : ''}`);
           let buffer: Buffer | null = null;
           const tryGen = async (): Promise<Buffer> => {
@@ -788,24 +919,56 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           };
           try {
             buffer = await tryGen();
-          } catch {
+          } catch (err) {
+            frameFailReason = err instanceof Error ? err.message : String(err);
             try {
               buffer = await tryGen();
-            } catch (err) {
-              ctx.partialNotes.push(
-                `শট ${i + 1}-এর ফ্রেম ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শট বাদ`
-              );
-              continue;
+            } catch (err2) {
+              const msg2 = err2 instanceof Error ? err2.message : String(err2);
+              const rateLimited = isRateLimitErrorText(msg2);
+              try {
+                const localFrame = await generateLocalFrame({
+                  seed: `sf-shot-${i}`,
+                  width: dims.w,
+                  height: dims.h,
+                  outputPath: path.join(wd, `frame-${i}.png`),
+                  mood: String(spec.mood ?? ''),
+                  label: shot.label,
+                });
+                buffer = await readFile(localFrame.path);
+                frameIsLocal = true;
+                ctx.partialNotes.push(
+                  rateLimited
+                    ? `শট ${i + 1}-এর ইমেজ-জেন রেট-লিমিটেড — ${LOCAL_FRAME_LABEL}`
+                    : `শট ${i + 1}-এর ফ্রেম ক্লাউডে ব্যর্থ (${msg2.slice(0, 100)}) — ${LOCAL_FRAME_LABEL}`
+                );
+              } catch (localErr) {
+                ctx.partialNotes.push(
+                  `শট ${i + 1}-এর ফ্রেম ব্যর্থ (${msg2.slice(0, 120)}) ও লোকাল-ফ্রেমও ব্যর্থ (${
+                    localErr instanceof Error ? localErr.message.slice(0, 80) : 'অজানা'
+                  }) — শট বাদ`
+                );
+                continue;
+              }
             }
           }
           const framePath = path.join(wd, `frame-${i}.png`);
-          await writeFile(framePath, buffer);
+          if (!frameIsLocal) await writeFile(framePath, buffer);
           await ctx.registerArtifact({
             buffer,
             kind: 'image',
             mimeType: 'image/png',
             fileName: `storyboard-shot-${i + 1}.png`,
-            metaJson: { shot: i + 1, of: shots.length, sceneIndex: shot.sceneIndex, cameraMove: shot.cameraMove, label: shot.label },
+            metaJson: {
+              shot: i + 1,
+              of: shots.length,
+              sceneIndex: shot.sceneIndex,
+              cameraMove: shot.cameraMove,
+              label: shot.label,
+              ...(frameIsLocal
+                ? { kind: 'local-procedural', honestLabel: LOCAL_FRAME_LABEL, note: 'local-procedural — AI ফ্রেম নয়' }
+                : {}),
+            },
           });
           await step.setDetail(`শট ${i + 1}/${shots.length} মোশন ক্লিপ (${shot.cameraMove}, ${shot.durationSec.toFixed(1)} সে.)`);
           const clipPath = path.join(wd, `clip-${i}.mp4`);
@@ -827,7 +990,13 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               continue;
             }
           }
-          shotEngineLabels.push(`শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`);
+          shotEngineLabels.push(
+            frameIsLocal
+              ? `শট ${i + 1}: লোকাল প্রসিডিউরাল ফ্রেম + ক্যামেরা-মোশন (${
+                  isRateLimitErrorText(frameFailReason) ? 'ইমেজ-জেন রেট-লিমিটেড' : 'ইমেজ-জেন ব্যর্থ'
+                })`
+              : `শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`
+          );
           valid.push({ ...shot, framePath, clipPath });
         }
       }
@@ -967,6 +1136,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       return;
     }
     let checked = 0;
+    // S11: VLM-রেট-লিমিটে সৎ নোট — একবারই (প্রতি-শট নয়); পরীক্ষা অ-বাধামূলক
+    let continuityRateLimited = false;
     for (const shot of characterShots) {
       const match = shot.characters.map(c => bible.find(b => b.name === c)).find(Boolean);
       if (!match?.portraitDataUrl) continue;
@@ -1003,7 +1174,14 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         }
         checked++;
       } catch (err) {
-        continuityWarnings.push(`${shot.label}: পরীক্ষা ব্যর্থ (${err instanceof Error ? err.message.slice(0, 80) : 'অজানা'})`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isRateLimitErrorText(msg) && !continuityRateLimited) {
+          continuityRateLimited = true;
+          ctx.partialNotes.push(
+            'ধারাবাহিকতা-যাচাই (VLM) রেট-লিমিটেড — এই পরীক্ষা স্কিপ (অ-বাধামূলক; চলচ্চিত্র তৈরি থাকবে)।'
+          );
+        }
+        continuityWarnings.push(`${shot.label}: পরীক্ষা ব্যর্থ (${msg.slice(0, 80)})`);
       }
     }
     await step.setDetail(`${checked}টি ফ্রেম পরীক্ষিত — সতর্কতা অ-বাধামূলক`);
@@ -1196,6 +1374,38 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
 // ------------------------------------------------------------
 // সহায়ক — অবস্থানসহ অডিও-ট্র্যাক (A1/A2A3/A4 টাইমলাইন বানাতে)
 // ------------------------------------------------------------
+
+/**
+ * S11 — গল্প-টেক্সটকে বাক্য-সীমায় (। . ! ? \n) প্রায়-সমান তিন ভাগে ভাগা।
+ * বাক্য-সীমা না থাকলে অক্ষর-ভিত্তিক সমান তৃতীয়াংশ। কোনো বানানো বিষয়বস্তু নয় —
+ * শুধু প্রদত্ত টেক্সটের নির্ধারক বিভাজন (সৎ-ফলব্যাকের ভিত্তি)।
+ */
+function splitStoryIntoThreeChunks(text: string): [string, string, string] {
+  const clean = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean) return ['সিনেম্যাটিক সূচনা-দৃশ্য', 'গল্পের মাঝামাঝি দৃশ্য', 'সমাপ্তির দৃশ্য'];
+  const sentences = clean
+    .split(/(?<=[।.!?\n])\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (sentences.length < 3) {
+    // বাক্য-সীমা নেই — অক্ষর-ভিত্তিক সমান তৃতীয়াংশ
+    const n = Math.ceil(clean.length / 3);
+    return [clean.slice(0, n).trim() || '…', clean.slice(n, 2 * n).trim() || '…', clean.slice(2 * n).trim() || '…'];
+  }
+  const target = clean.length / 3;
+  const buckets = ['', '', ''];
+  let bi = 0;
+  let len = 0;
+  for (const s of sentences) {
+    if (bi < 2 && len >= target) {
+      bi++;
+      len = 0;
+    }
+    buckets[bi] = buckets[bi] ? `${buckets[bi]} ${s}` : s;
+    len += s.length;
+  }
+  return buckets.map((b, idx) => b.trim() || (idx === 0 ? clean : '…')) as [string, string, string];
+}
 
 /**
  * একাধিক অডিও-খণ্ড নির্দিষ্ট মুহূর্তে বসিয়ে মোট দৈর্ঘ্যের একটি

@@ -25,6 +25,7 @@ import {
   parseRetryAfterMs,
   fullJitterDelayMs,
 } from '../sdk-helpers';
+import { cloudSkipAdvised, noteRateLimit } from '../rate-limit-coordinator';
 import { mediaInfo, type MediaInfo } from '@/lib/media/ffmpeg';
 import { writeFile, mkdtemp, rm } from 'fs/promises';
 import path from 'path';
@@ -127,8 +128,17 @@ function markSubmit(): void {
 // সাবমিট + পোল + ডাউনলোড
 // ------------------------------------------------------------
 
-/** ভিডিও-টাস্ক সাবমিট — ৪২৯-এ §১০-ব্যাকঅফ (Retry-After → এক্সপোনেনশিয়াল+জিটার), request_id-আইডেম্পোটেন্সি */
+/**
+ * ভিডিও-টাস্ক সাবমিট — ৪২৯-এ §১০-ব্যাকঅফ (Retry-After → এক্সপোনেনশিয়াল+জিটার), request_id-আইডেম্পোটেন্সি
+ * S9 দ্রুত-গেট: ভিডিও-চ্যানেল দীর্ঘ কুলডাউনে থাকলে সাবমিট-চেষ্টাই বাদ —
+ * প্রতি শটে ৬×৬০–৯০ সে. ব্যর্থ-অপেক্ষা নয়, সৎ-ফলব্যাক (স্টোরিবোর্ড/লোকাল-ফ্রেম) তৎক্ষণাৎ।
+ */
 export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask> {
+  if (cloudSkipAdvised('video')) {
+    throw new TemporarilyUnavailableError(
+      'ভিডিও-টাস্ক সাবমিট — ভিডিও-চ্যানেল দীর্ঘ রেট-লিমিট-কুলডাউনে; ক্লাউড-চেষ্টা স্কিপ (ফলব্যাকে যান)'
+    );
+  }
   const zai = await getZAI();
   const duration = clampDuration(req.durationSec);
   // §১০: requestKey থাকলে নির্ধারক request_id — চক্রের বাইরে একবারই তৈরি,
@@ -165,6 +175,17 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
       const msg = String(err?.message ?? err);
       if (isRateLimitErrorText(msg)) sawRateLimit = true;
       if (!/429|rate.?limit|too many|timeout|\b5\d{2}\b/i.test(msg)) throw err;
+      // S9: coordinator-কে জানাও (অভিযোজিত কুলডাউন); দীর্ঘ কুলডাউনে
+      // বাকি চেষ্টা না পুড়িয়ে তৎক্ষণাৎ সৎ-ফলব্যাকে যাও
+      if (sawRateLimit) {
+        const ra = parseRetryAfterMs(err);
+        noteRateLimit('video', ra);
+        if (cloudSkipAdvised('video')) {
+          throw new TemporarilyUnavailableError(
+            `ভিডিও-টাস্ক সাবমিট সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট-কুলডাউন): ${msg.slice(0, 160)}`
+          );
+        }
+      }
       if (attempt === AI_VIDEO_LIMITS.submitAttempts) break;
       // §১০: Retry-After থাকলে সেটিই (৯০ সে.-ছাদে), নয়তো এক্সপোনেনশিয়াল+ফুল-জিটার
       // (৬০ সে. ভিত্তি → সর্বোচ্চ ৯০ সে.)

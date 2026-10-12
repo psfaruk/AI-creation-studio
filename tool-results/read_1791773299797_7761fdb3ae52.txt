@@ -1,0 +1,723 @@
+     1→'use client';
+     2→
+     3→// ============================================================
+     4→// StudioView — মোড-স্টুডিও (নতুন মাস্টার প্ল্যান §১০ Creation Modes
+     5→// + §১১ সৎ স্ট্যাটাস)। ৩টি সেকশন (Tabs): অডিও · ভিডিও · ফিল্ম।
+     6→//
+     7→// প্রতিটি মোড-কার্ডে বাধ্যতামূলক মেটা (§১০):
+     8→// স্ট্যাটাস-ব্যাজ · সমর্থিত ভাষা · সর্বোচ্চ দৈর্ঘ্য · ইঞ্জিন-প্রকৃতি
+     9→// · আনুমানিক সময় · GPU-প্রয়োজনীয়তা।
+    10→//
+    11→// §১১-আপগ্রেড: স্ট্যাটাস এখন লাইভ Availability Matrix থেকে ওই
+    12→// মোডের ক্ষমতা-সারির overall রায়ে নির্ণীত (useAvailability) —
+    13→// ম্যাট্রিক্স না লোড হলে হার্ডকোডেড সৎ ফলব্যাক। কার্ডে চার-মাত্রিক
+    14→// চিপ (লাইসেন্স/প্রোভাইডার/ইন্টিগ্রেশন/রানটাইম) + "শেষ পরীক্ষা" +
+    15→// অনুপলব্ধ হলে প্রকৃত কারণ (errorReason) ও বিকল্প-পথ (fallback)।
+    16→// "শুরু করুন" → ওই মোডের বাংলা draft টেক্সট চ্যাট-কম্পোজারে বসে।
+    17→// ============================================================
+    18→
+    19→import { useMemo, useState } from 'react';
+    20→import {
+    21→  ArrowRightLeft,
+    22→  AudioLines,
+    23→  BookOpen,
+    24→  CalendarCheck,
+    25→  CircuitBoard,
+    26→  Clapperboard,
+    27→  Clock3,
+    28→  Cog,
+    29→  Film,
+    30→  ImagePlay,
+    31→  Languages,
+    32→  LayoutGrid,
+    33→  Megaphone,
+    34→  MessagesSquare,
+    35→  Mic,
+    36→  MicVocal,
+    37→  Music,
+    38→  PersonStanding,
+    39→  Piano,
+    40→  PlayCircle,
+    41→  ScissorsLineDashed,
+    42→  ShieldCheck,
+    43→  SlidersHorizontal,
+    44→  SmilePlus,
+    45→  Timer,
+    46→  TriangleAlert,
+    47→  Video,
+    48→  Volume2,
+    49→  type LucideIcon,
+    50→} from 'lucide-react';
+    51→import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+    52→
+    53→import { formatDateBn, toBnDigits } from '@/components/chat/bn-format';
+    54→import {
+    55→  DimensionChip,
+    56→  INTEGRATION_META,
+    57→  LICENSE_META,
+    58→  PROVIDER_META,
+    59→  RUNTIME_META,
+    60→} from '@/components/studio/availability-badges';
+    61→import { Badge } from '@/components/ui/badge';
+    62→import { Button } from '@/components/ui/button';
+    63→import { Card } from '@/components/ui/card';
+    64→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    65→import { useAvailability } from '@/hooks/use-availability';
+    66→import { toast } from '@/hooks/use-toast';
+    67→import { useChatStore } from '@/hooks/use-chat-store';
+    68→import { useUiView } from '@/hooks/use-ui-view';
+    69→import type { AvailabilityMatrixRow, MatrixOverall } from '@/lib/types';
+    70→import { cn } from '@/lib/utils';
+    71→
+    72→// ------------------------------------------------------------
+    73→// মোড-মডেল (types.ts স্পর্শ না করে লোকালি সংজ্ঞায়িত)
+    74→// ------------------------------------------------------------
+    75→
+    76→/**
+    77→ * §১১-সৎ স্ট্যাটাস — ম্যাট্রিক্সের overall রায় থেকে নির্ণীত:
+    78→ * available→active, available_with_limits→limited,
+    79→ * experimental→experimental, unavailable_here→unavailable, future→future।
+    80→ */
+    81→type ModeStatus = 'active' | 'limited' | 'experimental' | 'unavailable' | 'future';
+    82→
+    83→/** ইঞ্জিন-প্রকৃতির সৎ লেবেল (§১০ বাধ্যতামূলক) */
+    84→type EngineNature = 'ai' | 'pipeline' | 'procedural' | 'none';
+    85→
+    86→const ENGINE_LABELS: Record<EngineNature, string> = {
+    87→  ai: 'প্রকৃত AI জেনারেশন',
+    88→  pipeline: 'সম্পাদনা পাইপলাইন',
+    89→  procedural: 'প্রসিডিউরাল সংশ্লেষণ',
+    90→  none: 'প্রয়োজনীয় মডেল নেই',
+    91→};
+    92→
+    93→interface StudioMode {
+    94→  id: string;
+    95→  icon: LucideIcon;
+    96→  title: string;
+    97→  description: string;
+    98→  /** হার্ডকোডেড সৎ ফলব্যাক — ম্যাট্রিক্স লোড হলে overall রায়ই প্রযোজ্য */
+    99→  status: ModeStatus;
+   100→  /** Availability Matrix-এর ক্ষমতা-কী (cap-*) — লাইভ রায়ের উৎস */
+   101→  matrixKey?: string;
+   102→  /** সতর্কতা / পরীক্ষামূলক-ব্যাখ্যা / ফলব্যাক-কারণ (ম্যাট্রিক্স-নোটের ফলব্যাক) */
+   103→  statusNote?: string;
+   104→  /** অতিরিক্ত সৎ-স্ট্যাটাস-লাইন (S8-2d — বাংলা TTS মান-যাচাই-নির্দেশনা) */
+   105→  extraNote?: string;
+   106→  languages: string;
+   107→  maxDuration: string;
+   108→  engine: EngineNature;
+   109→  eta: string;
+   110→  gpu: string;
+   111→  /** "শুরু করুন" চাপলে কম্পোজারে বসা draft (অফ-মোডে নেই) */
+   112→  draft?: string;
+   113→}
+   114→
+   115→/** ম্যাট্রিক্সের overall রায় → মোড-স্ট্যাটাস */
+   116→function statusFromOverall(overall: MatrixOverall): ModeStatus {
+   117→  switch (overall) {
+   118→    case 'available':
+   119→      return 'active';
+   120→    case 'available_with_limits':
+   121→      return 'limited';
+   122→    case 'experimental':
+   123→      return 'experimental';
+   124→    case 'unavailable_here':
+   125→      return 'unavailable';
+   126→    case 'future':
+   127→      return 'future';
+   128→  }
+   129→}
+   130→
+   131→// ------------------------------------------------------------
+   132→// অডিও স্টুডিও — ৫টি মোড
+   133→// ------------------------------------------------------------
+   134→
+   135→const AUDIO_MODES: StudioMode[] = [
+   136→  {
+   137→    id: 'audio-tts',
+   138→    icon: AudioLines,
+   139→    title: 'টেক্সট-টু-স্পিচ (TTS)',
+   140→    description: 'লেখাকে স্বাভাবিক কণ্ঠের অডিওতে রূপ দেয় — সব ভাষায় প্রকৃত AI কণ্ঠ।',
+   141→    status: 'active',
+   142→    matrixKey: 'cap-speech',
+   143→    languages: 'বাংলা · ইংরেজি · অন্য ভাষা',
+   144→    maxDuration: `${toBnDigits(60)} সেকেন্ড / কল`,
+   145→    engine: 'ai',
+   146→    eta: `${toBnDigits(10)}–${toBnDigits(60)} সেকেন্ড`,
+   147→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+   148→    extraNote: 'বাংলা মান-যাচাই: বেঞ্চমার্ক-ল্যাবে (রেজিস্ট্রি ভিউ)',
+   149→    draft:
+   150→      'এই লেখাটা স্বাভাবিক কণ্ঠে অডিও বানিয়ে দাও: “এখানে আপনার লেখা লিখুন” — ভাষা বাংলা, কণ্ঠ jam, মান standard।',
+   151→  },
+   152→  {
+   153→    id: 'audio-bn-voiceover',
+   154→    icon: Mic,
+   155→    title: 'বাংলা ভয়েসওভার',
+   156→    description:
+   157→      'ভাষা-নিয়ন্ত্রক: TTS → দৈর্ঘ্য-যাচাই → ASR ব্যাক-চেক → রায় (pass/warn/fail)।',
+   158→    status: 'active',
+   159→    matrixKey: 'cap-speech',
+   160→    statusNote: 'কণ্ঠ বাংলা-প্রশিক্ষিত নয় — প্রিভিউ শুনে যাচাই করুন',
+   161→    languages: 'বাংলা (যাচাই-রায়সহ) · ইংরেজি',
+   162→    maxDuration: `${toBnDigits(90)} সেকেন্ড (${toBnDigits(28)} সে. চাঙ্ক-যাচাই)`,
+   163→    engine: 'ai',
+   164→    eta: `${toBnDigits(30)} সেকেন্ড – ${toBnDigits(2)} মিনিট`,
+   165→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+   166→    draft:
+   167→      'নিচের স্ক্রিপ্টের বাংলা ভয়েসওভার বানাও — ভাষা-যাচাই (ASR ব্যাক-চেক) চালিয়ে রায় দেখাও: “এখানে আপনার স্ক্রিপ্ট লিখুন” — ভাষা বাংলা, কণ্ঠ jam, মান standard। মনে রেখো, কণ্ঠ বাংলা-প্রশিক্ষিত নয় — তাই আমি প্রিভিউ শুনে নিশ্চিত হব।',
+   168→  },
+   169→  {
+   170→    id: 'audio-instrumental',
+   171→    icon: Piano,
+   172→    title: 'ইনস্ট্রুমেন্টাল মিউজিক',
+   173→    description:
+   174→      '৬ মুড × স্কেল/কর্ড-প্রগ্রেশন/ছন্দ-সচেতন বাদ্য — বিট-মার্কার ও সেকশন-তালিকাসহ।',
+   175→    status: 'experimental',
+   176→    matrixKey: 'cap-instrumental',
+   177→    statusNote: 'প্রসিডিউরাল সংশ্লেষণ — নিউরাল মিউজিক-মডেল নয়',
+   178→    languages: 'ভাষা-নিরপেক্ষ (বাদ্য)',
+   179→    maxDuration: `${toBnDigits(120)} সেকেন্ড`,
+   180→    engine: 'procedural',
+   181→    eta: `${toBnDigits(20)}–${toBnDigits(60)} সেকেন্ড`,
+   182→    gpu: 'লোকাল GPU লাগে না (CPU-সংশ্লেষণ)',
+   183→    draft:
+   184→      '৩০ সেকেন্ডের রোমান্টিক মুডের ইনস্ট্রুমেন্টাল বানাও — টেম্পো ৯০ BPM। (এটা প্রসিডিউরাল সংশ্লেষণ — নিউরাল মিউজিক-মডেল নয়, তবু বিট-মার্কারসহ চাই।)',
+   185→  },
+   186→  {
+   187→    id: 'audio-full-song',
+   188→    icon: MicVocal,
+   189→    title: 'পূর্ণ গান — কণ্ঠসংগীতসহ',
+   190→    description:
+   191→      'গায়কের কণ্ঠসহ সম্পূর্ণ গান সংশ্লেষণ — YuE/ACE-Step-ধরনের মডেল দরকার, যা এই পরিবেশে চালু নয়।',
+   192→    status: 'future',
+   193→    matrixKey: 'cap-full-song',
+   194→    statusNote: 'লাইসেন্স-অনুমতি আছে (অ-বাণিজ্যিক) — বাধা GPU/API-এর',
+   195→    languages: '—',
+   196→    maxDuration: '—',
+   197→    engine: 'none',
+   198→    eta: '—',
+   199→    gpu: 'GPU ১২GB+ প্রয়োজন হতো',
+   200→  },
+   201→  {
+   202→    id: 'audio-editing',
+   203→    icon: SlidersHorizontal,
+   204→    title: 'অডিও এডিটিং ও মিক্সিং',
+   205→    description:
+   206→      'ট্রিম, জোড়া, ফেড, ভলিউম, নরমালাইজ, EQ/কমপ্রেস/রিভার্ব ও মাল্টি-ট্র্যাক মিক্স।',
+   207→    status: 'active',
+   208→    languages: 'ভাষা-নিরপেক্ষ',
+   209→    maxDuration: `${toBnDigits(10)} মিনিট+ (ফাইল অনুযায়ী)`,
+   210→    engine: 'pipeline',
+   211→    eta: `${toBnDigits(5)}–${toBnDigits(30)} সেকেন্ড`,
+   212→    gpu: 'লোকাল GPU লাগে না (FFmpeg)',
+   213→    draft:
+   214→      'এই অডিওটা সম্পাদনা করো — শুরু-শেষে ১ সেকেন্ড ফেড, লাউডনেস নরমালাইজ এবং MP3-এ এক্সপোর্ট। (অডিও ফাইলটা কম্পোজারের অ্যাটাচ বোতামে যোগ করে দিন)',
+   215→  },
+   216→];
+   217→
+   218→// ------------------------------------------------------------
+   219→// ভিডিও স্টুডিও — ৭টি মোড (নতুন: নেটিভ-অডিওসহ AI ভিডিও)
+   220→// ------------------------------------------------------------
+   221→
+   222→const VIDEO_MODES: StudioMode[] = [
+   223→  {
+   224→    id: 'video-real-ai',
+   225→    icon: Film,
+   226→    title: 'রিয়েল AI ভিডিও',
+   227→    description:
+   228→      'CogVideoX-3 ডিফিউশনে লেখা থেকে সম্পূর্ণ নতুন চলমান দৃশ্য — স্টোরিবোর্ড-জুম নয়।',
+   229→    status: 'active',
+   230→    matrixKey: 'cap-t2v',
+   231→    statusNote: 'CogVideoX-3 ডিফিউশন — প্রতি শটে ২–৪ মিনিট',
+   232→    languages: 'বাংলা আইডিয়া (প্রম্পট অনুবাদসহ)',
+   233→    maxDuration: `প্রতি শট ${toBnDigits(5)}–${toBnDigits(10)} সে.`,
+   234→    engine: 'ai',
+   235→    eta: `প্রতি শটে ${toBnDigits(2)}–${toBnDigits(4)} মিনিট`,
+   236→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+   237→    draft:
+   238→      'CogVideoX-3 দিয়ে ১০ সেকেন্ডের রিয়েল AI ভিডিও বানাও — আইডিয়া: ভোরের কুয়াশায় নদীর ওপর সূর্য উঠছে, সিনেম্যাটিক লুক। ভিডিও-ইঞ্জিন: প্রকৃত AI (CogVideoX-3), অনুপাত ১৬:৯, মান standard।',
+   239→  },
+   240→  {
+   241→    id: 'video-i2v',
+   242→    icon: ImagePlay,
+   243→    title: 'ছবি → AI ভিডিও',
+   244→    description:
+   245→      'রেফারেন্স ছবির ভিত্তিতে CogVideoX-3 (i2v) চলমান দৃশ্য — পরিচয় যতটা সম্ভব ধরে রাখে।',
+   246→    status: 'active',
+   247→    matrixKey: 'cap-i2v',
+   248→    languages: 'বাংলা নির্দেশনা',
+   249→    maxDuration: `প্রতি শট ${toBnDigits(5)}–${toBnDigits(10)} সে.`,
+   250→    engine: 'ai',
+   251→    eta: `${toBnDigits(2)}–${toBnDigits(4)} মিনিট / শট`,
+   252→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+   253→    draft:
+   254→      'ছবিটা অ্যাটাচ করেছি — এটাকে CogVideoX-3 (i2v) দিয়ে চলমান ভিডিও বানাও: মৃদু ক্যামেরা-মোশন, প্রাকৃতিক আন্দোলন, ৫–১০ সেকেন্ড।',
+   255→  },
+   256→  {
+   257→    id: 'video-native-audio',
+   258→    icon: Volume2,
+   259→    title: 'নেটিভ-অডিওসহ AI ভিডিও',
+   260→    description:
+   261→      'CogVideoX-3 with_audio — ভিডিও ও তার নিজস্ব AI-অডিও একসাথে জেনারেট; অডিও-স্ট্রিম ffprobe-যাচাইকৃত।',
+   262→    status: 'active',
+   263→    matrixKey: 'cap-video-audio',
+   264→    statusNote: 'কেবল API-সফলতা যথেষ্ট নয় — অডিও-স্ট্রিম ffprobe দিয়ে যাচাই হয়',
+   265→    languages: 'বাংলা আইডিয়া (প্রম্পট অনুবাদসহ)',
+   266→    maxDuration: `প্রতি শট ${toBnDigits(5)}–${toBnDigits(10)} সে.`,
+   267→    engine: 'ai',
+   268→    eta: `${toBnDigits(2)}–${toBnDigits(4)} মিনিট / শট`,
+   269→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+   270→    draft:
+   271→      'CogVideoX-3 with_audio দিয়ে ১০ সেকেন্ডের ভিডিও বানাও — ভিডিওর সাথে নেটিভ AI-অডিও চাই (withAudio): বৃষ্টির রাতে পুরনো শহরের গলি, বৃষ্টির শব্দসহ। অনুপাত ১৬:৯।',
+   272→  },
+   273→  {
+   274→    id: 'video-character',
+   275→    icon: PersonStanding,
+   276→    title: 'চরিত্র-অ্যানিমেশন',
+   277→    description:
+   278→      'চরিত্রের চলা/বসা/অঙ্গ-ভঙ্গি — অভিনয়-নির্দেশিত প্রম্পটে; জটিল অ্যাকশনে প্রিভিউ-যাচাই দরকার।',
+   279→    status: 'experimental',
+   280→    matrixKey: 'cap-character-motion',
+   281→    statusNote: 'মোশন-প্রম্পট-ভিত্তিক; ফলাফল পরিবর্তনশীল',
+   282→    languages: 'বাংলা নির্দেশনা',
+   283→    maxDuration: `প্রতি শট ${toBnDigits(5)}–${toBnDigits(10)} সে.`,
+   284→    engine: 'ai',
+   285→    eta: `${toBnDigits(2)}–${toBnDigits(4)} মিনিট / শট`,
+   286→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-মডেল)',
+   287→    draft:
+   288→      'এই চরিত্রের ছবিটা অ্যানিমেট করো — অভিনয়-নির্দেশ: মৃদু হেসে মাথা নাড়াচ্ছে, বাতাসে চুল উড়ছে; ৮ সেকেন্ড। ফলাফল পরিবর্তনশীল হলে প্রিভিউ দেখিয়ে মত জানাও।',
+   289→  },
+   290→  {
+   291→    id: 'video-lipsync',
+   292→    icon: SmilePlus,
+   293→    title: 'কথা-বলা চরিত্র — লিপ-সিঙ্ক',
+   294→    description:
+   295→      'অডিওর সাথে ঠোঁট মেলানো — Wav2Lip/MuseTalk-ধরনের লিপ-সিঙ্ক মডেল এই পরিবেশে চালু নয়।',
+   296→    status: 'unavailable',
+   297→    matrixKey: 'cap-talking-portrait',
+   298→    statusNote: 'বাধা লাইসেন্সে নয় — GPU/API/ইন্টিগ্রেশনে',
+   299→    languages: '—',
+   300→    maxDuration: '—',
+   301→    engine: 'none',
+   302→    eta: '—',
+   303→    gpu: 'GPU ৪–১২GB প্রয়োজন হতো',
+   304→  },
+   305→  {
+   306→    id: 'video-singing-lipsync',
+   307→    icon: Music,
+   308→    title: 'গান-গাওয়া লিপ-সিঙ্ক',
+   309→    description:
+   310→      'গানের সাথে গায়কের ঠোঁট মেলানো — লিপ-সিঙ্ক ও গান-মডেল দুই-ই এখানে চালু নয়।',
+   311→    status: 'unavailable',
+   312→    matrixKey: 'cap-singing-lipsync',
+   313→    statusNote: 'বাধা লাইসেন্সে নয় — GPU/API/ইন্টিগ্রেশনে',
+   314→    languages: '—',
+   315→    maxDuration: '—',
+   316→    engine: 'none',
+   317→    eta: '—',
+   318→    gpu: 'GPU ১২GB+ প্রয়োজন হতো',
+   319→  },
+   320→  {
+   321→    id: 'video-editing',
+   322→    icon: ScissorsLineDashed,
+   323→    title: 'ভিডিও এডিটিং',
+   324→    description:
+   325→      'ট্রিম, জোড়া, স্পিড, ক্রপ, ট্রানজিশন, অডিও-সংযোজন — FFmpeg সম্পাদনা।',
+   326→    status: 'active',
+   327→    matrixKey: 'cap-video-editing',
+   328→    statusNote: 'FFmpeg সম্পাদনা — AI-জেনারেশন নয়',
+   329→    languages: 'ভাষা-নিরপেক্ষ',
+   330→    maxDuration: `${toBnDigits(10)} মিনিট+ (ফাইল অনুযায়ী)`,
+   331→    engine: 'pipeline',
+   332→    eta: `${toBnDigits(5)}–${toBnDigits(60)} সেকেন্ড`,
+   333→    gpu: 'লোকাল GPU লাগে না (FFmpeg)',
+   334→    draft:
+   335→      'এই ভিডিওটা সম্পাদনা করো — প্রথম ১০ সেকেন্ড রেখে বাকিটা ট্রিম, শেষে ১ সেকেন্ড ফেড-আউট, ১০৮০p-এ এক্সপোর্ট। (ভিডিও ফাইলটা কম্পোজারের অ্যাটাচ বোতামে যোগ করে দিন)',
+   336→  },
+   337→];
+   338→
+   339→// ------------------------------------------------------------
+   340→// ফিল্ম ডিরেক্টর — ৫টি মোড
+   341→// ------------------------------------------------------------
+   342→
+   343→const FILM_MODES: StudioMode[] = [
+   344→  {
+   345→    id: 'film-short',
+   346→    icon: Clapperboard,
+   347→    title: 'শর্টফিল্ম',
+   348→    description:
+   349→      '৮-স্তর পাইপলাইন: চিত্রনাট্য → দৃশ্য-বিভাজন → চরিত্র-বাইবেল → অভিনয়-পরিকল্পনা → AI শট → সাউন্ড-ডিজাইন → ধারাবাহিকতা → ফাইনাল মিক্স।',
+   350→    status: 'active',
+   351→    matrixKey: 'cap-short-film',
+   352→    statusNote: 'সংলাপ-অডিও ও AI-দৃশ্য থাকে — ঠোঁট-সিঙ্ক নয়',
+   353→    languages: 'বাংলা সংলাপ + সাবটাইটেল',
+   354→    maxDuration: `${toBnDigits(30)}–${toBnDigits(120)} সেকেন্ড`,
+   355→    engine: 'ai',
+   356→    eta: `${toBnDigits(10)}–${toBnDigits(40)} মিনিট`,
+   357→    gpu: 'লোকাল GPU লাগে না (ক্লাউড-শট)',
+   358→    draft:
+   359→      '৩০ সেকেন্ডের শর্টফিল্ম বানাও — গল্প: জেলের ছেলে ভোরবেলা নদীতে নেমে জীবনে প্রথম বড় মাছ ধরে। মুড heartfelt, বাংলা সংলাপ + সাবটাইটেল, অনুপাত ১৬:৯, মান draft।',
+   360→  },
+   361→  {
+   362→    id: 'film-dialogue',
+   363→    icon: MessagesSquare,
+   364→    title: 'সংলাপ-দৃশ্য',
+   365→    description:
+   366→      'দুই/তিন চরিত্রের কথোপকথনের দৃশ্য — সংলাপ-TTS মাপা-দৈর্ঘ্য টাইমলাইনে বসে।',
+   367→    status: 'active',
+   368→    matrixKey: 'cap-short-film',
+   369→    languages: 'বাংলা · ইংরেজি',
+   370→    maxDuration: `${toBnDigits(20)}–${toBnDigits(60)} সেকেন্ড`,
+   371→    engine: 'ai',
+   372→    eta: `${toBnDigits(5)}–${toBnDigits(20)} মিনিট`,
+   373→    gpu: 'লোকাল GPU লাগে না',
+   374→    draft:
+   375→      'চা-দোকানে দুই বন্ধুর একটা মজার সংলাপ-দৃশ্য বানাও — বাংলা সংলাপ, ২০ সেকেন্ড, অনুপাত ১৬:৯, মান standard।',
+   376→  },
+   377→  {
+   378→    id: 'film-music-video',
+   379→    icon: Music,
+   380→    title: 'মিউজিক ভিডিও',
+   381→    description:
+   382→      'আপলোড করা গানের বিট-মার্কারে কাট-মিলানো ভিজ্যুয়াল — গান না দিলে প্রসিডিউরাল ইনস্ট্রুমেন্টাল স্কোর।',
+   383→    status: 'active',
+   384→    matrixKey: 'cap-music-video',
+   385→    statusNote: 'গায়কের মুখ নড়ে না (লিপ-সিঙ্ক নেই) — সৎভাবে ঘোষিত',
+   386→    languages: 'যেকোনো গান (ভিষয়-নিরপেক্ষ ভিজ্যুয়াল)',
+   387→    maxDuration: `${toBnDigits(15)}–${toBnDigits(180)} সেকেন্ড`,
+   388→    engine: 'ai',
+   389→    eta: `${toBnDigits(10)}–${toBnDigits(30)} মিনিট`,
+   390→    gpu: 'লোকাল GPU লাগে না',
+   391→    draft:
+   392→      'গান আপলোড করেছি — এটা দিয়ে একটা মিউজিক ভিডিও বানাও: মুড romantic, অনুপাত 9:16, দৈর্ঘ্য ৩০ সেকেন্ড, মান draft। গানের বিট-মার্কারে কাট মিলিয়ে দিও।',
+   393→  },
+   394→  {
+   395→    id: 'film-trailer',
+   396→    icon: Megaphone,
+   397→    title: 'সিনেম্যাটিক ট্রেইলার',
+   398→    description:
+   399→      'শর্ট টেকে টেনশন-বিল্ডআপ + বাংলা টাইটেল-কার্ড + পরিবেশ-শব্দ ও সাউন্ড-ডিজাইন।',
+   400→    status: 'active',
+   401→    matrixKey: 'cap-motion-video',
+   402→    languages: 'বাংলা টেক্সট-ওভারলে',
+   403→    maxDuration: `${toBnDigits(15)}–${toBnDigits(60)} সেকেন্ড`,
+   404→    engine: 'ai',
+   405→    eta: `${toBnDigits(5)}–${toBnDigits(20)} মিনিট`,
+   406→    gpu: 'লোকাল GPU লাগে না',
+   407→    draft:
+   408→      'একটা সিনেম্যাটিক ট্রেইলার বানাও — থিম: ঢাকা শহরের এক রাতের রহস্য-গল্প। ২০ সেকেন্ড, অনুপাত ১৬:৯, বাংলা টাইটেল-কার্ড + পরিবেশ-শব্দ, মান draft।',
+   409→  },
+   410→  {
+   411→    id: 'film-story',
+   412→    icon: BookOpen,
+   413→    title: 'গল্প-ভিত্তিক ভিডিও',
+   414→    description:
+   415→      'গল্প বলা ভিডিও — বর্ণনা (ভয়েসওভার) + দৃশ্য + সাবটাইটেল।',
+   416→    status: 'active',
+   417→    matrixKey: 'cap-motion-video',
+   418→    languages: 'বাংলা বর্ণনা + সাবটাইটেল',
+   419→    maxDuration: `${toBnDigits(30)}–${toBnDigits(90)} সেকেন্ড`,
+   420→    engine: 'ai',
+   421→    eta: `${toBnDigits(10)}–${toBnDigits(30)} মিনিট`,
+   422→    gpu: 'লোকাল GPU লাগে না',
+   423→    draft:
+   424→      'ঠাকুরদার শোনানো লোকগাঁয়ের গল্প দিয়ে একটা গল্প-ভিত্তিক ভিডিও বানাও — বাংলা ভয়েসওভার বর্ণনা, ৪৫ সেকেন্ড, অনুপাত ১৬:৯, মান standard।',
+   425→  },
+   426→];
+   427→
+   428→// ------------------------------------------------------------
+   429→// স্ট্যাটাস-ব্যাজ ও কার্ড
+   430→// ------------------------------------------------------------
+   431→
+   432→const STATUS_META: Record<ModeStatus, { label: string; className: string }> = {
+   433→  active: {
+   434→    label: 'চালু',
+   435→    className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+   436→  },
+   437→  limited: {
+   438→    label: 'সীমাসহ',
+   439→    className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+   440→  },
+   441→  experimental: {
+   442→    label: 'পরীক্ষামূলক',
+   443→    className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+   444→  },
+   445→  unavailable: {
+   446→    label: 'অনুপলব্ধ (এখানে)',
+   447→    className: 'border-stone-400/50 bg-stone-400/15 text-stone-600 dark:text-stone-300',
+   448→  },
+   449→  future: {
+   450→    label: 'ভবিষ্যৎ',
+   451→    className: 'border-dashed border-stone-400/70 bg-transparent text-stone-600 dark:text-stone-300',
+   452→  },
+   453→};
+   454→
+   455→/** মেটা-সারি: আইকন + লেবেল + মান */
+   456→function ModeMetaRow({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+   457→  return (
+   458→    <li className="flex items-start gap-1.5 text-xs leading-relaxed">
+   459→      <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/80" aria-hidden="true" />
+   460→      <span className="min-w-0">
+   461→        <span className="text-muted-foreground">{label}: </span>
+   462→        <span className="text-foreground/90">{value}</span>
+   463→      </span>
+   464→    </li>
+   465→  );
+   466→}
+   467→
+   468→function ModeCard({
+   469→  mode,
+   470→  row,
+   471→  onStart,
+   472→}: {
+   473→  mode: StudioMode;
+   474→  /** Availability Matrix-এর সংশ্লিষ্ট সারি (না পেলে হার্ডকোডেড ফলব্যাক) */
+   475→  row?: AvailabilityMatrixRow;
+   476→  onStart: (draft: string) => void;
+   477→}) {
+   478→  // §১১: ম্যাট্রিক্সের overall রায়ই প্রাধান্য পায়; না লোড হলে হার্ডকোডেড সৎ স্ট্যাটাস
+   479→  const status = row ? statusFromOverall(row.overall) : mode.status;
+   480→  const meta = STATUS_META[status];
+   481→  const isOff = status === 'unavailable' || status === 'future';
+   482→  const Icon = mode.icon;
+   483→
+   484→  // অফ-মোডে প্রকৃত কারণ (ম্যাট্রিক্সের errorReason); চালু-ধরনের মোডে সৎ-নোট
+   485→  const noteText = isOff ? (row?.errorReason ?? mode.statusNote) : (row?.honestNote ?? mode.statusNote);
+   486→  const notePrefix = isOff ? 'কারণ: ' : '';
+   487→
+   488→  return (
+   489→    <Card className="flex h-full flex-col gap-3 rounded-xl p-4 shadow-sm sm:p-5">
+   490→      {/* হেডার: আইকন + শিরোনাম + স্ট্যাটাস */}
+   491→      <div className="flex items-start gap-3">
+   492→        <span
+   493→          className={cn(
+   494→            'flex size-10 shrink-0 items-center justify-center rounded-lg',
+   495→            isOff
+   496→              ? 'bg-muted text-muted-foreground'
+   497→              : 'bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+   498→          )}
+   499→        >
+   500→          <Icon className="size-5" aria-hidden="true" />
+   501→        </span>
+   502→        <div className="min-w-0 flex-1">
+   503→          <div className="flex flex-wrap items-center gap-1.5">
+   504→            <h3 className="text-sm font-semibold leading-snug">{mode.title}</h3>
+   505→            <Badge variant="outline" className={cn('shrink-0 text-[11px]', meta.className)}>
+   506→              {meta.label}
+   507→            </Badge>
+   508→          </div>
+   509→          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{mode.description}</p>
+   510→        </div>
+   511→      </div>
+   512→
+   513→      {/* §১১: চার-মাত্রিক স্ট্যাটাস-চিপ + শেষ পরীক্ষা (ম্যাট্রিক্স থেকে) */}
+   514→      {row && (
+   515→        <div className="flex flex-wrap items-center gap-1" aria-label={`${mode.title} — চার-মাত্রিক স্ট্যাটাস`}>
+   516→          <DimensionChip dimension="লাইসেন্স" meta={LICENSE_META[row.license]} />
+   517→          <DimensionChip dimension="প্রোভাইডার" meta={PROVIDER_META[row.provider]} />
+   518→          <DimensionChip dimension="ইন্টিগ্রেশন" meta={INTEGRATION_META[row.integration]} />
+   519→          <DimensionChip dimension="রানটাইম" meta={RUNTIME_META[row.runtime]} />
+   520→          {row.lastTestedAt && (
+   521→            <span
+   522→              className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-[10px] leading-relaxed text-muted-foreground"
+   523→              title="সর্বশেষ সফল পরীক্ষার তারিখ"
+   524→            >
+   525→              <CalendarCheck className="size-3 shrink-0" aria-hidden="true" />
+   526→              শেষ পরীক্ষা: {formatDateBn(row.lastTestedAt)}
+   527→            </span>
+   528→          )}
+   529→        </div>
+   530→      )}
+   531→
+   532→      {/* কারণ / সতর্কতা-নোট */}
+   533→      {noteText && (
+   534→        <p
+   535→          className={cn(
+   536→            'flex items-start gap-1.5 rounded-lg border px-3 py-2 text-xs leading-relaxed',
+   537→            isOff
+   538→              ? 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300'
+   539→              : 'border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400',
+   540→          )}
+   541→        >
+   542→          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   543→          <span>
+   544→            {notePrefix && <span className="font-semibold">{notePrefix}</span>}
+   545→            {noteText}
+   546→          </span>
+   547→        </p>
+   548→      )}
+   549→
+   550→      {/* অতিরিক্ত সৎ-স্ট্যাটাস-লাইন (S8-2d — কেবল নির্দিষ্ট মোডে) */}
+   551→      {mode.extraNote && (
+   552→        <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+   553→          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   554→          <span>{mode.extraNote}</span>
+   555→        </p>
+   556→      )}
+   557→
+   558→      {/* বিকল্প-পথ (অফ-মোডে ম্যাট্রিক্সের fallback) */}
+   559→      {isOff && row?.fallback && (
+   560→        <p className="flex items-start gap-1.5 rounded-lg border border-emerald-600/30 bg-emerald-600/5 px-3 py-2 text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
+   561→          <ArrowRightLeft className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   562→          <span>
+   563→            <span className="font-semibold">বিকল্প: </span>
+   564→            {row.fallback}
+   565→          </span>
+   566→        </p>
+   567→      )}
+   568→
+   569→      {/* বাধ্যতামূলক মেটা (§১০) */}
+   570→      <ul className="space-y-1.5" aria-label={`${mode.title} — মোড-মেটা`}>
+   571→        <ModeMetaRow icon={Languages} label="ভাষা" value={mode.languages} />
+   572→        <ModeMetaRow icon={Timer} label="সর্বোচ্চ দৈর্ঘ্য" value={mode.maxDuration} />
+   573→        <ModeMetaRow icon={Cog} label="ইঞ্জিন" value={ENGINE_LABELS[mode.engine]} />
+   574→        <ModeMetaRow icon={Clock3} label="আনুমানিক সময়" value={mode.eta} />
+   575→        <ModeMetaRow icon={CircuitBoard} label="GPU" value={mode.gpu} />
+   576→      </ul>
+   577→
+   578→      {/* অ্যাকশন */}
+   579→      <div className="mt-auto">
+   580→        {isOff ? (
+   581→          <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+   582→            <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+   583→            এই মোড এই পরিবেশে বন্ধ (লাইসেন্সে নয়) — কারণ ও বিকল্প উপরে; রেজিস্ট্রির ম্যাট্রিক্সে বিস্তারিত।
+   584→          </p>
+   585→        ) : (
+   586→          <Button
+   587→            type="button"
+   588→            onClick={() => onStart(mode.draft ?? '')}
+   589→            className="h-11 w-full rounded-xl bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 focus-visible:ring-emerald-600/40 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+   590→          >
+   591→            <PlayCircle className="size-4" aria-hidden="true" />
+   592→            শুরু করুন
+   593→          </Button>
+   594→        )}
+   595→      </div>
+   596→    </Card>
+   597→  );
+   598→}
+   599→
+   600→function ModeGrid({
+   601→  modes,
+   602→  rowByKey,
+   603→  onStart,
+   604→}: {
+   605→  modes: StudioMode[];
+   606→  rowByKey: Map<string, AvailabilityMatrixRow>;
+   607→  onStart: (draft: string) => void;
+   608→}) {
+   609→  return (
+   610→    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+   611→      {modes.map((mode) => (
+   612→        <ModeCard
+   613→          key={mode.id}
+   614→          mode={mode}
+   615→          row={mode.matrixKey ? rowByKey.get(mode.matrixKey) : undefined}
+   616→          onStart={onStart}
+   617→        />
+   618→      ))}
+   619→    </div>
+   620→  );
+   621→}
+   622→
+   623→// ------------------------------------------------------------
+   624→// মূল ভিউ
+   625→// ------------------------------------------------------------
+   626→
+   627→function StudioViewInner() {
+   628→  const setDraft = useChatStore((s) => s.setDraft);
+   629→  const focusComposer = useChatStore((s) => s.focusComposer);
+   630→  const setActiveView = useUiView((s) => s.setActiveView);
+   631→
+   632→  /** §১১: লাইভ ম্যাট্রিক্স — মোড→ক্ষমতা-সারি ম্যাপ */
+   633→  const { data: availability } = useAvailability();
+   634→  const rowByKey = useMemo(() => {
+   635→    const map = new Map<string, AvailabilityMatrixRow>();
+   636→    for (const r of availability?.matrix ?? []) map.set(r.key, r);
+   637→    return map;
+   638→  }, [availability]);
+   639→
+   640→  /** "শুরু করুন" → draft বসাও → চ্যাট-ভিউ → কম্পোজারে ফোকাস */
+   641→  const handleStart = (draft: string) => {
+   642→    if (!draft.trim()) return;
+   643→    setDraft(draft);
+   644→    setActiveView('chat');
+   645→    focusComposer();
+   646→    toast({
+   647→      title: 'স্টুডিও-মোড প্রস্তুত',
+   648→      description: 'ড্রাফট চ্যাটে বসেছে — ইচ্ছামতো সম্পাদনা করে পাঠান।',
+   649→    });
+   650→  };
+   651→
+   652→  return (
+   653→    <div className="mx-auto w-full max-w-6xl px-4 py-6">
+   654→      <header className="mb-5 space-y-1">
+   655→        <h1 className="flex items-center gap-2 text-lg font-semibold">
+   656→          <LayoutGrid className="size-5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   657→          স্টুডিও — তৈরির মোড
+   658→        </h1>
+   659→        <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+   660→          কী বানাতে চান বেছে নিন — প্রতিটি মোডের ইঞ্জিন-প্রকৃতি, সময় ও সীমা স্পষ্ট লেখা আছে।
+   661→          স্ট্যাটাস-ব্যাজ ও চার-মাত্রিক চিপ লাইভ অ্যাভেইলেবিলিটি ম্যাট্রিক্স থেকে আসে —
+   662→          অনুপলব্ধ হলে প্রকৃত কারণ ও বিকল্প-পথসহ।
+   663→          “শুরু করুন” চাপলে মোডের প্রস্তুত নির্দেশনা চ্যাটে বসে যাবে।
+   664→        </p>
+   665→      </header>
+   666→
+   667→      <Tabs defaultValue="audio" className="gap-4">
+   668→        <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl p-1 sm:w-auto">
+   669→          <TabsTrigger
+   670→            value="audio"
+   671→            className="min-h-11 shrink-0 rounded-lg px-4 text-xs sm:text-sm"
+   672→          >
+   673→            <AudioLines className="size-4" aria-hidden="true" />
+   674→            অডিও স্টুডিও
+   675→          </TabsTrigger>
+   676→          <TabsTrigger
+   677→            value="video"
+   678→            className="min-h-11 shrink-0 rounded-lg px-4 text-xs sm:text-sm"
+   679→          >
+   680→            <Video className="size-4" aria-hidden="true" />
+   681→            ভিডিও স্টুডিও
+   682→          </TabsTrigger>
+   683→          <TabsTrigger
+   684→            value="film"
+   685→            className="min-h-11 shrink-0 rounded-lg px-4 text-xs sm:text-sm"
+   686→          >
+   687→            <Clapperboard className="size-4" aria-hidden="true" />
+   688→            ফিল্ম ডিরেক্টর
+   689→          </TabsTrigger>
+   690→        </TabsList>
+   691→
+   692→        <TabsContent value="audio" className="mt-0">
+   693→          <ModeGrid modes={AUDIO_MODES} rowByKey={rowByKey} onStart={handleStart} />
+   694→        </TabsContent>
+   695→        <TabsContent value="video" className="mt-0">
+   696→          <ModeGrid modes={VIDEO_MODES} rowByKey={rowByKey} onStart={handleStart} />
+   697→        </TabsContent>
+   698→        <TabsContent value="film" className="mt-0">
+   699→          <ModeGrid modes={FILM_MODES} rowByKey={rowByKey} onStart={handleStart} />
+   700→        </TabsContent>
+   701→      </Tabs>
+   702→    </div>
+   703→  );
+   704→}
+   705→
+   706→/** লোকাল QueryClient-প্রভাইডার — useAvailability-এর useQuery-এর জন্য */
+   707→export function StudioView() {
+   708→  const [queryClient] = useState(
+   709→    () =>
+   710→      new QueryClient({
+   711→        defaultOptions: {
+   712→          queries: { staleTime: 5 * 60 * 1000, retry: 1, refetchOnWindowFocus: false },
+   713→        },
+   714→      }),
+   715→  );
+   716→
+   717→  return (
+   718→    <QueryClientProvider client={queryClient}>
+   719→      <StudioViewInner />
+   720→    </QueryClientProvider>
+   721→  );
+   722→}
+   723→

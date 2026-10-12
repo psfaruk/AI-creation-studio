@@ -7,6 +7,7 @@
 import { getZAI } from './llm';
 import type { LLMMessage } from './llm';
 import { withRetry, isRateLimitErrorText, TemporarilyUnavailableError } from './retry';
+import { cloudSkipAdvised, type RateLimitChannel } from './rate-limit-coordinator';
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import { mkdtemp, readdir, rm, writeFile } from 'fs/promises';
@@ -14,6 +15,19 @@ import path from 'path';
 import os from 'os';
 
 const execFileAsync = promisify(execFileCb);
+
+// ------------------------------------------------------------
+// S9 দ্রুত-গেট: চ্যানেল দীর্ঘ কুলডাউনে থাকলে ক্লাউড-চেষ্টাই বাদ —
+// প্রতি শটে/ধাপে মিনিটের রিট্রাই-অপেক্ষা নয়; কলারের সৎ-ফলব্যাক
+// (লোকাল ফ্রেম/নির্ধারক পরিকল্পনা) তৎক্ষণাৎ চালু হয়।
+// ------------------------------------------------------------
+function fastFailIfGated(channel: RateLimitChannel, label: string): void {
+  if (cloudSkipAdvised(channel)) {
+    throw new TemporarilyUnavailableError(
+      `${label} — চ্যানেল দীর্ঘ রেট-লিমিট-কুলডাউনে; ক্লাউড-চেষ্টা স্কিপ (লোকাল-ফলব্যাকে যান)`
+    );
+  }
+}
 
 // §১০-র পুনঃচেষ্টা-নীতি এখন retry.ts-এ (বিশুদ্ধ মূল — llm.ts-ও ব্যবহার করে)।
 // পুরনো সব ইমপোর্টারের জন্য এখান থেকে পুনঃ-রপ্তানি:
@@ -44,34 +58,59 @@ export interface GeneratedImage {
   size: ImageSize;
 }
 
-/** টেক্সট থেকে ছবি তৈরি → Buffer (ফাইল সেভ করে না) */
+/**
+ * টেক্সট থেকে ছবি তৈরি → Buffer (ফাইল সেভ করে না)।
+ * S9: চ্যানেল 'image' — কুলডাউন-সৎ-অপেক্ষা + সিরিয়ালাইজড +
+ * ৪২৯-ব্যাকঅফ (৩ চেষ্টা); নিঃশেষে TemporarilyUnavailableError।
+ */
 export async function generateImageBuffer(prompt: string, size: ImageSize = '1024x1024'): Promise<GeneratedImage> {
+  fastFailIfGated('image', 'ছবি-জেনারেশন');
   const zai = await getZAI();
-  const res = await zai.images.generations.create({ prompt, size });
-  const base64 = res?.data?.[0]?.base64;
-  if (!base64) throw new Error('ছবি তৈরি হলেও ডেটা পাওয়া যায়নি');
-  const buffer = Buffer.from(base64, 'base64');
-  if (buffer.length === 0) throw new Error('ছবির ডেটা খালি');
-  return { buffer, size };
+  return withRetry(
+    async () => {
+      const res = await zai.images.generations.create({ prompt, size });
+      const base64 = res?.data?.[0]?.base64;
+      if (!base64) throw new Error('ছবি তৈরি হলেও ডেটা পাওয়া যায়নি');
+      const buffer = Buffer.from(base64, 'base64');
+      if (buffer.length === 0) throw new Error('ছবির ডেটা খালি');
+      return { buffer, size };
+    },
+    `ছবি-জেনারেশন (${size})`,
+    2,
+    4000,
+    { channel: 'image', maxDelayMs: 30_000, cooldownBudgetMs: 30_000 }
+  );
 }
 
-/** বিদ্যমান ছবি সম্পাদনা (প্রম্পট-নির্দেশিত) → Buffer */
+/**
+ * বিদ্যমান ছবি সম্পাদনা (প্রম্পট-নির্দেশিত) → Buffer।
+ * S9: চ্যানেল 'image' — generateImageBuffer-এর মতোই ৪২৯-সহনশীল।
+ */
 export async function editImageBuffer(
   imageDataUrl: string,
   prompt: string,
   size: ImageSize = '1024x1024'
 ): Promise<GeneratedImage> {
+  fastFailIfGated('image', 'ছবি-সম্পাদনা');
   const zai = await getZAI();
-  const res = await zai.images.generations.edit({
-    prompt,
-    images: [{ url: imageDataUrl }],
-    size,
-  } as any);
-  const base64 = res?.data?.[0]?.base64;
-  if (!base64) throw new Error('ছবি সম্পাদনার ফলাফল পাওয়া যায়নি');
-  const buffer = Buffer.from(base64, 'base64');
-  if (buffer.length === 0) throw new Error('সম্পাদিত ছবির ডেটা খালি');
-  return { buffer, size };
+  return withRetry(
+    async () => {
+      const res = await zai.images.generations.edit({
+        prompt,
+        images: [{ url: imageDataUrl }],
+        size,
+      } as any);
+      const base64 = res?.data?.[0]?.base64;
+      if (!base64) throw new Error('ছবি সম্পাদনার ফলাফল পাওয়া যায়নি');
+      const buffer = Buffer.from(base64, 'base64');
+      if (buffer.length === 0) throw new Error('সম্পাদিত ছবির ডেটা খালি');
+      return { buffer, size };
+    },
+    `ছবি-সম্পাদনা (${size})`,
+    2,
+    4000,
+    { channel: 'image', maxDelayMs: 30_000, cooldownBudgetMs: 30_000 }
+  );
 }
 
 /** সম্পূর্ণ কণ্ঠ-তালিকা (TTS স্কিল-ডকুমেন্ট থেকে যাচাইকৃত) */
@@ -90,6 +129,7 @@ export async function synthesizeSpeech(
   voice: TtsVoice = 'tongtong',
   speed = 1
 ): Promise<SpeechResult> {
+  fastFailIfGated('tts', 'TTS');
   const zai = await getZAI();
   const attempt = async (format: 'mp3' | 'wav'): Promise<Buffer> =>
     withRetry(
@@ -108,7 +148,9 @@ export async function synthesizeSpeech(
       },
       `TTS (${voice}, ${format})`,
       5,
-      20_000
+      20_000,
+      // S9: চ্যানেল 'tts' — কুলডাউন-সৎ-অপেক্ষা + সিরিয়ালাইজড
+      { channel: 'tts', maxDelayMs: 90_000 }
     );
   let buffer: Buffer;
   let ext = 'mp3';
@@ -248,8 +290,12 @@ export interface StructuredResult<T> {
 /**
  * LLM থেকে কাঠামোগত JSON আনা (tolerant পার্সার + একবার পুনঃচেষ্টা)।
  * পাইপলাইনের স্ক্রিপ্ট/ব্রেকডাউন/শট-প্ল্যান ধাপে ব্যবহৃত।
+ *
+ * S9: চ্যানেল 'chat' + ৪ চেষ্টা + max ৩০ সে. — পাইপলাইন-ধাপ দ্রুতই
+ * সৎ-লোকাল-ফলব্যাকে যেতে পারে (দীর্ঘ অপেক্ষা পাইপলাইন আটকাবে না)।
  */
 export async function chatJson<T>(messages: LLMMessage[], retry = 1): Promise<StructuredResult<T>> {
+  fastFailIfGated('chat', 'LLM (কাঠামোগত JSON)');
   for (let attempt = 0; ; attempt++) {
     const zai = await getZAI();
     // §১০: নেটওয়ার্ক-স্তরের ৪২৯/৫xx/টাইমআউট withRetry-তে (Retry-After + full-jitter);
@@ -260,7 +306,7 @@ export async function chatJson<T>(messages: LLMMessage[], retry = 1): Promise<St
         thinking: { type: 'disabled' },
       });
       return String(res?.choices?.[0]?.message?.content ?? '');
-    }, 'LLM (কাঠামোগত JSON)', 3, 4000);
+    }, 'LLM (কাঠামোগত JSON)', 4, 4000, { channel: 'chat', maxDelayMs: 30_000, cooldownBudgetMs: 45_000 });
     const parsed = extractJson<T>(raw);
     if (parsed !== null) return { data: parsed, raw };
     if (attempt >= retry) return { data: null, raw };
@@ -361,7 +407,8 @@ export async function imageSearchSdkFirst(query: string, count = 4): Promise<Ima
       },
       `ছবি-সার্চ SDK (${q.slice(0, 40)})`,
       3,
-      5000
+      5000,
+      { channel: 'search', maxDelayMs: 60_000 }
     );
     return { results: hits, via: 'sdk' };
   } catch (sdkErr) {

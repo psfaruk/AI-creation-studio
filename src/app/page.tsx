@@ -6,6 +6,7 @@ import { Menu, Sparkles } from 'lucide-react';
 import { Composer } from '@/components/chat/composer';
 import { EmptyState } from '@/components/chat/empty-state';
 import { MessageList } from '@/components/chat/message-list';
+import { RateLimitBanner } from '@/components/chat/rate-limit-banner';
 import { SidebarContent } from '@/components/chat/sidebar';
 import { GalleryView } from '@/components/studio/gallery-view';
 import { GuideView } from '@/components/studio/guide-view';
@@ -127,6 +128,8 @@ export default function Home() {
                 isLoadingDetail={isLoadingDetail}
               />
             )}
+            {/* S9: রেট-লিমিটেড হলে সৎ-অ্যাম্বার ব্যানার (ব্লকড না থাকলে কিছুই রেন্ডার হয় না) */}
+            <RateLimitBanner />
             <Composer />
           </section>
         )}

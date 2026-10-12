@@ -26,7 +26,8 @@ import {
   normalizeShotDurations,
   sanitize,
 } from '../../film-helpers';
-import { generateImageBuffer } from '../../sdk-helpers';
+import { generateImageBuffer, isRateLimitErrorText } from '../../sdk-helpers';
+import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
 import { cachedSynthesizeSpeech } from '../../tts-cache';
 import type { ImageSize } from '../../sdk-helpers';
 import type { CameraMove } from '@/lib/types';
@@ -107,6 +108,8 @@ export interface AiShotRequest {
   /** ফলব্যাক ফ্রেম চরিত্র-রেফারেন্স দিয়ে এডিট হবে (ঐচ্ছিক data-URL) */
   fallbackReferenceUrl?: string;
   fallbackMove: CameraMove;
+  /** S11: লোকাল-প্রসিডিউরাল শেষ-উপায়ের মুড-প্যালেট (spec.mood থেকে) */
+  fallbackMood?: string;
   onStatus?: (note: string) => Promise<void> | void;
 }
 
@@ -117,6 +120,8 @@ export interface AiShotResult {
   usedAi: boolean;
   /** ফলব্যাক হলে স্টোরিবোর্ড ফ্রেমের পাথ (artifact নিবন্ধনের জন্য) */
   framePath?: string;
+  /** S11: ফলব্যাক-ফ্রেমটি লোকাল প্রসিডিউরাল (ক্লাউড-ইমেজও ব্যর্থ) — সৎ নোটের জন্য */
+  frameLocal?: boolean;
   aiModel?: string;
   fallbackError?: string;
 }
@@ -176,6 +181,8 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
   // সৎ-ফলব্যাক — স্টোরিবোর্ড ফ্রেম + Ken Burns (লেবেলসহ)
   await req.onStatus?.('AI-জেনারেশন ব্যর্থ — স্টোরিবোর্ড+ক্যামেরা-মোশন ফলব্যাক');
   let buffer: Buffer;
+  let frameIsLocal = false;
+  let frameFailMsg = '';
   try {
     if (req.fallbackReferenceUrl) {
       const { editImageBuffer } = await import('../../sdk-helpers');
@@ -190,7 +197,34 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
       buffer = (await generateImageBuffer(req.fallbackImagePrompt, req.fallbackGenSize)).buffer;
     }
   } catch (err) {
-    throw new Error(`AI-শট ও ফলব্যাক-ফ্রেম দুটোই ব্যর্থ (AI: ${lastErr.slice(0, 140)}; ফ্রেম: ${err instanceof Error ? err.message.slice(0, 100) : 'অজানা'})`);
+    // S11 শেষ-উপায়: ক্লাউড-ইমেজও অচল (৪২৯-উইন্ডো) → লোকাল প্রসিডিউরাল
+    // ফ্রেম — সৎ লেবেলসহ; শট কখনো শুধু এই কারণে বাদ পড়ে না।
+    frameFailMsg = err instanceof Error ? err.message : String(err);
+    const rateLimited = isRateLimitErrorText(frameFailMsg);
+    try {
+      await req.onStatus?.(
+        rateLimited
+          ? 'ফলব্যাক-ফ্রেমও রেট-লিমিটেড — লোকাল প্রসিডিউরাল ফ্রেম (নিউরাল নয়)'
+          : 'ফলব্যাক-ফ্রেমও ব্যর্থ — লোকাল প্রসিডিউরাল ফ্রেম (নিউরাল নয়)'
+      );
+      const [fw, fh] = String(req.fallbackGenSize).split('x').map(Number);
+      const local = await generateLocalFrame({
+        seed: `aishot-fb-${req.index}`,
+        width: Number.isFinite(fw) && fw > 0 ? fw : req.width,
+        height: Number.isFinite(fh) && fh > 0 ? fh : req.height,
+        outputPath: path.join(req.workingDir, `fb-local-${req.index}.png`),
+        mood: req.fallbackMood,
+        label: `শট ${req.index + 1}`,
+      });
+      buffer = await readFile(local.path);
+      frameIsLocal = true;
+    } catch (localErr) {
+      throw new Error(
+        `AI-শট, ফলব্যাক-ফ্রেম ও লোকাল-ফ্রেম তিনটেই ব্যর্থ (AI: ${lastErr.slice(0, 100)}; ফ্রেম: ${
+        frameFailMsg.slice(0, 100)
+      }; লোকাল: ${localErr instanceof Error ? localErr.message.slice(0, 100) : 'অজানা'})`
+      );
+    }
   }
   const framePath = path.join(req.workingDir, `fb-frame-${req.index}.png`);
   await writeFile(framePath, buffer);
@@ -202,6 +236,18 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
     height: req.height,
     move: req.fallbackMove,
   });
+  if (frameIsLocal) {
+    return {
+      clipPath,
+      framePath,
+      frameLocal: true,
+      usedAi: false,
+      engineLabel: `শট ${req.index + 1}: লোকাল প্রসিডিউরাল ফ্রেম + ক্যামেরা-মোশন (${
+        isRateLimitErrorText(frameFailMsg) ? 'ক্লাউড রেট-লিমিটেড' : 'ক্লাউড ব্যর্থ'
+      })`,
+      fallbackError: `${LOCAL_FRAME_LABEL}; AI: ${lastErr.slice(0, 120)}; ফ্রেম: ${frameFailMsg.slice(0, 100)}`.slice(0, 240),
+    };
+  }
   return {
     clipPath,
     framePath,
@@ -219,6 +265,9 @@ interface MotionShot extends PlannedShot {
   framePath?: string;
   clipPath?: string;
 }
+
+/** নির্ধারক ফলব্যাক-শট-তালিকার ক্যামেরা-চক্র */
+const FALLBACK_MOVES: CameraMove[] = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'];
 
 export const motionVideoPipeline: PipelineFn = async ctx => {
   const spec = ctx.spec;
@@ -259,14 +308,32 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     const limit = maxShots('motion_video', spec.quality, engine);
     const perShot = engine === 'ai_diffusion' ? 10 : 5;
     const count = Math.max(1, Math.min(limit, Math.round(durationSec / perShot)));
-    shots = await shotPlanFromLLM(spec.idea ?? spec.title, {
-      count,
-      durationHintSec: SHOT_DURATION_HINT.motion_video,
-      maxCount: limit,
-      aspect,
-      totalDurationSec: durationSec,
-      context: `মোশন ভিডিও — মোট ${durationSec} সেকেন্ড, ${aspect}, ${fps}fps, ইঞ্জিন: ${engine}`,
-    });
+    // S11: পরিকল্পনা-LLM অচল (৪২৯) হলে নির্ধারক সরল শট-তালিকা —
+    // ধাপ কখনো মরবে না; সৎ নোট প্রচারিত হয় (AI-পরিকল্পনা নয়)।
+    try {
+      shots = await shotPlanFromLLM(spec.idea ?? spec.title, {
+        count,
+        durationHintSec: SHOT_DURATION_HINT.motion_video,
+        maxCount: limit,
+        aspect,
+        totalDurationSec: durationSec,
+        context: `মোশন ভিডিও — মোট ${durationSec} সেকেন্ড, ${aspect}, ${fps}fps, ইঞ্জিন: ${engine}`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.partialNotes.push(
+        isRateLimitErrorText(msg)
+          ? 'শট-পরিকল্পনা LLM রেট-লিমিটেড — নির্ধারক সরল শট-তালিকা ব্যবহৃত (AI-পরিকল্পনা নয়)।'
+          : `শট-পরিকল্পনা ব্যর্থ (${msg.slice(0, 120)}) — নির্ধারক সরল শট-তালিকা ব্যবহৃত।`
+      );
+      const even = Math.round((durationSec / count) * 10) / 10;
+      shots = Array.from({ length: count }, (_, i) => ({
+        description: `Cinematic scene ${i + 1}: atmospheric visual matching the given idea`,
+        label: `দৃশ্য ${i + 1}`,
+        cameraMove: FALLBACK_MOVES[i % FALLBACK_MOVES.length],
+        durationSec: Math.max(1.5, even),
+      }));
+    }
     normalizeShotDurations(shots, durationSec);
     if (engine === 'ai_diffusion') {
       // AI-ক্লিপ ৫/১০ সেকেন্ডে আসে — শট-দৈর্ঘ্য সেই গ্রিডে ক্ল্যাম্প
@@ -310,6 +377,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
               fallbackImagePrompt: imagePromptForShot(shot, spec.style),
               fallbackGenSize: genSize,
               fallbackMove: spec.cameraMove ?? shot.cameraMove,
+              fallbackMood: String(spec.mood ?? ''),
               onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
             });
             if (res.usedAi) {
@@ -326,7 +394,9 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
                   of: shots.length,
                   cameraMove: shot.cameraMove,
                   label: shot.label,
-                  note: `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
+                  note: res.frameLocal
+                    ? `ক্লাউড AI-জেনারেশন ও ফলব্যাক-ফ্রেম ব্যর্থ — লোকাল প্রসিডিউরাল ফ্রেম (${LOCAL_FRAME_LABEL})`
+                    : `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
                 },
               });
             }
@@ -339,30 +409,64 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
           }
         } else {
           // cinematic_motion — আগের সৎ পথ: স্টোরিবোর্ড ফ্রেম + Ken Burns
+          // S11: শট-বাদের আগে শেষ-উপায় — লোকাল প্রসিডিউরাল ফ্রেম (সৎ লেবেলসহ)
+          let frameIsLocal = false;
+          let frameFailReason = '';
           if (!shot.framePath) {
             await step.setDetail(`শট ${i + 1}/${shots.length} — ফ্রেম তৈরি`);
             const prompt = imagePromptForShot(shot, spec.style);
             let buffer: Buffer | null = null;
             try {
               buffer = (await generateImageBuffer(prompt, genSize)).buffer;
-            } catch {
+            } catch (err) {
+              frameFailReason = err instanceof Error ? err.message : String(err);
               try {
                 buffer = (await generateImageBuffer(prompt, genSize)).buffer; // একবার পুনঃচেষ্টা
-              } catch (err) {
-                ctx.partialNotes.push(
-                  `শট ${i + 1}-এর ফ্রেম তৈরি ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শট বাদ`
-                );
-                continue;
+              } catch (err2) {
+                const msg2 = err2 instanceof Error ? err2.message : String(err2);
+                const rateLimited = isRateLimitErrorText(msg2);
+                try {
+                  const localFrame = await generateLocalFrame({
+                    seed: `motion-shot-${i}`,
+                    width: dims.w,
+                    height: dims.h,
+                    outputPath: path.join(wd, `frame-${i}.png`),
+                    mood: String(spec.mood ?? ''),
+                    label: shot.label,
+                  });
+                  buffer = await readFile(localFrame.path);
+                  frameIsLocal = true;
+                  ctx.partialNotes.push(
+                    rateLimited
+                      ? `শট ${i + 1}-এর ইমেজ-জেন রেট-লিমিটেড — ${LOCAL_FRAME_LABEL}`
+                      : `শট ${i + 1}-এর ফ্রেম ক্লাউডে ব্যর্থ (${msg2.slice(0, 100)}) — ${LOCAL_FRAME_LABEL}`
+                  );
+                } catch (localErr) {
+                  ctx.partialNotes.push(
+                    `শট ${i + 1}-এর ফ্রেম তৈরি ব্যর্থ (${msg2.slice(0, 120)}) ও লোকাল-ফ্রেমও ব্যর্থ (${
+                      localErr instanceof Error ? localErr.message.slice(0, 80) : 'অজানা'
+                    }) — শট বাদ`
+                  );
+                  continue;
+                }
               }
             }
             const framePath = path.join(wd, `frame-${i}.png`);
-            await writeFile(framePath, buffer);
+            if (!frameIsLocal) await writeFile(framePath, buffer);
             await ctx.registerArtifact({
               buffer,
               kind: 'image',
               mimeType: 'image/png',
               fileName: `storyboard-shot-${i + 1}.png`,
-              metaJson: { shot: i + 1, of: shots.length, cameraMove: shot.cameraMove, label: shot.label },
+              metaJson: {
+                shot: i + 1,
+                of: shots.length,
+                cameraMove: shot.cameraMove,
+                label: shot.label,
+                ...(frameIsLocal
+                  ? { kind: 'local-procedural', honestLabel: LOCAL_FRAME_LABEL, note: 'local-procedural — AI ফ্রেম নয়' }
+                  : {}),
+              },
             });
             shot.framePath = framePath;
           }
@@ -386,7 +490,13 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
               continue;
             }
           }
-          shotEngineLabels.push(`শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`);
+          shotEngineLabels.push(
+            frameIsLocal
+              ? `শট ${i + 1}: লোকাল প্রসিডিউরাল ফ্রেম + ক্যামেরা-মোশন (${
+                  isRateLimitErrorText(frameFailReason) ? 'ইমেজ-জেন রেট-লিমিটেড' : 'ইমেজ-জেন ব্যর্থ'
+                })`
+              : `শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`
+          );
           valid.push({ ...shot, clipPath });
         }
       }
