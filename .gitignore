@@ -50,5 +50,10 @@ test
 prompt
 
 server.log
+
+# runtime process files
+.zscripts/dev.pid
+*.pid
+
 # Skills directory
 /skills/
