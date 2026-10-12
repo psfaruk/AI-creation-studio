@@ -12,6 +12,7 @@ import { chatComplete, parseToolCall, type LLMMessage } from './llm';
 import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
 import { isChannelBlocked } from './rate-limit-coordinator';
 import { SYSTEM_PROMPT } from './prompts';
+import { describeChatModel, findChatModel } from './chat-models';
 import { validateToolCall, type ToolOutput, type ToolSpec } from './registry';
 import { buildMessageView } from './serialize';
 import { createProduction } from './production/create';
@@ -445,6 +446,23 @@ async function runAgentLoop(runId: string): Promise<void> {
       text = await chatCompleteWithNotes(runId, context, usedModel);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // কী-সমস্যায় (কী নেই/অবৈধ/ব্যালান্স শেষ) স্বয়ংক্রিয় GLM-ফলব্যাক নয় —
+      // ব্যবহারকারী স্পষ্টভাবে এক্সটার্নাল মডেল বেছেছেন; "ব্যাকএন্ডে GLM,
+      // লেবেলে DeepSeek" নিষিদ্ধ — সৎ ব্যর্থতাই একমাত্র পথ।
+      const selectedEntry = usedModel !== '' ? findChatModel(usedModel) : undefined;
+      const isKeyProblem =
+        !!selectedEntry &&
+        selectedEntry.provider !== 'zai' &&
+        /কী যোগ করা হয়নি|কী অবৈধ|ব্যালান্স শেষ/.test(msg);
+      if (isKeyProblem) {
+        emit(runId, {
+          type: 'run_note',
+          runId,
+          level: 'warn',
+          note: `নির্বাচিত মডেল "${describeChatModel(requestedModel)}" ব্যবহার করা যায়নি: ${msg.slice(0, 160)} — অন্য মডেলে স্বয়ংক্রিয় ফলব্যাক করা হয়নি; মডেল-তালিকা থেকে কী যোগ করুন বা অন্য মডেল বেছে নিন।`,
+        });
+        throw err;
+      }
       if (
         !modelFallbackDone &&
         usedModel !== '' &&
@@ -463,7 +481,7 @@ async function runAgentLoop(runId: string): Promise<void> {
           type: 'run_note',
           runId,
           level: 'warn',
-          note: `নির্বাচিত মডেল "${requestedModel}" এই মুহূর্তে ব্যবহার করা যায়নি (${msg.slice(0, 120)})। ডিফল্ট মডেলে চালিয়ে যাওয়া হচ্ছে — সৎ-ফলব্যাক।`,
+          note: `নির্বাচিত মডেল "${describeChatModel(requestedModel)}" এই মুহূর্তে ব্যবহার করা যায়নি (${msg.slice(0, 120)})। ডিফল্ট মডেলে চালিয়ে যাওয়া হচ্ছে — সৎ-ফলব্যাক।`,
         });
         try {
           text = await chatCompleteWithNotes(runId, context, '');
@@ -604,10 +622,11 @@ async function runAgentLoop(runId: string): Promise<void> {
   }
 
   // প্রকৃতপক্ষে ব্যবহৃত মডেল রেকর্ড (ফলব্যাক হলে আলাদা) — সৎ-লেবেলিং
+  // (এক্সটার্নাল মডেলে "প্রোভাইডার · apiModel" আকারে স্পষ্ট)
   await db.agentRun
     .update({
       where: { id: runId },
-      data: { usedModel: usedModel === '' ? '(default)' : usedModel },
+      data: { usedModel: describeChatModel(usedModel) },
     })
     .catch(() => undefined);
 

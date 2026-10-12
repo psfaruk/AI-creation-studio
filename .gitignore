@@ -63,3 +63,6 @@ server.log
 mixrepro-*
 /model-test/
 storage/logs/
+
+# AI provider API keys (local-only, never commit!)
+storage/provider-keys.json

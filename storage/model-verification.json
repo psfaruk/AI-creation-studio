@@ -3,25 +3,25 @@
     "ok": false,
     "rateLimited": true,
     "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
-    "testedAt": "2026-10-12T12:57:36.205Z"
+    "testedAt": "2026-10-12T13:56:55.704Z"
   },
   "glm-4.6": {
     "ok": false,
     "rateLimited": true,
     "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
-    "testedAt": "2026-10-12T12:57:38.804Z"
+    "testedAt": "2026-10-12T14:04:55.983Z"
   },
   "glm-4.5": {
     "ok": false,
     "rateLimited": true,
     "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
-    "testedAt": "2026-10-12T12:57:41.400Z"
+    "testedAt": "2026-10-12T14:12:56.239Z"
   },
   "glm-4.5-air": {
     "ok": false,
     "rateLimited": true,
     "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
-    "testedAt": "2026-10-12T12:57:43.988Z"
+    "testedAt": "2026-10-12T14:20:56.540Z"
   },
   "glm-4.5-flash": {
     "ok": false,
@@ -76,5 +76,131 @@
     "rateLimited": true,
     "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
     "testedAt": "2026-10-12T12:58:07.259Z"
+  },
+  "deepseek-v3": {
+    "ok": false,
+    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — {\"error\":{\"message\":\"Authentication Fails, Your api key: ****d4e5 is invalid (request_id: 03b863a0-54c4-4925-9f20-3140e8ccd02e)\",\"type\":\"authenticatio",
+    "testedAt": "2026-10-12T14:35:15.966Z"
+  },
+  "deepseek-r1": {
+    "ok": false,
+    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — {\"error\":{\"message\":\"Authentication Fails, Your api key: ****d4e5 is invalid (request_id: cb93107c-82cf-4ad3-9e4e-5750976b42b9)\",\"type\":\"authenticatio",
+    "testedAt": "2026-10-12T14:35:15.966Z"
+  },
+  "glm-flash-free": {
+    "ok": false,
+    "needsKey": true,
+    "error": "GLM · BigModel: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "glm-air-cn": {
+    "ok": false,
+    "needsKey": true,
+    "error": "GLM · BigModel: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "glm-plus-cn": {
+    "ok": false,
+    "needsKey": true,
+    "error": "GLM · BigModel: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "groq-llama-3.3-70b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Groq: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "groq-gpt-oss-120b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Groq: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "groq-gpt-oss-20b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Groq: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "groq-qwen3-32b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Groq: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "groq-r1-distill-70b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Groq: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "or-nemotron-super-120b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "OpenRouter: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "or-nemotron-ultra-550b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "OpenRouter: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "or-gemma-4-31b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "OpenRouter: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "or-gemma-4-26b-a4b": {
+    "ok": false,
+    "needsKey": true,
+    "error": "OpenRouter: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "glm-5.3": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T15:15:17.292Z"
+  },
+  "glm-5.3-flash": {
+    "ok": false,
+    "rateLimited": true,
+    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
+    "testedAt": "2026-10-12T15:15:19.897Z"
+  },
+  "deepseek-v4-pro": {
+    "ok": false,
+    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: cb6e055f-9153-464e-b34d-a59105770481)",
+    "testedAt": "2026-10-12T15:15:22.566Z"
+  },
+  "deepseek-v4-pro-fast": {
+    "ok": false,
+    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: 848dffa5-6894-41f1-bbb0-a3b0a689f49c)",
+    "testedAt": "2026-10-12T15:15:22.569Z"
+  },
+  "deepseek-v4-flash": {
+    "ok": false,
+    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: 531281fc-b941-4313-863b-965753ed67f7)",
+    "testedAt": "2026-10-12T15:15:22.570Z"
+  },
+  "deepseek-v4-flash-fast": {
+    "ok": false,
+    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: 62d2bc76-173f-4b98-a213-f0ff900d38d8)",
+    "testedAt": "2026-10-12T15:15:22.568Z"
+  },
+  "zai-glm-5.3": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Z.ai API (GLM): API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
+  },
+  "zai-glm-5.3-flash": {
+    "ok": false,
+    "needsKey": true,
+    "error": "Z.ai API (GLM): API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-12T15:15:22.571Z"
   }
 }

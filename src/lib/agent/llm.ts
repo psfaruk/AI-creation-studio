@@ -19,6 +19,10 @@ import { createHash } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { withRetry, type RetryWaitInfo } from './retry';
+import { findChatModel, type ChatModelOption } from './chat-models';
+import { externalChatComplete } from './external-llm';
+
+export { externalChatComplete, ExternalFatalError, ExternalRetryableError } from './external-llm';
 
 export interface LLMMessage {
   role: 'user' | 'assistant';
@@ -93,22 +97,33 @@ async function writeLlmCache(key: string, text: string): Promise<void> {
 }
 
 export interface ChatCompleteOptions {
-  /** রেট-লিমিট-অপেক্ষার নোট (UI-স্ট্যাটাসের জন্য) */
+  /** রেট-লিমিট-অপেক্ষার নোট (UI-স্ট্যাটাসের জন্য) — Z.ai SDK-পথের জন্য */
   onRateLimitWait?: (info: RetryWaitInfo) => void;
   /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু) */
   skipCache?: boolean;
   /**
    * নির্বাচিত চ্যাট-মডেল ('' / undefined = SDK ডিফল্ট)।
-   * ক্যাশ-কী-তেও যায় — ভিন্ন মডেলে ভিন্ন উত্তর, একই ক্যাশ-এন্ট্রি নয়।
+   * ক্যাটালগের provider অনুযায়ী রাউট হয়:
+   *   - 'zai' → z-ai-web-dev-sdk (বিল্ট-ইন, শেয়ার্ড রেট-লিমিট)
+   *   - এক্সটার্নাল → সেই প্রোভাইডারের প্রকৃত API (নিজের কী)
    */
   model?: string;
 }
 
+// ------------------------------------------------------------
+// এক্সটার্নাল প্রোভাইডার-পথ (DeepSeek / Z.ai API / BigModel / Groq /
+// OpenRouter) — বাস্তবায়ন এখন external-llm.ts-এ: প্রকৃত OpenAI SDK
+// (npm `openai`) + প্রোভাইডারের আসল endpoint। DeepSeek-এর অফিসিয়াল
+// ডকস (api-docs.deepseek.com) অনুযায়ী এটিই "রিয়েল DeepSeek SDK"-পথ
+// (npm install openai + DeepSeek baseURL)।
+// ------------------------------------------------------------
+
 /**
  * Non-streaming chat completion (thinking disabled)।
- * S9: ৬ চেষ্টা + চ্যানেল-কুলডাউন-সৎ-অপেক্ষা + full-jitter ব্যাকঅফ
- * (মোট বাজেট ≈৪–৫ মিনিট); ৪২৯-নিঃশেষে TemporarilyUnavailableError
- * (সাময়িক, লাইসেন্স-সমস্যা নয়)। একই context ডিস্ক-ক্যাশ থেকে ফেরে।
+ * রাউটিং: ক্যাটালগের provider অনুযায়ী —
+ *   'zai' → SDK-পথ (S9: ৬ চেষ্টা + চ্যানেল-কুলডাউন-সৎ-অপেক্ষা + full-jitter)
+ *   এক্সটার্নাল → প্রোভাইডারের প্রকৃত API (২ চেষ্টা, সৎ HTTP-ম্যাপিং)
+ * একই context ডিস্ক-ক্যাশ থেকে ফেরে (উভয় পথেই)।
  */
 export async function chatComplete(
   messages: LLMMessage[],
@@ -123,8 +138,21 @@ export async function chatComplete(
     }
   }
   stats().misses++;
+
+  // ---- এক্সটার্নাল-প্রোভাইডার রাউটিং ----
+  const requestedId = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : '';
+  const entry = requestedId !== '' ? findChatModel(requestedId) : undefined;
+  if (entry && entry.provider !== 'zai') {
+    const text = await externalChatComplete(messages, entry);
+    if (text && text.length > 0) {
+      await writeLlmCache(key, text);
+    }
+    return text;
+  }
+
+  // ---- Z.ai SDK-পথ (আগের মতোই) ----
   const zai = await getZAI();
-  const model = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : undefined;
+  const model = requestedId !== '' ? requestedId : undefined;
   const text = await withRetry(
     async () => {
       const res = await zai.chat.completions.create({

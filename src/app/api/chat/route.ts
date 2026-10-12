@@ -79,7 +79,10 @@ export async function POST(req: Request) {
 
   // চ্যাট-মডেল নির্বাচন ('' বা ক্যাটালগের id; অজানা মান → 400)
   if (body?.model != null && !isValidChatModelId(body.model)) {
-    return NextResponse.json({ error: 'অজানা চ্যাট-মডেল — তালিকার একটি মডেল বেছে নিন' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'অজানা চ্যাট-মডেল — মডেল-তালিকা সদ্যি বদলেছে; মডেল-সিলেক্টর থেকে আবার বেছে নিন' },
+      { status: 400 }
+    );
   }
   const chatModel = typeof body?.model === 'string' ? body.model : '';
 

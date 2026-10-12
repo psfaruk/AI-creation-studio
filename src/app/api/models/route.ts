@@ -1,19 +1,28 @@
 // ============================================================
 // GET  /api/models → চ্যাট-মডেল ক্যাটালগ + ক্যাশ-করা যাচাই-স্ট্যাটাস
-// POST /api/models → মডেলগুলোর রিয়েল-টাইম যাচাই (ছোট বাজেটে,
-//                     429-এ "অযাচাই" লেবেল — মিথ্যা "অনুপলব্ধ" নয়)
+//                      + এক্সটার্নাল প্রোভাইডারের কী-অবস্থা (মাস্কড)
+// POST /api/models → মডেলগুলোর রিয়েল-টাইম যাচাই
 //
 // সততার নিয়ম:
 //  - যাচাই = প্রকৃত API কল (এক-শব্দের প্রম্পট), ফলাফল ডিস্কে ক্যাশ (TTL ৬ ঘণ্টা)
 //  - 429 দেখলে ok:false নয়, rateLimited:true — "অযাচাই (রেট-লিমিট)"
-//  - ক্যাটালগে থাকা মডেল যাচাই-ব্যর্থ হলেও ব্যবহারকারী বেছে নিতে পারেন;
-//    চ্যাট-চলাকালীন সৎ-ফলব্যাক ব্যবস্থা আছে (orchestrator)
+//  - Z.ai SDK-গ্রুপ: সব মডেল একই পাইপ → টানা ২টি ৪২৯ এলে বাকিগুলোকে
+//    ডাক ছাড়াই skippedBySharedWindow দেখানো হয় (বাজেট নষ্ট না করে সৎ)
+//  - এক্সটার্নাল: কী নেই → needsKey (কোনো ডাক নয়); কী থাকলে প্রকৃত
+//    প্রোভাইডারে ছোট কল — প্রতিটি মডেল আলাদাভাবে সত্যায়িত হয়
 // ============================================================
 import { NextResponse } from 'next/server';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { getZAI } from '@/lib/agent/llm';
-import { CHAT_MODELS, type ModelVerificationEntry, type ModelVerificationFile } from '@/lib/agent/chat-models';
+import { getProviderKey, providerKeyStatuses, type ProviderKeyStatus } from '@/lib/agent/provider-keys';
+import { verifyExternalModel } from '@/lib/agent/external-llm';
+import {
+  CHAT_MODELS,
+  EXTERNAL_PROVIDER_ORDER,
+  type ModelVerificationEntry,
+  type ModelVerificationFile,
+} from '@/lib/agent/chat-models';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,8 +32,10 @@ const VERIFY_CACHE_PATH = path.join(process.cwd(), 'storage', 'model-verificatio
 const VERIFY_TTL_MS = 6 * 60 * 60 * 1000;
 /** এক যাচাই-কলের টাইমআউট */
 const SINGLE_TEST_TIMEOUT_MS = 30_000;
-/** মডেলগুলোর মাঝে গ্যাপ (৪২৯ এড়াতে) */
+/** Z.ai মডেলগুলোর মাঝে গ্যাপ (৪২৯ এড়াতে) */
 const INTER_MODEL_GAP_MS = 2500;
+/** Z.ai-গ্রুপে টানা কতটি ৪২9-এর পরে বাকিগুলো স্কিপ হবে (শেয়ার্ড পাইপ) */
+const ZAI_429_EARLY_STOP = 2;
 
 async function loadVerification(): Promise<ModelVerificationFile> {
   try {
@@ -51,8 +62,8 @@ function isFresh(entry: ModelVerificationEntry | undefined): boolean {
   return Number.isFinite(age) && age >= 0 && age < VERIFY_TTL_MS;
 }
 
-/** একটি মডেলের প্রকৃত প্রাপ্যতা-যাচাই (৪২৯ → rateLimited, অন্যান্য → সৎ ফলাফল) */
-async function verifyOne(
+/** একটি Z.ai SDK-মডেলের প্রকৃত প্রাপ্যতা-যাচাই (৪২৯ → rateLimited) */
+async function verifyZaiOne(
   zai: Awaited<ReturnType<typeof getZAI>>,
   model: string
 ): Promise<ModelVerificationEntry> {
@@ -92,36 +103,92 @@ async function verifyOne(
   }
 }
 
-/** GET → ক্যাটালগ + ক্যাশ-করা যাচাই (নতুন কল করে না) */
-export async function GET() {
-  const verification = await loadVerification();
+/** একটি এক্সটার্নাল মডেলের প্রকৃত প্রাপ্যতা-যাচাই (রিয়েল OpenAI SDK দিয়ে প্রোভাইডারের আসল API-তে) — external-llm.ts */
+
+async function buildResponse(verification: ModelVerificationFile, testedCount: number) {
+  const providers = await providerKeyStatuses();
   return NextResponse.json({
     models: CHAT_MODELS.map(m => ({
       ...m,
       verification: verification[m.id] ?? null,
     })),
+    providers,
+    testedCount,
   });
+}
+
+/** GET → ক্যাটালগ + ক্যাশ-করা যাচাই + কী-অবস্থা (নতুন কল করে না) */
+export async function GET() {
+  const verification = await loadVerification();
+  return buildResponse(verification, 0);
 }
 
 /** POST → যাচাই চালাও (ক্যাশ সদ্যিষ্ট না হলে) ও ফলাফল ফেরাও */
 export async function POST() {
   const zai = await getZAI();
   const verification = await loadVerification();
+  const keyStatuses = await providerKeyStatuses();
   let tested = 0;
 
-  for (const m of CHAT_MODELS) {
-    if (isFresh(verification[m.id])) continue; // সদ্যিষ্ট ক্যাশ — আবার খরচ নয়
-    verification[m.id] = await verifyOne(zai, m.id);
+  // ---- ১. Z.ai SDK-গ্রুপ: সিরিয়াল + শেয়ার্ড-৪২৯ আর্লি-স্টপ ----
+  const zaiModels = CHAT_MODELS.filter(m => m.provider === 'zai');
+  let consecutive429 = 0;
+  let sharedWindowHit = false;
+  for (const m of zaiModels) {
+    if (isFresh(verification[m.id])) continue;
+    if (sharedWindowHit) {
+      // একই পাইপে টানা ৪২৯ — বাকিদের ডাক ছাড়াই সৎ-স্কিপ (বাজেট বাঁচাও)
+      verification[m.id] = {
+        ok: false,
+        rateLimited: true,
+        skippedBySharedWindow: true,
+        error: 'Z.ai SDK-র সব মডেল একই ব্যাকএন্ড পাইপ ভাগ করে — শেয়ার্ড ৪২৯-উইন্ডোতে এই মডেলটি আলাদাভাবে ডাকা হয়নি',
+        testedAt: new Date().toISOString(),
+      };
+      continue;
+    }
+    verification[m.id] = await verifyZaiOne(zai, m.id);
     tested++;
     await saveVerification(verification);
-    if (tested > 0) await new Promise(r => setTimeout(r, INTER_MODEL_GAP_MS));
+    if (verification[m.id].rateLimited) {
+      consecutive429++;
+      if (consecutive429 >= ZAI_429_EARLY_STOP) sharedWindowHit = true;
+    } else {
+      consecutive429 = 0;
+    }
+    await new Promise(r => setTimeout(r, INTER_MODEL_GAP_MS));
   }
 
-  return NextResponse.json({
-    models: CHAT_MODELS.map(m => ({
-      ...m,
-      verification: verification[m.id] ?? null,
-    })),
-    testedCount: tested,
-  });
+  // ---- ২. এক্সটার্নাল প্রোভাইডার: কী অনুযায়ী ----
+  for (const provider of EXTERNAL_PROVIDER_ORDER) {
+    const models = CHAT_MODELS.filter(m => m.provider === provider);
+    const status: ProviderKeyStatus | undefined = keyStatuses[provider];
+    if (!status?.hasKey) {
+      // কী নেই — প্রতিটি মডেলে সৎ needsKey (কোনো ডাক নয়)
+      for (const m of models) {
+        if (isFresh(verification[m.id]) && !verification[m.id]?.needsKey) continue;
+        verification[m.id] = await verifyExternalModel(m, null);
+      }
+      continue;
+    }
+    // কী আছে — প্রতিটি মডেলে প্রকৃত ছোট কল (রিয়েল OpenAI SDK দিয়ে;
+    // প্রতিটি মডেল আলাদাভাবে সত্যায়িত হয়)
+    const key = await getProviderKey(provider);
+    const pending = models.filter(m => !isFresh(verification[m.id]));
+    if (pending.length === 0) continue;
+    const keyResults = await Promise.all(
+      pending.map(async m => {
+        const entry = await verifyExternalModel(m, key);
+        return [m.id, entry] as const;
+      })
+    );
+    for (const [id, entry] of keyResults) {
+      verification[id] = entry;
+      tested++;
+    }
+    await saveVerification(verification);
+  }
+
+  await saveVerification(verification);
+  return buildResponse(verification, tested);
 }

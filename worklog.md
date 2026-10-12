@@ -889,3 +889,28 @@ Stage Summary:
 - ব্যবহারকারীর দুই অনুরোধই সম্পূর্ণ: ①চ্যাটে ১৩টি মডেল + যেকোনো-নির্বাচন + সৎ-যাচাই-ব্যাজ ②Deep-Report-এর সমাধানযোগ্য সব সমস্যা (মিউজিক-বাস্তবতা ৬-দিক, ফ্রেম-কাঠামো, রিপো-জঞ্জাল, স্থায়ী ব্যাকটেস্ট)
 - ৪২৯-উইন্ডো এখনো সক্রিয় — scripts/verify-chat-models.ts ব্যাকগ্রাউন্ডে চলমান; উইন্ডো খুললেই UI-ব্যাজ প্রকৃত ডেটায় সতেজ হবে (storage/model-verification.json)
 - GitHub HEAD: 8394fe4 — https://github.com/psfaruk/AI-creation-studio
+
+---
+Task ID: ds-sdk-1 (মূল-এজেন্ট — GLM-5.3 + রিয়েল DeepSeek SDK ইন্টিগ্রেশন)
+Agent: main (Z.ai Code orchestrator)
+Task: "Glm 5.3 মডেল টি এড করবেন। DeepSeek এর মডেল গুলো যুক্ত করো, রিয়েল DeepSeek SDK download করতে হবে। লেটেস্ট কয়টি মডেল। অবশ্য রিয়েল মডেল — ব্যাকএন্ডে GLM রেখে ফ্রন্টএন্ডে DeepSeek লেখা যাবে না।"
+
+Work Log:
+- গবেষণা (সরাসরি curl — ওয়েব-সার্চ ৪২৯-উইন্ডোতে ছিল): DeepSeek অফিসিয়াল ডকস api-docs.deepseek.com লাইভ-পড়া → বর্তমান (অক্টো ২০২৬) মডেল-লাইনআপ: deepseek-v4-pro (V4-Pro-0813, GA ২০২৬-০৮-১৩) ও deepseek-flash (V4.1-Flash, ২০২৬-০৯-১০; legacy নাম deepseek-v4-flash/-vision-exp গৃহীত) — উভয়ের ১M কনটেক্সট/384K আউটপুট; থিংকিং-মোড টগল = extra_body thinking.type + reasoning_effort (low/high/max)
+- "রিয়েল DeepSeek SDK" নির্ণয়: DeepSeek-এর অফিসিয়াল Node.js পথ = `npm install openai` (ডকসে সাক্ষরাত্মভাবে: "OpenAI SDK first: npm install openai" + baseURL https://api.deepseek.com); npm-এর `deepseek-sdk` নামের প্যাকেজ ২০৮-বাইট/১-ফাইল/২০২৫-০২-১০-এর প্লেসহোল্ডার (ভুয়া) — ইনস্টল করা হয়নি; `openai@7.32.0` ইনস্টল-করা হয়েছে
+- GLM-5.3 যাচাই: docs.z.ai লাইভ-পড়া → glm-5.3 (LLM, "Hot", 200K) ও glm-5.3-flash (VLM-গ্রুপ, "New", 128K) বাস্তব বর্তমান মডেল; অফিসিয়াল এক্সটার্নাল endpoint = https://api.z.ai/api/paas/v4 (OpenAI-কম্প্যাটিবল), key-URL = z.ai/manage-apikey/apikey-list
+- chat-models.ts: Z.ai SDK-গ্রুপে glm-5.3 + glm-5.3-flash (শীর্ষে); DeepSeek-গ্রুপ পুরনো deepseek-v3/r1-এর বদলে ৪টি V4-এন্ট্রি (Pro/Flash × থিংকিং-চালু/বন্ধ — thinking + reasoningEffort ফিল্ডসহ); নতুন ৬ষ্ঠ প্রোভাইডার 'zai-api' (Z.ai API · GLM) + ২ এন্ট্রি; deepseek baseURL ক্যানোনিকালে ঠিক (v1-উপসর্গ বাদ)
+- নতুন src/lib/agent/external-llm.ts: প্রকৃত OpenAI SDK-ক্লায়েন্ট-ক্যাশ (প্রোভাইডার+কী-ভিত্তিক, কী বদলালে নতুন ক্লায়েন্ট, maxRetries:0) + externalChatComplete (২-চেষ্টা, সৎ HTTP-ম্যাপিং, ৪২৯-টেক্সট-সংরক্ষণ isRateLimitErrorText-চুক্তির জন্য) + verifyExternalModel (যাচাই-কলে থিংকিং-বন্ধ — ৮-টোকেন বাজেটে সরাসরি উত্তর) — raw fetch-বাস্তবায়ন সম্পূর্ণ প্রতিস্থাপিত
+- llm.ts: পুরনো fetch-সেকশন অপসারিত; external-llm-ইমপোর্ট + পশ্চাৎ-সামঞ্জস্য রি-এক্সপোর্ট
+- /api/models: verifyExternalOne/verifyExternalOneWithKey (fetch) → SDK-ভিত্তিক verifyExternalModel
+- orchestrator.ts সততা-গার্ড: এক্সটার্নাল মডেলে কী-সমস্যা (কী নেই/অবৈধ/ব্যালান্স শেষ) হলে স্বয়ংক্রিয় GLM-ফলব্যাক নয় — run_note + সৎ ব্যর্থতা (ব্যবহারকারীর স্পষ্ট নিয়ম: "ব্যাকএন্ডে GLM, লেবেলে DeepSeek নিষিদ্ধ")
+- UI: মডেল-সিলেক্টর ব্যানারে Z.ai API-উল্লেখ; কী-ডায়ালগ-গ্রিড sm:grid-cols-3; chat/route-এর অজানা-মডেল ৪০০-বার্তা কার্যকরযোগ্য করা; local-frames.ts-এর প্রি-এগজিস্টিং TS2345 ফিক্স (opts.mood ?? '')
+- প্রমাণ-টেস্ট scripts/test-real-deepseek.ts (স্থায়ী): ভুয়া কীতে প্রকৃত api.deepseek.com থেকে আসল 401: "Authentication Fails, Your api key: ****… is invalid (request_id: dad0ccb0-…)" — প্রতিটি কলে ইউনিক request_id = রিয়েল API-র প্রমাণ; api.z.ai-ও 401 "token expired or incorrect"
+- E2E (agent-browser): ড্রপডাউনে ৩৩ মডেল — GLM-5.3/5.3-Flash শীর্ষে ✓, DeepSeek V4 × ৪ + Z.ai API × ২ ✓; কী-বিহীন DeepSeek-ক্লিক → কী-ডায়ালগ (নীরব নির্বাচন নয়) ✓; ডায়ালগে ৫ প্রোভাইডার + সৎ নোট ✓; ভুয়া-কী সেভ → "যাচাই করুন" → ৪টি DeepSeek-ব্যাজেই আসল 401+request_id ✓ → কী মুছে পরিষ্কার অবস্থা পুনরুদ্ধার; GLM-5.3 নির্বাচন → localStorage + ট্রিগার-লেবেল ✓ → বার্তা → DB-তে AgentRun.model=glm-5.3 ✓ (৪২৯-উইন্ডোতে সৎ অপেক্ষা-পথে); কী-ছাড়া DeepSeek-চ্যাট → সৎ failed-run (কোনো GLM-ফলব্যাক নেই) ✓; রিলোড-পরে কনসোল/পেজ-এরর ০ ✓; মোবাইল 390px ওভারফ্লো শূন্য + ফুটার-দৃশ্যমান ✓
+- tsc: src/-এ ০ এরর; lint: ০; dev.log স্বাস্থ্যকর (মিড-এডিট স্টেল-এরর রিলোডে অদৃশ্য; শুধু প্রত্যাশিত ৪২৯-প্রোব)
+
+Stage Summary:
+- GLM-5.3 + GLM-5.3-Flash যুক্ত (বিল্ট-ইন SDK-পথ + নিজের কীতে Z.ai API-পথ); DeepSeek-এর লেটেস্ট V4-লাইনআপ (V4-Pro + V4.1-Flash, থিংকিং-টগলসহ) রিয়েল OpenAI SDK (openai@7.32.0) দিয়ে প্রকৃত api.deepseek.com-এ — ভুয়া npm deepseek-sdk নয়
+- সততা-প্রমাণ: ভুয়া কীতে আসল DeepSeek 401 + ইউনিক request_id (স্ক্রিপ্ট ও UI-ব্যাজ উভয়ে); কী-সমস্যায় নীরব GLM-ফলব্যাক নিষিদ্ধ — সৎ ব্যর্থতা
+- ব্যবহারকারীর করণীয়: প্রকৃত DeepSeek উত্তর পেতে platform.deepseek.com থেকে কী নিয়ে মডেল-তালিকার "কী যোগ করুন"-এ দিন (তখনই ব্যাজ "যাচাইকৃত" হবে); Z.ai API-কী দিলে GLM-5.3 আলাদা কোটায়
+- Z.ai SDK-পাইপের ৪২৯-উইন্ডো এখনো সক্রিয় — glm-5.3/flash-এর ব্যাজ সৎ "রেট-লিমিটেড"; উইন্ডো খুললে "যাচাই করুন"-এ প্রকৃত servedModel দেখা যাবে
