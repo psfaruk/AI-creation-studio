@@ -879,4 +879,4 @@ export interface TtsBenchmarkReport {
 // UI view switching (শেল)
 // ------------------------------------------------------------
 
-export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'guide';
+export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'keys' | 'guide';

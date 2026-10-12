@@ -10,6 +10,7 @@ import { RateLimitBanner } from '@/components/chat/rate-limit-banner';
 import { SidebarContent } from '@/components/chat/sidebar';
 import { GalleryView } from '@/components/studio/gallery-view';
 import { GuideView } from '@/components/studio/guide-view';
+import { KeysView } from '@/components/studio/keys-view';
 import { ProductionsView } from '@/components/studio/productions-view';
 import { RegistryView } from '@/components/studio/registry-view';
 import { StudioView } from '@/components/studio/studio-view';
@@ -155,6 +156,12 @@ export default function Home() {
         {activeView === 'registry' && (
           <section className="min-h-0 min-w-0 flex-1 overflow-y-auto" aria-label="রেজিস্ট্রি">
             <RegistryView />
+          </section>
+        )}
+
+        {activeView === 'keys' && (
+          <section className="min-h-0 min-w-0 flex-1 overflow-y-auto" aria-label="API কী">
+            <KeysView />
           </section>
         )}
 

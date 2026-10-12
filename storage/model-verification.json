@@ -91,73 +91,73 @@
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "glm-air-cn": {
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "glm-plus-cn": {
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "groq-llama-3.3-70b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "groq-gpt-oss-120b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "groq-gpt-oss-20b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "groq-qwen3-32b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "groq-r1-distill-70b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "or-nemotron-super-120b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "or-nemotron-ultra-550b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "or-gemma-4-31b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "or-gemma-4-26b-a4b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-12T15:52:54.279Z"
   },
   "glm-5.3": {
     "ok": false,

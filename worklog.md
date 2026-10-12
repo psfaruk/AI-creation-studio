@@ -914,3 +914,32 @@ Stage Summary:
 - সততা-প্রমাণ: ভুয়া কীতে আসল DeepSeek 401 + ইউনিক request_id (স্ক্রিপ্ট ও UI-ব্যাজ উভয়ে); কী-সমস্যায় নীরব GLM-ফলব্যাক নিষিদ্ধ — সৎ ব্যর্থতা
 - ব্যবহারকারীর করণীয়: প্রকৃত DeepSeek উত্তর পেতে platform.deepseek.com থেকে কী নিয়ে মডেল-তালিকার "কী যোগ করুন"-এ দিন (তখনই ব্যাজ "যাচাইকৃত" হবে); Z.ai API-কী দিলে GLM-5.3 আলাদা কোটায়
 - Z.ai SDK-পাইপের ৪২৯-উইন্ডো এখনো সক্রিয় — glm-5.3/flash-এর ব্যাজ সৎ "রেট-লিমিটেড"; উইন্ডো খুললে "যাচাই করুন"-এ প্রকৃত servedModel দেখা যাবে
+
+---
+Task ID: platform-keys-1 (মূল-এজেন্ট — build-ফিক্স + মডেল-সততা ১:১ + API-Key প্ল্যাটফর্ম)
+Agent: main (Z.ai Code orchestrator)
+Task: ব্যবহারকারীর ৩ দাবি: ① "Module not found: ../../local-frames" build-error সমাধান ② ব্যাকএন্ড↔ফ্রন্টএন্ড মডেল ১:১, ভুয়া লেবেল নিষিদ্ধ, ১০০% API-চালিত ③ নিজ-প্ল্যাটফর্মের মতো API-Key সিস্টেম (Model-bound, rate-limited, logged, SHA-256, OpenAI-compatible /api/v1)
+
+Work Log:
+- **Build-error মূল-কারণ**: src/lib/agent/local-frames.ts কখনোই git-এ ছিল না (commit 8394fe4-এর বার্তা দাবি করলেও `git cat-file -e` প্রমাণ: NOT in git) + ডিস্ক থেকেও হারানো → তিন পাইপলাইন ভাঙা → সব API 500
+- **local-frames.ts v2.1 পুনর্নির্মাণ** (worklog-স্পেক অনুযায়ী): ৮-স্তর (আকাশ-গ্রেডিয়েন্ট/দিগন্ত/মেঘ/ভিনিয়েট/জ্যোতিষ্ক-চাকতি/নক্ষত্র/আভা-মণ্ডল/দানা), FNV-1a+splitmix32, gradients seed= + noise all_seed= (বাইট-নির্ধারক যাচাইকৃত)
+- ৪টি গভীর বাগ ধরা ও সমাধান (প্রতিটি প্রোব-চালিত): ① `& 0xffffffff` মানকে signed-এ ফেরায় (>>0 দিয়ে ঠিক) ② ভিনিয়েট-multiply আলো-উৎসকে চাপা দেয় → স্তর-ক্রম বদল (পরিবেশ আগে, আলো পরে) ③ linear-গ্রেডিয়েন্ট রশ্মির পিছন-অর্ধপ্লেন ফ্লাড → radial আভা-মণ্ডলে প্রতিস্থাপন ④ **ffmpeg-এর lut (yuv) ফিল্টার RGB-নেগোশিয়েশনে নীরবে বাইপাস হয়** — overlay ফিল্টার গ্রাফ-নেগোশিয়েশন বদলে ট্রিগার করত; সমাধান: overlay→pad + lut-চেইনে format=gray-পিন — এই শেষ বাগটিই নক্ষত্র মুছে সারা ফ্রেম ধোঁয়াটে করছিল
+- ফলাফল: backtest মিউজিক ৬/৬ + ফ্রেম ১২/১২ ✅ (প্রান্ত-গড় ২.৭–৯৪, Y[16..231], ০.৩৫–০.৫৩ সে./ফ্রেম, sha256-নির্ধারক)
+- Dev-server stale-cache রিস্টার্টে সব API 500→200
+- **SDK লাইভ-প্রোব (সিদ্ধান্ত নির্ধারকী)**: z-ai-web-dev-sdk চ্যাট-পাইপে model-প্যারামিটার উপেক্ষিত — glm-5.3 চাইলেও served=**glm-4-plus** → পুরনো ১৫টি GLM-লেবেল ছিল ভুয়া ম্যাপিং (ঠিক যে-অভিযোগের ভিত্তিতে ব্যবহারকারী নিয়ম দিয়েছেন); createVision প্রকৃত routing করে (glm-5v-turbo ✓), images.generations প্রকৃত PNG দেয় (cogview-3, ৬৬সে.), stream:true → ReadableStream of OpenAI-SSE-chunks
+- **chat-models.ts রিস্ট্রাকচার**: SDK-গ্রুপ ১৫→১ সৎ এন্ট্রি "GLM-4-Plus (Z.ai SDK)"; ক্যাটালগ ৩৩→১৯; প্রতিটি এন্ট্রিতে প্রকৃত apiModel; ক্রম=সিরিয়াল
+- **Model-selector রিওয়ার্ক**: ১,২,৩… সিরিয়াল-নম্বর + "↳ apiModel" ব্যাকেন্ড-চিপ প্রতিটি সারিতে; গ্রুপ-সাবটাইটেল সৎ ("বিল্ট-ইন পাইপ — প্রকৃত মডেল: glm-4-plus")
+- **Prisma**: ApiKey (name, keyHash@unique SHA-256, keyMasked amai_sk_xxxx…xxxx, modelId-বাইন্ডিং, rateLimitPerMin=120, defaultLanguage bn/en/auto, status, totalRequests, lastUsedAt) + ApiCallLog (endpoint, model, status, latencyMs, error — প্রতি কল) — db:push ✓
+- **OpenAI-compatible গেটওয়ে** (src/lib/platform/): GET /api/v1/models (কেবল লাইভ-যাচাইকৃত মডেল, served_model-সহ), POST /api/v1/chat/completions (glm-4-plus টেক্সট + glm-5v-turbo মাল্টিমোডাল + stream:true SSE-পাসথ্রু + [DONE]-নিশ্চিত), POST /api/v1/images/generations (cogview-3, b64_json) — সব OpenAI-ত্রুটি-ফরম্যাটে (401/403/429/502), কোনো নীরব-ফলব্যাক নয়
+- **কী-ব্যবস্থাপনা**: /api/keys GET/POST + DELETE /api/keys/[id] + POST /api/keys/verify (লাইভ-যাচাই চালায়) — পূর্ণ কী কেবল তৈরির মুহূর্তে ফেরে
+- **KeysView UI** (নতুন 'keys' ভিউ, sidebar+page+AppView): API Keys হেডার + ৪ ফিচার-চিপ (Model-bound/Rate-limited/Every call logged/SHA-256), কী-তৈরি ডায়ালগ (নাম+মডেল+রেট+ভাষা), একবার-দেখানো পূর্ণ-কী ডায়ালগ, কার্ডে মাস্কড-কী+কপি+৪-স্ট্যাট (মোট/২৪ঘা/গড়-latency/শেষ-ব্যবহার)+Revoke(কনফার্ম-সহ), ৩ মডেল-কার্ড (যাচাইকৃত-ব্যাজ+served:মডেল+লাইভ-যাচাই-বাটন), API-ডক (Base URL+৫টি curl-উদাহরণ কপি-বাটনসহ) — ব্যবহারকারীর নিজ-প্ল্যাটফর্মের হুবহু আয়না
+- **E2E সত্যায়ন (curl + agent-browser)**: কী ছাড়া 401 ✓ · ভুল-মডেল-বাইন্ডিং 403 ✓ · বাতিল-কী 403 ✓ · রেট-লিমিট (১/min কী-তে ২য় কলে 429) ✓ · প্রকৃত চ্যাট "platform ok"/"নমস্কার"/"হ্যালো" (glm-4-plus, usage-টোকেনসহ) ✓ · সত্যিকারের টোকেন-বাই-টোকেন SSE স্ট্রিমিং ✓ · ভিশন "নীল" (glm-5v-turbo, data-URL ছবি; wikimedia-URL-এ আসল আপস্ট্রিম 400 কোড-1210 সৎভাবে ফেরে) ✓ · ইমেজ ৪২KB PNG (cogview-3, ৬১.৭ সে.) ✓ · কী-পরিসংখ্যান লগ হয় (মোট/গড়-latency/শেষ-ব্যবহার) ✓
+- **ব্রাউজার-E2E**: Keys প্যানেল রেন্ডার (৩/৩ মডেল যাচাইকৃত, Hello-কার্ড) → UI থেকে কী-তৈরি → পূর্ণ-কী ডায়ালগ → কার্ড-তালিকায় দেখা → ওই UI-কী দিয়ে curl-এ প্রকৃত চ্যাট-উত্তর ✓ → মডেল-সিলেক্টরে ১৯ মডেল সিরিয়াল+↳ব্যাকেন্ড-চিপসহ ✓ → মডেল নির্বাচন+বার্তা → DB: completed, usedModel ✓ → Revoke কনফার্ম-ফ্লো ✓ → মোবাইল 390px ওভারফ্লো-শূন্য+ফুটার-দৃশ্যমান (হ্যামবার্গার-মেনু-পথসহ) ✓ → কনসোল/পেজ-এরর শূন্য ✓
+- tsc ০ এরর, lint ০ সমস্যা, dev.log স্বাস্থ্যকর
+
+Stage Summary:
+- Build-error সম্পূর্ণ সমাধান: local-frames v2.1 পুনর্নির্মাণ (এবার git-এ যাবেই) + backtest ১৮/১৮ পাস
+- মডেল-সততা ১:১ অর্জিত: SDK-গ্রুপের ১৪টি ভুয়া লেবেল অপসারিত — এখন ১৯ মডেল, প্রতিটির পাশে প্রকৃত ব্যাকেন্ড-স্ট্রিং প্রদর্শিত
+- নতুন API-Key প্ল্যাটফর্ম (ব্যবহারকারীর নিজ-সিস্টেমের হুবহু): amai_sk_ কী (SHA-256-হ্যাশড, মডেল-বাউন্ড, রেট-লিমিটেড, প্রতি-কল-লগড) + OpenAI-কম্প্যাটিবল /api/v1 (models/chat/completions+স্ট্রিমিং+ভিশন/images) + Keys UI — সব E2E-সত্যায়িত
+- প্ল্যাটফর্ম-মডেল (লাইভ-যাচাইকৃত served-model): glm-4-plus (চ্যাট) · glm-5v-turbo (ভিশন) · cogview-3 (ইমেজ)
+- ffmpeg lut-bypass + overlay-negotiation আবিষ্কার — ভবিষ্যৎ ফিল্টার-গ্রাফে মনে রাখার শিক্ষা

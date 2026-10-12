@@ -3,8 +3,12 @@
 // ============================================================
 // চ্যাট-মডেল সিলেক্টর — composer-এ বসে।
 //
-//  - ৫ প্রোভাইডার-গ্রুপ: Z.ai SDK (বিল্ট-ইন, শেয়ার্ড রেট-লিমিট) +
-//    DeepSeek / GLM / Groq / OpenRouter (নিজের API কী, আলাদা কোটা)
+//  - সিরিয়াল-ক্রমে মডেল (১, ২, ৩…); প্রতিটি এন্ট্রির পাশে
+//    প্রকৃত ব্যাকেন্ড model-স্ট্রিং (apiModel) দেখানো হয় —
+//    ব্যাকএন্ড↔ফ্রন্টএন্ড ১:১ স্বচ্ছ
+//  - গ্রুপ: প্ল্যাটফর্ম-ব্যাকেন্ড (Z.ai SDK — একটিই প্রকৃত মডেল:
+//    glm-4-plus) + DeepSeek / Z.ai API / BigModel / Groq /
+//    OpenRouter (নিজের API কী, আলাদা কোটা)
 //  - সৎ ব্যাজ: ✅ যাচাইকৃত / ⏳ অযাচাই / ⚠️ রেট-লিমিট / ❌ ব্যর্থ /
 //    🔑 কী লাগবে
 //  - কী-বিহীন এক্সটার্নাল মডেলে ক্লিক করলে নীরব নির্বাচন নয় —
@@ -160,7 +164,21 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
   const models = data?.models ?? [];
   const providers = data?.providers ?? {};
   const current = models.find(m => m.id === chatModel);
-  const currentLabel = current?.label ?? 'অটো (প্ল্যাটফর্ম ডিফল্ট)';
+  const currentLabel = current?.label ?? 'GLM-4-Plus (Z.ai SDK)';
+
+  // সিরিয়াল-নম্বর — সমতল তালিকার অবস্থান অনুযায়ী (১-ভিত্তিক)
+  const serialOf = (providerId: ChatProviderId, id: string): number => {
+    const flatOrder: ChatProviderId[] = ['zai', ...EXTERNAL_PROVIDER_ORDER];
+    let n = 0;
+    for (const p of flatOrder) {
+      for (const m of models) {
+        if (m.provider !== p) continue;
+        n += 1;
+        if (m.provider === providerId && m.id === id) return n;
+      }
+    }
+    return n;
+  };
 
   /** প্রোভাইডার-গ্রুপ অনুযায়ী মডেল-রেন্ডার */
   const renderGroup = (providerId: ChatProviderId) => {
@@ -181,7 +199,7 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
                 ? hasKey
                   ? 'নিজের API কী · আলাদা কোটা'
                   : 'নিজের API কী লাগবে'
-                : 'কী লাগে না · সব মডেল একই পাইপ (শেয়ার্ড রেট-লিমিট)'}
+                : 'বিল্ট-ইন পাইপ — প্রকৃত মডেল: glm-4-plus'}
             </span>
           </span>
           {isExternal && !hasKey && (
@@ -234,6 +252,9 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
               }
             >
               <span className="flex w-full items-center gap-1.5">
+                <span className="w-5 shrink-0 text-right font-mono text-[10px] text-muted-foreground/70">
+                  {serialOf(m.provider, m.id)}.
+                </span>
                 {selected && <span className="size-1.5 shrink-0 rounded-full bg-emerald-600" aria-hidden="true" />}
                 <span className={`truncate text-sm font-medium ${selected ? 'text-emerald-700 dark:text-emerald-400' : ''}`}>
                   {m.label}
@@ -244,7 +265,11 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
                 </span>
               </span>
               <span className="line-clamp-2 text-xs text-muted-foreground">{m.description}</span>
-              <span className="flex flex-wrap gap-1">
+              <span className="flex flex-wrap items-center gap-1">
+                {/* প্রকৃত ব্যাকেন্ড model-স্ট্রিং — স্বচ্ছতার জন্য */}
+                <span className="rounded-full bg-emerald-600/10 px-1.5 py-px font-mono text-[10px] text-emerald-700 dark:text-emerald-400">
+                  ↳ {m.apiModel ?? (m.provider === 'zai' ? 'glm-4-plus' : m.id)}
+                </span>
                 {m.tags.map(t => (
                   <span
                     key={t}
@@ -299,13 +324,13 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
             </button>
           </DropdownMenuLabel>
 
-          {/* সৎ ব্যাখ্যা-ব্যানার: কেন মডেল বদলেও ৪২৯ যায় */}
+          {/* সৎ ব্যাখ্যা-ব্যানার: ব্যাকেন্ড↔ফ্রন্টএন্ড ১:১ */}
           <div className="mx-1 mb-1 flex items-start gap-1.5 rounded-lg bg-muted/60 p-2 text-[11px] leading-relaxed text-muted-foreground">
             <Info className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
             <span>
-              Z.ai SDK-গ্রুপের সব মডেল একই ব্যাকএন্ড পাইপে চলে — তাই ওই গ্রুপে মডেল বদলালেও
-              ৪২৯ এড়ানো যায় না। আলাদা কোটা চাইলে DeepSeek (V4) / Z.ai API (GLM-5.3) / Groq /
-              OpenRouter-এর নিজের কী যোগ করুন — সবই প্রকৃত API-তে যায়।
+              প্রতিটি এন্ট্রির <span className="font-mono">↳</span>-চিহ্নের পরের স্ট্রিংটিই প্রকৃত ব্যাকেন্ড-মডেল।
+              প্ল্যাটফর্ম-ব্যাকেন্ড (SDK) পাইপে একটিই মডেল — glm-4-plus; আলাদা কোটায় DeepSeek / Z.ai API /
+              Groq / OpenRouter-এর নিজের কী দিন — সবই প্রকৃত API-তে যায়।
             </span>
           </div>
 

@@ -2,16 +2,15 @@
 // চ্যাট-মডেল ক্যাটালগ (মাল্টি-প্রোভাইডার) — composer-এর
 // মডেল-সিলেক্টর ও সার্ভার-রাউটিং উভয়ের উৎস।
 //
-// সততার নিয়ম:
-//  ① এই তালিকায় থাকা = "কাজ করে" নয়; প্রকৃত প্রাপ্যতা শুধু
-//     রানটাইম যাচাইয়ের (POST /api/models) ফলাফল থেকে আসে।
-//  ② Z.ai SDK-গ্রুপের ১৩টি মডেল সবাই একই ব্যাকএন্ড পাইপ ভাগ
-//     করে (SDK-তে model-রাউটিং নেই) — তাই তাদের রেট-লিমিটও
-//     শেয়ার্ড। মডেল বদলে ৪২৯ এড়ানো যায় না; আলাদা কোটা চাইলে
-//     নিজের API কী-র এক্সটার্নাল প্রোভাইডার ব্যবহার করুন।
-//  ③ এক্সটার্নাল প্রোভাইডার (DeepSeek/GLM/Groq/OpenRouter) —
-//     প্রকৃত পাবলিক API, নিজের কী লাগে; কী ছাড়া মডেল নির্বাচন
-//     করলে সৎভাবে কী-ডায়ালগ খোলে, নীরব ফলব্যাক নয়।
+// সততার নিয়ম (ব্যাকএন্ড↔ফ্রন্টএন্ড ১:১ — ব্যবহারকারীর স্পষ্ট নির্দেশ):
+//  ① লাইভ-প্রোব (২০২৬-১০-১৩) প্রমাণ করেছে: z-ai-web-dev-sdk-র চ্যাট
+//     পাইপে model-প্যারামিটার উপেক্ষিত — glm-5.3/4.6/4.5/… যাই চাইুক
+//     served-model সবসময় glm-4-plus। তাই SDK-গ্রুপে সেটিই একমাত্র
+//     সৎ এন্ট্রি — আগের ১৪টি “ভিন্ন GLM লেবেল” ভুয়া ম্যাপিং ছিল,
+//     সরিয়ে দেওয়া হয়েছে (আর কখনো ফেরানো হবে না)।
+//  ② এক্সটার্নাল এন্ট্রি = প্রকৃত পাবলিক API-র প্রকৃত model-স্ট্রিং
+//     (apiModel ফিল্ডে দৃশ্যমান) — কী দিলেই চলে; কী-সমস্যায় সৎ ত্রুটি।
+//  ③ CHAT_MODELS-এর ক্রমই সিরিয়াল-ক্রম — UI ১,২,৩… নম্বর দেখায়।
 //  ④ যাচাই-স্ট্যাটাস ডিস্কে ক্যাশ হয় (storage/model-verification.json)
 //     — 429 হলে "অনুপলব্ধ" নয়, "অযাচাই/রেট-লিমিট" দেখানো হয়।
 //
@@ -133,126 +132,19 @@ export interface ChatModelOption {
   reasoningEffort?: 'low' | 'high' | 'max';
 }
 
-/** ক্যাটালগ — Z.ai SDK (শেয়ার্ড পাইপ) + প্রকৃত ওপেন-সোর্স প্রোভাইডার */
+/** ক্যাটালগ — ক্রমই সিরিয়াল; প্রতিটি এন্ট্রি = প্রকৃত ব্যাকএন্ড-মডেল */
 export const CHAT_MODELS: ChatModelOption[] = [
-  // ---------- Z.ai SDK (বিল্ট-ইন; সবাই একই পাইপ, রেট-লিমিট শেয়ার্ড) ----------
+  // ---------- ১. প্ল্যাটফর্ম-ব্যাকএন্ড: Z.ai SDK (বিল্ট-ইন পাইপ) ----------
+  // লাইভ-প্রোব-সত্য: এই পাইপে একটিই চ্যাট-মডেল সার্ভ হয় — glm-4-plus
+  // (model-প্যারামিটার যাই হোক)। আগের ১৪টি ভিন্ন GLM-লেবেল ছিল ভুয়া
+  // ম্যাপিং — সরানো। SDK-গ্রুপে কী লাগে না, তবে রেট-লিমিট (৪২৯) শেয়ার্ড;
+  // আলাদা কোটায় GLM চাইলে “Z.ai API”-গ্রুপে নিজের কী দিন।
   {
     id: '',
-    label: 'অটো (প্ল্যাটফর্ম ডিফল্ট)',
-    description: 'SDK-র ডিফল্ট মডেল — সবচেয়ে নির্ভরযোগ্য পথ',
-    tags: ['default'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-5.3',
-    label: 'GLM-5.3',
-    description: 'সর্বশেষ প্রজন্মের ফ্ল্যাগশিপ (docs.z.ai-এ "Hot") — ২০০K কনটেক্সট; একই SDK পাইপ',
-    tags: ['reasoning', 'balanced'],
-    contextK: 200,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-5.3-flash',
-    label: 'GLM-5.3-Flash',
-    description: 'দ্রুত ৫.৩-ভ্যারিয়েন্ট (docs.z.ai-এ "New", ১২৮K, ভিশন-সক্ষম মডেল) — একই SDK পাইপ',
-    tags: ['fast', 'vision'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4.6',
-    label: 'GLM-4.6',
-    description: 'পূর্ববর্তী প্রজন্মের ফ্ল্যাগশিপ লেবেল — একই SDK পাইপ',
-    tags: ['reasoning', 'balanced'],
-    contextK: 200,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4.5',
-    label: 'GLM-4.5',
-    description: 'প্রজন্ম ৪.৫ লেবেল — একই SDK পাইপ',
-    tags: ['reasoning', 'balanced'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4.5-air',
-    label: 'GLM-4.5-Air',
-    description: 'হালকা ৪.৫-লেবেল — একই SDK পাইপ',
-    tags: ['fast', 'balanced'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4.5-flash',
-    label: 'GLM-4.5-Flash',
-    description: 'দ্রুত ৪.৫-লেবেল — একই SDK পাইপ',
-    tags: ['fast'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4-flash',
-    label: 'GLM-4-Flash',
-    description: '৪-প্রজন্মের ফ্ল্যাশ-লেবেল — একই SDK পাইপ',
-    tags: ['fast'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4-plus',
-    label: 'GLM-4-Plus',
-    description: '৪-প্রজন্মের প্রিমিয়াম-লেবেল — একই SDK পাইপ',
-    tags: ['reasoning'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4-air',
-    label: 'GLM-4-Air',
-    description: '৪-প্রজন্মের হালকা-লেবেল — একই SDK পাইপ',
-    tags: ['fast', 'balanced'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4-long',
-    label: 'GLM-4-Long',
-    description: '১M-কনটেক্সট লেবেল — একই SDK পাইপ',
-    tags: ['long-context'],
-    contextK: 1000,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4v',
-    label: 'GLM-4V',
-    description: 'ভিশন-লেবেল — টেক্সট চ্যাটেও একই SDK পাইপ',
-    tags: ['vision'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4.1v',
-    label: 'GLM-4.1V',
-    description: 'উন্নত ভিশন-লেবেল — একই SDK পাইপ',
-    tags: ['vision'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-4v-flash',
-    label: 'GLM-4V-Flash',
-    description: 'দ্রুত ভিশন-লেবেল — একই SDK পাইপ',
-    tags: ['vision', 'fast'],
-    contextK: 128,
-    provider: 'zai',
-  },
-  {
-    id: 'glm-3-turbo',
-    label: 'GLM-3-Turbo',
-    description: 'পুরোনো প্রজন্মের লেবেল — একই SDK পাইপ',
-    tags: ['legacy', 'fast'],
+    label: 'GLM-4-Plus (Z.ai SDK)',
+    description:
+      'বিল্ট-ইন পাইপের একমাত্র প্রকৃত চ্যাট-মডেল — লাইভ-প্রোবে নিশ্চিত (served-model সব সময় glm-4-plus)',
+    tags: ['default', 'balanced'],
     contextK: 128,
     provider: 'zai',
   },
@@ -448,7 +340,7 @@ export function isValidChatModelId(id: unknown): id is string {
 
 /** সৎ প্রদর্শন-নাম: এক্সটার্নাল হলে "প্রোভাইডার · apiModel" */
 export function describeChatModel(id: string | null | undefined): string {
-  if (id == null || id === '') return '(default)';
+  if (id == null || id === '') return 'GLM-4-Plus (Z.ai SDK ডিফল্ট)';
   const entry = findChatModel(id);
   if (!entry) return id;
   if (entry.provider === 'zai' || !entry.apiModel) return entry.label;
