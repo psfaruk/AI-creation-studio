@@ -62,6 +62,22 @@ export class CancelledError extends Error {
   }
 }
 
+/** ধাপের সময়সীমা অতিক্রমণ (S10) — fail-soft: ধাপ failed-চিহ্ত হয়,
+ *  সৎ partialNote যোগ হয়, প্রোডাকশন পরের ধাপে চলে যায় */
+export class StepTimeoutError extends Error {
+  constructor(key: string, timeoutMs: number) {
+    super(`ধাপ "${key}" সময়সীমা (${Math.round(timeoutMs / 1000)} সে.) অতিক্রান্ত — অবনমিত/বাদ পথে চলছে`);
+    this.name = 'StepTimeoutError';
+  }
+}
+
+export interface RunStepOptions {
+  /** ধাপের সর্বোচ্চ সময়সীমা (মি.সে.)। অতিক্রান্ত হলে ধাপ failed +
+   *  সৎ নোট + প্রোডাকশন চলতে থাকে (fail-soft)। 0/undefined = সীমা নেই।
+   *  শুধু রিটার্ন-ভ্যালু-অব্যবহৃত কল-সাইটে দিন (টাইমআউটে undefined ফেরে)। */
+  timeoutMs?: number;
+}
+
 export interface StepHandle {
   id: string;
   /** মাঝপথের অগ্রগতি ("৩/৬ শট তৈরি") — step detail আপডেট করে emit করে */
@@ -75,8 +91,14 @@ export interface PipelineContext {
   caps: ValidatedSpec;
   /** মোট পরিকল্পিত ধাপ (অগ্রগতি হিসাবের ভিত্তি) */
   totalSteps: number;
-  /** ধাপ চালাও — row তৈরি, ইভেন্ট, অগ্রগতি, ত্রুটি হ্যান্ডলিং */
-  runStep<T>(key: string, title: string, fn: (step: StepHandle) => Promise<T>): Promise<T>;
+  /** ধাপ চালাও — row তৈরি, ইভেন্ট, অগ্রগতি, ত্রুটি হ্যান্ডলিং;
+   *  opts.timeoutMs দিলে সময়সীমা-অতিক্রমে fail-soft (S10) */
+  runStep<T>(
+    key: string,
+    title: string,
+    fn: (step: StepHandle) => Promise<T>,
+    opts?: RunStepOptions
+  ): Promise<T>;
   /** দুটি ধাপের মাঝে বাতিল-অনুরোধ পরীক্ষা (CancelledError ছুড়ে) */
   checkCancelled(): Promise<void>;
   /** চূড়ান্ত artifact সংরক্ষণ + DB নিবন্ধন */
@@ -171,7 +193,12 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
       const fresh = await db.production.findUnique({ where: { id: productionId }, select: { status: true } });
       if (fresh?.status === 'cancelling') throw new CancelledError();
     },
-    async runStep<T>(key: string, title: string, fn: (step: StepHandle) => Promise<T>): Promise<T> {
+    async runStep<T>(
+      key: string,
+      title: string,
+      fn: (step: StepHandle) => Promise<T>,
+      stepOpts?: RunStepOptions
+    ): Promise<T> {
       await ctx.checkCancelled();
       const seq = completedSteps + 1;
       const step = await db.productionStep.create({
@@ -192,21 +219,43 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
       });
       const progress = Math.min(96, Math.round((completedSteps / ctx.totalSteps) * 100));
       emitProduction(productionId, { type: 'production_progress', productionId, progress, currentStepKey: key });
+      // S10: জম্বি-প্রহরী — সময়সীমার পরে চলতে থাকা কল-বডির লেখা নিষ্ক্রিয়
+      let zombie = false;
+      const handle: StepHandle = {
+        id: step.id,
+        async setDetail(detail: string) {
+          if (zombie) return; // ধাপ বন্ধের পরে বিস্তারিত উপরে লিখবে না
+          await db.productionStep.update({ where: { id: step.id }, data: { detail: detail.slice(0, 500) } });
+          // মাঝ-ধাপে অগ্রগতি (step-অর্ধেক হিসেবে) — পোলিং-ভিউতেও সঠিক দেখাবে
+          const midProgress = Math.min(96, Math.round(((completedSteps + 0.5) / ctx.totalSteps) * 100));
+          try {
+            await db.production.update({ where: { id: productionId }, data: { progress: midProgress } });
+          } catch {
+            // নীরব
+          }
+          emitProduction(productionId, { type: 'production_progress', productionId, progress: midProgress, currentStepKey: key });
+        },
+      };
+      const timeoutMs = Math.max(0, stepOpts?.timeoutMs ?? 0);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const result = await fn({
-          id: step.id,
-          async setDetail(detail: string) {
-            await db.productionStep.update({ where: { id: step.id }, data: { detail: detail.slice(0, 500) } });
-            // মাঝ-ধাপে অগ্রগতি (step-অর্ধেক হিসেবে) — পোলিং-ভিউতেও সঠিক দেখাবে
-            const midProgress = Math.min(96, Math.round(((completedSteps + 0.5) / ctx.totalSteps) * 100));
-            try {
-              await db.production.update({ where: { id: productionId }, data: { progress: midProgress } });
-            } catch {
-              // নীরব
-            }
-            emitProduction(productionId, { type: 'production_progress', productionId, progress: midProgress, currentStepKey: key });
-          },
-        });
+        const work = fn(handle);
+        // জম্বি-নীরবতা: টাইমআউটের পরেও চলা কল-বডির ত্রুটি আনহ্যান্ডেলড হবে না
+        work.catch(() => undefined);
+        const raced =
+          timeoutMs > 0
+            ? Promise.race([
+                work,
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => {
+                    zombie = true;
+                    reject(new StepTimeoutError(key, timeoutMs));
+                  }, timeoutMs);
+                }),
+              ])
+            : work;
+        const result = await raced;
+        if (timer) clearTimeout(timer);
         await db.productionStep.update({
           where: { id: step.id },
           data: { status: 'done', finishedAt: new Date() },
@@ -224,8 +273,28 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
         });
         return result;
       } catch (err) {
+        if (timer) clearTimeout(timer);
         if (err instanceof CancelledError) throw err;
         const message = err instanceof Error ? err.message : String(err);
+        // S10 fail-soft: সময়সীমা-অতিক্রম ধাপ প্রোডাকশন মারবে না —
+        // ধাপ failed + সৎ নোট + undefined রিটার্ন (কল-সাইট-সচেতন চুক্তি)
+        if (err instanceof StepTimeoutError) {
+          partialNotes.push(err.message);
+          await db.productionStep.update({
+            where: { id: step.id },
+            data: { status: 'failed', error: message.slice(0, 800), finishedAt: new Date() },
+          });
+          completedSteps++;
+          emitProduction(productionId, {
+            type: 'step_end',
+            productionId,
+            stepId: step.id,
+            key,
+            status: 'failed',
+            error: message.slice(0, 400),
+          });
+          return undefined as unknown as T;
+        }
         await db.productionStep.update({
           where: { id: step.id },
           data: { status: 'failed', error: message.slice(0, 800), finishedAt: new Date() },
@@ -394,5 +463,24 @@ export async function sweepStaleProductions(): Promise<void> {
     }
   } catch (err) {
     console.error('[production] sweep error', err);
+  }
+}
+
+// ------------------------------------------------------------
+// S10: পর্যায়ক্রমিক stale-sweep — ট্রাফিক না থাকলেও ঝুলে-থাকা
+// প্রোডাকশন সৎভাবে সমাধান পাবে (আগে শুধু GET /api/productions-এ
+// চলত; ব্যবহারকারী ট্যাব বন্ধ করলে ঝুলে থাকত)। globalThis-গার্ডেড
+// তাই dev hot-reload-এ দ্বৈত টাইমার হবে না।
+// ------------------------------------------------------------
+{
+  const gg = globalThis as any;
+  if (!gg.__staleSweepTimer) {
+    gg.__staleSweepTimer = setInterval(() => {
+      sweepStaleProductions().catch(() => undefined);
+    }, 60_000);
+    // ইভেন্ট-লুপকে প্রসেস-জীবিত রাখতে বাধ্য করবে না
+    if (typeof (gg.__staleSweepTimer as any).unref === 'function') {
+      (gg.__staleSweepTimer as any).unref();
+    }
   }
 }

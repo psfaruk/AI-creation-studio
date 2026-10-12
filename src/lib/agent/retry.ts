@@ -118,7 +118,8 @@ export interface RetryOptions {
   channel?: RateLimitChannel;
   /** প্রতিটি অপেক্ষার আগে ডাকা হয় (UI-নোটের জন্য) */
   onWait?: (info: RetryWaitInfo) => void;
-  /** চ্যানেল-কুলডাউনের জন্য সর্বোচ্চ অপেক্ষা-বাজেট (ডিফল্ট ৫ মিনিট) */
+  /** এই কলের মোট অপেক্ষা-বাজেট (কুলডাউন+ব্যাকঅফ মিলে; ডিফল্ট ৫ মিনিট)।
+   *  S10: আগে প্রতি attempt নতুন বাজেট হিসেব হতো — এখন সব attempt মিলে একটিই বাজেট */
   cooldownBudgetMs?: number;
 }
 
@@ -138,16 +139,27 @@ export async function withRetry<T>(
   const maxAttempts = Math.max(1, Math.floor(attempts));
   const maxDelayMs = opts?.maxDelayMs ?? 90_000;
   const channel = opts?.channel;
+  // S10-গভীর-সমাধান: বাজেট এখন এই কলের সম্পূর্ণ মোট অপেক্ষা-সীমা
+  // (কুলডাউন-অপেক্ষা + ব্যাকঅফ-অপেক্ষা মিলে)। আগে প্রতি attempt নতুন
+  // বাজেট পেত — ৫ চেষ্টায় ~৩০ মিনিট পর্যন্ত ঝুলে থাকত (৪২৯-উইন্ডোতে
+  // বাস্তবে ঘটেছিল: শর্ট-ফিল্মের speech-ধাপ ~১০.৫ মিনিট TTS-অপেক্ষায়)।
+  let waitBudgetMs = opts?.cooldownBudgetMs ?? 5 * 60_000;
   let lastErr: unknown;
   for (let i = 0; i < maxAttempts; i++) {
-    // (ক) চ্যানেল-কুলডাউন চলছে কি না — থাকলে শেষ পর্যন্ত সৎ-অপেক্ষা;
-    //     বাজেট শেষেও ব্লকড থাকলে নিষ্ফল চেষ্টা বাদ — সরাসরি সৎ-ব্যর্থতা
+    // (ক) চ্যানেল-কুলডাউন চলছে কি না — বাকি বাজেটের মধ্যে মুক্ত না
+    //     হলে নিষ্ফল চেষ্টা বাদ — সরাসরি সৎ-ব্যর্থতা
     if (channel) {
-      const waited = await waitForChannel(channel, opts?.cooldownBudgetMs ?? 5 * 60_000);
+      if (waitBudgetMs <= 0) {
+        throw new TemporarilyUnavailableError(
+          `${label} — ${channel}-চ্যানেল রেট-লিমিট-অপেক্ষার মোট বাজেট শেষ`
+        );
+      }
+      const waited = await waitForChannel(channel, waitBudgetMs);
       if (waited === -1) {
         const finalMsg = `${channel}-চ্যানেল রেট-লিমিট-কুলডাউনে বাধা অতিক্রম করছে না`;
         throw new TemporarilyUnavailableError(`${label} — ${finalMsg}`);
       }
+      waitBudgetMs -= waited;
       if (waited > 0) {
         opts?.onWait?.({
           attempt: i + 1,
@@ -178,6 +190,14 @@ export async function withRetry<T>(
         ra != null && isRateLimit
           ? Math.max(0, Math.min(maxDelayMs, ra))
           : fullJitterDelayMs(baseMs, i, maxDelayMs);
+      // S10: পরের অপেক্ষা বাকি বাজেট ছাড়িয়ে গেলে ঘুরপাক নয় —
+      // এখনই সৎ-ব্যর্থতা (মোট-বাজেট শব্দার্থের দ্বিতীয়ার্ধ)
+      if (channel && delayMs >= waitBudgetMs) {
+        throw new TemporarilyUnavailableError(
+          `${label} — পুনঃচেষ্টার অপেক্ষা-বাজেট (${Math.round(waitBudgetMs / 1000)} সে.) শেষ — সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট)`
+        );
+      }
+      if (channel) waitBudgetMs -= delayMs;
       opts?.onWait?.({
         attempt: i + 1,
         delayMs,

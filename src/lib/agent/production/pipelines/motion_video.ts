@@ -344,7 +344,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
         engine === 'ai_diffusion' ? `প্রকৃত AI (${AI_VIDEO_MODEL}, প্রতি শটে ২–৪ মিনিট)` : 'cinematic_motion (স্টোরিবোর্ড+ক্যামেরা-মোশন)'
       }`
     );
-  });
+  }, { timeoutMs: 6 * 60_000 }); // S10
 
   // ------------------------------------------------------- generate_shots
   await ctx.runStep(
@@ -503,7 +503,9 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
       if (valid.length === 0) throw new Error('কোনো শট ক্লিপই তৈরি হয়নি');
       shots = valid;
       await step.setDetail(`${valid.length}টি শট ক্লিপ সম্পন্ন`);
-    }
+    },
+    // S10: ai_diffusion প্রতি শটে মিনিট নেয় — দীর্ঘ সীমা; cinematic_motion দ্রুত
+    { timeoutMs: engine === 'ai_diffusion' ? 55 * 60_000 : 15 * 60_000 }
   );
 
   // ------------------------------------------------------- assemble
@@ -600,7 +602,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
       }
     }
     await step.setDetail(`চূড়ান্ত টাইমলাইন: ${finalDuration.toFixed(1)} সেকেন্ড`);
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10
 
   // ------------------------------------------------------- validate
   await ctx.runStep('validate', 'চূড়ান্ত যাচাই (দৈর্ঘ্য/মাত্রা/কোডেক)', async (step: StepHandle) => {
@@ -670,7 +672,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     result.sound = sound;
     result.hasAudio = info.hasAudio;
     result.honestLabel = honestLabel;
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10
 
   return { result };
 };

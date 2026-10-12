@@ -393,7 +393,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       fileName: 'screenplay.txt',
       metaJson: { pipeline: 'short_film', scenes: scenes.length, shots: shots.length, filmMode },
     });
-  });
+  }, { timeoutMs: 6 * 60_000 }); // S10: LLM-ধাপ সুরক্ষা-জাল
 
   // ------------------------------------------------------- ২ character_bible
   const bible: BibleEntry[] = [];
@@ -520,7 +520,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     await step.setDetail(
       `${bible.length}টি পোর্ট্রেট সম্পন্ন${bible.some(b => b.reused) ? ' (পুনঃব্যবহৃতসহ)' : ''}`
     );
-  });
+  }, { timeoutMs: 5 * 60_000 }); // S10
 
   // ------------------------------------------------------- ৩ acting_plan
   await ctx.runStep('acting_plan', 'অভিনয়-পরিকল্পনা (প্রতি শটে)', async (step: StepHandle) => {
@@ -579,7 +579,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       ctx.partialNotes.push('অভিনয়-পরিকল্পনা LLM থেকে আসেনি — দৃশ্য-নোট থেকে সরল নির্দেশনা ব্যবহৃত হবে।');
     }
     await step.setDetail(`${matched}/${shots.length}টি শটে অভিনয়-নির্দেশনা যুক্ত`);
-  });
+  }, { timeoutMs: 6 * 60_000 }); // S10
 
   // ------------------------------------------------------- ৪ speech
   const timedLines: TimedLine[] = [];
@@ -756,7 +756,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       }
     }
     await step.setDetail(`${done}/${allLines.length} সংলাপ-লাইন সফল`);
-  });
+  }, { timeoutMs: 4 * 60_000 }); // S10: TTS-বাজেট ৯০ সে.+জিটার — ৪ মি. যথেষ্ট জাল
 
   // সংলাপ→দৃশ্য বণ্টন + শট-দৈর্ঘ্য সমন্বয় (generate_shots-এর শুরুতে চলে)
   const assignLinesAndDurations = () => {
@@ -1003,7 +1003,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       if (valid.length === 0) throw new Error('কোনো শট ক্লিপই তৈরি হয়নি');
       shots = valid;
       await step.setDetail(`${valid.length}টি শট ক্লিপ সম্পন্ন`);
-    }
+    },
+    // S10: ai_diffusion প্রতি শটে মিনিট নেয় — দীর্ঘ সীমা; cinematic_motion দ্রুত
+    { timeoutMs: engine === 'ai_diffusion' ? 55 * 60_000 : 15 * 60_000 }
   );
 
   // ------------------------------------------------------- ৬ sound_design
@@ -1125,7 +1127,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     } else {
       await step.setDetail('কোনো অডিও-স্তর নেই — নীরব চলচ্চিত্র');
     }
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10
 
   // ------------------------------------------------------- ৭ continuity
   const continuityWarnings: string[] = [];
@@ -1185,7 +1187,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       }
     }
     await step.setDetail(`${checked}টি ফ্রেম পরীক্ষিত — সতর্কতা অ-বাধামূলক`);
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10: VLM-ধাপ সুরক্ষা-জাল
 
   // ------------------------------------------------------- ৮ final_mix
   const result: Record<string, unknown> = {};
@@ -1366,7 +1368,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       mixIssues: mixReport?.issues ?? [],
       subtitleBurned: !!srtContent,
     };
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10: স্থানীয় FFmpeg-সমাবেশ সুরক্ষা-জাল
 
   return { result };
 };

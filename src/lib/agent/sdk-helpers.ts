@@ -147,10 +147,12 @@ export async function synthesizeSpeech(
         return Buffer.from(new Uint8Array(await res.arrayBuffer()));
       },
       `TTS (${voice}, ${format})`,
-      5,
+      3,
       20_000,
       // S9: চ্যানেল 'tts' — কুলডাউন-সৎ-অপেক্ষা + সিরিয়ালাইজড
-      { channel: 'tts', maxDelayMs: 90_000 }
+      // S10: ৩ চেষ্টা + মোট-বাজেট ৯০ সে. — প্রোডাকশনের speech-ধাপ মিনিটের
+      //      উপর ঝুলবে না (আগে ৫ চেষ্টা × প্রতি-চেষ্টায় বাজেট = ~১০.৫ মিনিট)
+      { channel: 'tts', maxDelayMs: 90_000, cooldownBudgetMs: 90_000 }
     );
   let buffer: Buffer;
   let ext = 'mp3';

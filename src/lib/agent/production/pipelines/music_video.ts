@@ -178,7 +178,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
         `প্রসিডিউরাল গান তৈরি — ${inst.meta.durationSec} সে., ${inst.meta.tempoBpm} BPM, ${beatsSec.length}টি বিট-মার্কার`
       );
     }
-  });
+  }, { timeoutMs: 6 * 60_000 }); // S10
 
   const energyAt = (t: number): string => {
     const s = sections.find(x => t >= x.startSec && t < x.endSec);
@@ -292,7 +292,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     await step.setDetail(
       `${shots.length}টি শট (বিট-কাটে), ${characters.length > 0 ? `চরিত্র: ${characters[0].name}` : 'দৃশ্য-কেন্দ্রিক'}`
     );
-  });
+  }, { timeoutMs: 6 * 60_000 }); // S10
 
   // ------------------------------------------------------- characters
   await ctx.runStep('characters', 'চরিত্র/পারফরম্যান্স রেফারেন্স', async (step: StepHandle) => {
@@ -392,7 +392,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
         update: { portraitArtifactId: art.id },
       });
     }
-  });
+  }, { timeoutMs: 5 * 60_000 }); // S10
 
   // ------------------------------------------------------- generate_shots
   const shotEngineLabels: string[] = [];
@@ -567,7 +567,9 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       if (valid.length === 0) throw new Error('কোনো পারফরম্যান্স ক্লিপই তৈরি হয়নি');
       shots = valid;
       await step.setDetail(`${valid.length}টি ক্লিপ সম্পন্ন`);
-    }
+    },
+    // S10: ai_diffusion প্রতি শটে মিনিট নেয় — দীর্ঘ সীমা; cinematic_motion দ্রুত
+    { timeoutMs: engine === 'ai_diffusion' ? 55 * 60_000 : 15 * 60_000 }
   );
 
   // ------------------------------------------------------- timeline
@@ -631,7 +633,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       ctx.partialNotes.push('সাবটাইটেল চাওয়া হলেও লিরিক্স (text) দেওয়া হয়নি — বাদ');
     }
     await step.setDetail(`টাইমলাইন: ${finalDuration.toFixed(1)} সেকেন্ড`);
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10
 
   // ------------------------------------------------------- final_qc
   const result: Record<string, unknown> = {};
@@ -773,7 +775,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     result.hasAudio = info.hasAudio;
     result.honestLabel = honestLabel;
     result.notes = notes;
-  });
+  }, { timeoutMs: 10 * 60_000 }); // S10
 
   return { result };
 };
