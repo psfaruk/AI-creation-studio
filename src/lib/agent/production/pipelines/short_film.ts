@@ -48,13 +48,16 @@ import type { CameraMove, FilmMode } from '@/lib/types';
 import { ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
 import { AI_VIDEO_MODEL } from '../../video/ai_video';
-import { generateAiShot, buildAiVideoPrompt, toDataUrl } from './motion_video';
+import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec, prewarmVideoClip, videoGenerationEtaNote } from './motion_video';
 import {
   synthesizeVerifiedSpeech,
   resolveVoice,
   verdictLabel,
   type SpeechVerification,
   type SpeechLanguage,
+  type SpeechVoice,
+  detectLanguage,
+  assignCharacterVoices,
 } from '../../audio/language_controller';
 import {
   synthesizeInstrumental,
@@ -141,7 +144,7 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 
 const FILM_MODE_DIRECTION: Record<FilmMode, string> = {
   short_film: 'পূর্ণ কাঠামোর ছোট চলচ্চিত্র — সূচনা, উত্তরণ, সমাপ্তি।',
-  dialogue_scene: 'একটি টানা সংলাপ-দৃশ্য — দুই/তিন চরিত্রের কথোপকথনেই আবেগ-উত্তরণ।',
+  dialogue_scene: 'একটি টানা সংলাপ-দৃশ্য — কমপক্ষে ২টি নাম-দেওয়া চরিত্র ও অন্তত ৪–৮টি সংলাপ-লাইন বাধ্যতামূলক; কথোপকথনেই আবেগ-উত্তরণ। সংলাপহীন দৃশ্য দেওয়া যাবে না।',
   trailer: 'দ্রুত কাটের টিজার/ট্রেইলার — ছোট ছোট আকর্ষণীয় শট, শেষে এক লাইনের ট্যাগ-লাইন।',
   story: 'গল্প-কেন্দ্রিক আখ্যান — দৃশ্যপট ও আবেগ প্রধান, সংলাপ কম।',
 };
@@ -170,7 +173,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   let logline = '';
   let scenes: Scene[] = [];
   let shots: FilmShot[] = [];
-  const characterVoices: Record<string, TtsVoice> = {};
+  const characterVoices: Record<string, SpeechVoice> = {};
   const characterAppearance: Record<string, string> = {};
   await ctx.runStep('script_breakdown', 'চিত্রনাট্য ও দৃশ্য-বিভাজন (৮-স্তর §৭)', async (step: StepHandle) => {
     const dialogueBudget = Math.round(durationSec * 2.5);
@@ -215,17 +218,18 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       {
         role: 'assistant',
         content:
-          'তুমি একজন পুরস্কারজয়ী বাংলা চিত্রনাট্যকার ও পরিচালক। গল্প থেকে ছোট চলচ্চিত্রের চিত্রনাট্য লেখো।\n' +
+          `তুমি একজন পুরস্কারজয়ী চিত্রনাট্যকার ও পরিচালক। গল্প থেকে ছোট চলচ্চিত্রের চিত্রনাট্য লেখো।\n` +
           `নির্দেশনা: ${FILM_MODE_DIRECTION[filmMode]}\n` +
           `মোট দৈর্ঘ্য ${durationSec} সেকেন্ড — সংলাপের মোট অক্ষর সর্বোচ্চ ${dialogueBudget}-এর মধ্যে (কথা কম, দৃশ্য বেশি)।\n` +
+          `ভাষার নিয়ম (বাধ্যতামূলক): চিত্রনাট্যের সব মানব-পাঠ্য অংশ — title, logline, location, timeOfDay, action, actingNotes, dialogues-র text, emotion — অবশ্যই ${language === 'bn' ? 'বাংলা লিপিতে (বাংলা ভাষায়)' : 'ইংরেজিতে (English)'} লিখবে। ${language === 'bn' ? 'ইংরেজি বাক্য বা রোমান বানানের বাংলা নিষিদ্ধ।' : 'Do NOT write Bengali script anywhere in human-readable fields.'}\n` +
           '৩–৬টি দৃশ্য, চরিত্র সর্বোচ্চ ৩জন। প্রতিটি দৃশ্যে সম্পূর্ণ ফিল্ড দাও:\n' +
-          '  location (বাংলায়), timeOfDay (সকাল/দুপুর/সন্ধ্যা/রাত…), characters (উপস্থিত চরিত্রের নাম-অ্যারে),\n' +
-          '  action (দৃশ্যে কী ঘটে — বাংলায়), actingNotes (অভিনয়-নির্দেশনা), cameraWork (ক্যামেরা-ধরন),\n' +
-          '  ambientSound (পরিবেশ-শব্দের ইঙ্গিত — বৃষ্টি/চায়ের দোকান/শহর/রাত…), musicCue (মিউজিক-মুড-ইঙ্গিত), estimatedSec,\n' +
-          '  dialogues: [{character, text (বাংলায়), emotion}]\n' +
-          'প্রতিটি চরিত্রের appearancePrompt ইংরেজিতে বিস্তারিত (বয়স, মুখ, চুল, পোশাক), voice এর একটি: "jam"|"kazi"|"douji"|"tongtong"।\n' +
+          '  location, timeOfDay (সকাল/দুপুর/সন্ধ্যা/রাত…-ধরন), characters (উপস্থিত চরিত্রের নাম-অ্যারে),\n' +
+          '  action (দৃশ্যে কী ঘটে), actingNotes (অভিনয়-নির্দেশনা), cameraWork (ক্যামেরা-ধরন),\n' +
+          '  ambientSound (পরিবেশ-শব্দের ইঙ্গিত), musicCue (মিউজিক-মুড-ইঙ্গিত), estimatedSec,\n' +
+          '  dialogues: [{character, text, emotion}]\n' +
+          'প্রতিটি চরিত্রের appearancePrompt ইংরেজিতে বিস্তারিত (বয়স, মুখ, চুল, পোশাক), voice এর একটি: "bn-BD-NabanitaNeural"|"bn-BD-PradeepNeural"|"en-US-AriaNeural"|"en-US-GuyNeural"|"jam"|"douji"।\n' +
           'dialogues-র character অবশ্যই চরিত্র-তালিকার নাম হবে।\n' +
-          'শুধু JSON: {"title":"...","logline":"...","characters":[{"name":"...","appearancePrompt":"...","voice":"jam"}],"scenes":[{"location":"...","timeOfDay":"...","characters":["নাম"],"action":"...","actingNotes":"...","cameraWork":"...","ambientSound":"...","musicCue":"...","estimatedSec":10,"dialogues":[{"character":"...","text":"...","emotion":"..."}]}]}',
+          'শুধু JSON: {"title":"...","logline":"...","characters":[{"name":"...","appearancePrompt":"...","voice":"bn-BD-NabanitaNeural"}],"scenes":[{"location":"...","timeOfDay":"...","characters":["নাম"],"action":"...","actingNotes":"...","cameraWork":"...","ambientSound":"...","musicCue":"...","estimatedSec":10,"dialogues":[{"character":"...","text":"...","emotion":"..."}]}]}',
       },
       { role: 'user', content: `গল্প: ${spec.story ?? spec.idea ?? spec.title}`.slice(0, 4000) },
       ]));
@@ -263,11 +267,16 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     title = String(data.title ?? title).slice(0, 120);
     logline = String(data.logline ?? '').slice(0, 400);
     const chars = Array.isArray(data.characters) ? data.characters : [];
+    // চরিত্রে আলাদা আলাদা নিউরাল-কণ্ঠ বণ্টন (bn: নবনীতা/প্রদীপ…, en: আরিয়া/গাই…)
+    const charNames = chars
+      .slice(0, 3)
+      .map(c => String(c?.name ?? '').trim().slice(0, 60))
+      .filter(Boolean);
+    const distinct = assignCharacterVoices(charNames, language);
     for (const c of chars.slice(0, 3)) {
       const name = String(c?.name ?? '').trim().slice(0, 60);
       if (!name) continue;
-      // ভাষা-নিয়ন্ত্রকের প্রোফাইল মেনে কণ্ঠ (বাংলায় jam/douji ছাড়া আর কিছু নয়)
-      characterVoices[name] = resolveVoice(language, String(c?.voice ?? '') || undefined);
+      characterVoices[name] = distinct[name] ?? resolveVoice(language, String(c?.voice ?? '') || undefined);
       characterAppearance[name] = String(c?.appearancePrompt ?? `a character named ${name}`).slice(0, 600);
     }
     scenes = data.scenes.slice(0, 6).map((s, i) => ({
@@ -291,9 +300,60 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         })),
     }));
 
+    // ব্যবহারকারীর নিয়ম (২০২৬-১০-১৩): "চ্যাটের ভাষাতেই কথা ও অডিও।"
+    // LLM সংলাপ ভুল ভাষায় লিখলে এক কলেই ধরা পড়ে — একবার পুনর্লিখন।
+    const allDialogue = scenes.flatMap(s => s.dialogue.map(d => d.line)).join(' ');
+    const dialogueDet = detectLanguage(allDialogue);
+    if (
+      scenes.some(s => s.dialogue.length > 0) &&
+      (dialogueDet.language === 'unknown' || dialogueDet.language === 'mixed' ? false : dialogueDet.language !== language)
+    ) {
+      try {
+        const { data: fixed } = await chatJson<{ lines?: { character?: string; text?: string }[] }>([
+          {
+            role: 'assistant',
+            content:
+              `All dialogue lines below are in the wrong language. Rewrite EVERY line in ${language === 'bn' ? 'Bengali (বাংলা লিপি)' : 'English'}. ` +
+              'Keep each line meaning, emotion and similar length. Keep character names unchanged. ' +
+              'Return the same number of lines in the same order. ' +
+              'Respond only with JSON: {"lines":[{"character":"...","text":"..."}]}',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify(
+              scenes.flatMap(s => s.dialogue.map(d => ({ character: d.character, text: d.line })))
+            ).slice(0, 8000),
+          },
+        ]);
+        const lines = Array.isArray(fixed?.lines) ? fixed.lines : [];
+        const flat = scenes.flatMap(s => s.dialogue);
+        if (lines.length === flat.length) {
+          let idx = 0;
+          for (const s of scenes) {
+            for (const d of s.dialogue) {
+              const t = String(lines[idx]?.text ?? '').trim();
+              if (t) d.line = t.slice(0, 300);
+              idx++;
+            }
+          }
+          const reDet = detectLanguage(scenes.flatMap(s => s.dialogue.map(d => d.line)).join(' '));
+          if (reDet.language === language) {
+            ctx.partialNotes.push(
+              `সংলাপের ভাষা ভুল ছিল (${dialogueDet.language === 'bn' ? 'বাংলা' : 'ইংরেজি'}) — ${language === 'bn' ? 'বাংলায়' : 'ইংরেজিতে'} পুনর্লিখিত।`
+            );
+          }
+        }
+      } catch {
+        ctx.partialNotes.push(
+          `সংলাপের ভাষা প্রত্যাশার বাইরে (${dialogueDet.language}) এবং পুনর্লিখন-কল ব্যর্থ — প্রিভিউতে যাচাই করুন।`
+        );
+      }
+    }
+
     // শট-বিভাজন (একই ধাপে দ্বিতীয় LLM-কল — দৃশ্য থেকে শট-তালিকা)
     const maxShotCount = maxShots('short_film', spec.quality, engine);
-    const segCap = engine === 'ai_diffusion' ? 9 : 7;
+    // AI-পথে CogVideoX-3-এর ১০-সে. ক্লিপই একক (২০২৬-১০-১৩)
+    const segCap = engine === 'ai_diffusion' ? 10 : 7;
     const count = Math.max(3, Math.min(maxShotCount, Math.ceil(durationSec / segCap)));
     // S11: শট-বিভাজন-LLM ব্যর্থ (৪২৯-সহ) হলে sd=null — নিচের প্রতি-দৃশ্যে-এক-শট
     // সৎ ফলব্যাক পথ চালু থাকে; ধাপ মরবে না।
@@ -308,8 +368,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         role: 'assistant',
         content:
           'তুমি চিত্রনাট্য থেকে শট-তালিকা বানাও (shot breakdown)।\n' +
-          `ঠিক ${count}টি শট (সর্বোচ্চ ${maxShotCount}), প্রতিটি ${engine === 'ai_diffusion' ? '৪–৯' : '৩–৭'} সেকেন্ড, যোগফল ≈ ${durationSec} সেকেন্ড।\n` +
-          'প্রতিটি দৃশ্য কমপক্ষে একটি শট পাবে। description ইংরেজিতে (দৃশ্যমান বিষয়: পরিবেশ, চরিত্রের অবস্থান/ভঙ্গি, আলো — ভিডিও/ইমেজ-জেনারেশনের জন্য), label বাংলায়।\n' +
+          `ঠিক ${count}টি শট (সর্বোচ্চ ${maxShotCount}), প্রতিটি ${engine === 'ai_diffusion' ? '৮–১০' : '৩–৭'} সেকেন্ড, যোগফল ≈ ${durationSec} সেকেন্ড।\n` +
+          `প্রতিটি দৃশ্য কমপক্ষে একটি শট পাবে। description ইংরেজিতে (দৃশ্যমান বিষয়: পরিবেশ, চরিত্রের অবস্থান/ভঙ্গি, আলো — ভিডিও/ইমেজ-জেনারেশনের জন্য), label ${language === 'bn' ? 'বাংলায়' : 'ইংরেজিতে'}।\n` +
           'cameraMove: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static"। দৃশ্যে উপস্থিত চরিত্রের নাম characters-এ।\n' +
           'শুধু JSON: {"shots":[{"sceneIndex":1,"description":"...","label":"...","cameraMove":"zoom_in","durationSec":5,"characters":["নাম"]}]}',
       },
@@ -586,6 +646,34 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   let narrationPath: string | null = null;
   let narrationText = '';
   const verificationSummaries: Record<string, unknown>[] = [];
+  // স্পিড-আপ (২০২৬-১০-১৩): AI-পথে প্রথম শট অভিনয়-পরিকল্পনার পরেই চালু —
+  // সংলাপ-TTS-এর সাথে জেনারেশন ওভারল্যাপ (~২–৭ মিনিট সাশ্রয়)।
+  if (engine === 'ai_diffusion' && shots.length > 0) {
+    const first = shots[0];
+    const firstActing = first.acting
+      ? [
+          `Acting: ${first.acting.who || 'the character'} ${first.acting.action}`.trim(),
+          first.acting.gaze ? `gaze ${first.acting.gaze}` : '',
+          first.acting.bodyHands ? `body language ${first.acting.bodyHands}` : '',
+          first.acting.facialExpression ? `facial expression ${first.acting.facialExpression}` : '',
+        ]
+          .filter(Boolean)
+          .join(', ')
+      : '';
+    const firstPortrait = first.characters.map(n => bible.find(b => b.name === n)).find(Boolean)?.portraitDataUrl;
+    prewarmVideoClip(
+      {
+        prompt: buildAiVideoPrompt(first.description, spec.style, first.cameraMove, firstActing || undefined),
+        durationSec: aiClipDurationSec(first.durationSec),
+        quality: 'speed' as const,
+        ...(firstPortrait ? { imageUrl: firstPortrait } : {}),
+        requestKey: `sf-${ctx.productionId}-shot-1`,
+      },
+      { onStatus: () => undefined }
+    );
+    ctx.partialNotes.push('স্পিড-আপ: প্রথম AI-শট অভিনয়-পরিকল্পনার পরেই চালু (ওভারল্যাপ)।');
+  }
+
   await ctx.runStep('speech', 'সংলাপ তৈরি (ভাষা-নিয়ন্ত্রক)', async (step: StepHandle) => {
     const allLines: (DialogueLine & { sceneIndex: number })[] = [];
     for (const scene of scenes) {
@@ -830,7 +918,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   let aiShots = 0;
   await ctx.runStep(
     'generate_shots',
-    engine === 'ai_diffusion' ? `AI ভিডিও-শট জেনারেশন (${AI_VIDEO_MODEL})` : 'স্টোরিবোর্ড ও ক্যামেরা-মোশন ক্লিপ',
+    engine === 'ai_diffusion'
+      ? `AI ভিডিও-শট জেনারেশন (${AI_VIDEO_MODEL} — ${videoGenerationEtaNote()})`
+      : 'স্টোরিবোর্ড ও ক্যামেরা-মোশন ক্লিপ',
     async (step: StepHandle) => {
       assignLinesAndDurations();
       const valid: FilmShot[] = [];
@@ -1005,7 +1095,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       await step.setDetail(`${valid.length}টি শট ক্লিপ সম্পন্ন`);
     },
     // S10: ai_diffusion প্রতি শটে মিনিট নেয় — দীর্ঘ সীমা; cinematic_motion দ্রুত
-    { timeoutMs: engine === 'ai_diffusion' ? 55 * 60_000 : 15 * 60_000 }
+    { timeoutMs: engine === 'ai_diffusion' ? 45 * 60_000 : 15 * 60_000 }
   );
 
   // ------------------------------------------------------- ৬ sound_design

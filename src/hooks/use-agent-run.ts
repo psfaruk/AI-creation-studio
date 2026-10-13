@@ -28,9 +28,29 @@ const SSE_EVENT_NAMES = [
   'tool_start',
   'tool_end',
   'message',
+  'text_delta',
   'run_note',
   'run_finished',
 ] as const;
+
+// ------------------------------------------------------------
+// টাইপরাইটার-ড্রেন — স্মুথ স্ট্রিমিংয়ের হৃদয়।
+// নেটওয়ার্ক-চাঙ্ক জোরে/ছড়িয়ে এলেও এখানে জমা হয়, তারপর সমান গতিতে
+// (ব্যাকলগ বড় হলে স্বয়ংক্রিয়-দ্রুত) অল্প অল্প করে বার্তায় বসে —
+// থেমে-থেমে লাগে না, টানা প্রবাহিত টাইপিং দেখায়।
+// ------------------------------------------------------------
+
+const DRAIN_INTERVAL_MS = 24; // ~৪২ টিক/সে.
+/** ব্যাকলগ-অ্যাডাপটিভ: জমা যত বড়, প্রতি টিকে তত বেশি অক্ষর বসে */
+function drainChunkSize(backlog: number): number {
+  return Math.max(1, Math.ceil(backlog / 26));
+}
+
+interface DrainState {
+  buffer: string;
+  conversationId: string;
+  pendingId: string;
+}
 
 export function useAgentRun() {
   const isRunActive = useChatStore((s) => s.isRunActive);
@@ -38,6 +58,16 @@ export function useAgentRun() {
   const esRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finishedRef = useRef(false);
+  const drainTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const drainRef = useRef<DrainState | null>(null);
+
+  const stopDrain = useCallback(() => {
+    if (drainTimerRef.current) {
+      clearInterval(drainTimerRef.current);
+      drainTimerRef.current = null;
+    }
+    drainRef.current = null;
+  }, []);
 
   const stopRunWatchers = useCallback(() => {
     esRef.current?.close();
@@ -46,7 +76,8 @@ export function useAgentRun() {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
-  }, []);
+    stopDrain();
+  }, [stopDrain]);
 
   useEffect(() => stopRunWatchers, [stopRunWatchers]);
 
@@ -108,6 +139,36 @@ export function useAgentRun() {
       const es = new EventSource(`/api/runs/${runId}/events`);
       esRef.current = es;
       finishedRef.current = false;
+      let finalMessageSeen = false;
+
+      /** ড্রেন-লুপ চালু রাখো — বাফার ফাঁকা হলে নিজেই থামে */
+      const ensureDrain = () => {
+        if (drainTimerRef.current || !drainRef.current) return;
+        drainTimerRef.current = setInterval(() => {
+          const state = drainRef.current;
+          if (!state) {
+            stopDrain();
+            return;
+          }
+          if (state.buffer.length === 0) {
+            // সাময়িক ফাঁকা — নতুন ডেল্টার অপেক্ষায় টিক চলতে থাকুক
+            // (রান-শেষে নিচের ক্লিনআপ থামায়)
+            return;
+          }
+          const store = useChatStore.getState();
+          if (store.activeId !== state.conversationId) {
+            stopDrain();
+            return;
+          }
+          const take = drainChunkSize(state.buffer.length);
+          const chunk = state.buffer.slice(0, take);
+          state.buffer = state.buffer.slice(take);
+          store.updateMessage(state.pendingId, (m) => ({
+            ...m,
+            content: (m.content ?? '') + chunk,
+          }));
+        }, DRAIN_INTERVAL_MS);
+      };
 
       const dispatch = (raw: string) => {
         let evt: RunEvent;
@@ -163,7 +224,26 @@ export function useAgentRun() {
           }
           case 'message': {
             if (!inView || evt.conversationId !== conversationId) return;
+            // চূড়ান্ত কর্তৃত্বপূর্ণ টেক্সট — ড্রেন-বাফার বাদ দিয়ে একবারে বসে;
+            // এর পরের কোনো পিছল-ডেল্টা আর নেওয়া হয় না
+            finalMessageSeen = true;
+            stopDrain();
             store.replaceMessage(pendingId, evt.message);
+            return;
+          }
+          case 'text_delta': {
+            // লাইভ টোকেন-স্ট্রিম — টাইপরাইটার-বাফারে জমা, ড্রেন-লুপ স্মুথ করে বসায়
+            if (!inView || finalMessageSeen) return;
+            if (evt.reset) {
+              if (drainRef.current) drainRef.current.buffer = '';
+              store.updateMessage(pendingId, (m) => ({ ...m, content: '' }));
+              return;
+            }
+            if (!drainRef.current) {
+              drainRef.current = { buffer: '', conversationId, pendingId };
+            }
+            drainRef.current.buffer += evt.delta;
+            ensureDrain();
             return;
           }
           case 'run_note': {
@@ -174,6 +254,7 @@ export function useAgentRun() {
           }
           case 'run_finished': {
             finishedRef.current = true;
+            stopDrain(); // রান শেষ — অবশিষ্ট ড্রেন বাতিল (সার্ভার-সত্য আসছে)
             stopRunWatchers();
             const s = useChatStore.getState();
             s.setIsRunActive(false);
@@ -218,15 +299,15 @@ export function useAgentRun() {
         startPolling(conversationId, userMessageId, pendingId);
       };
     },
-    [startPolling, stopRunWatchers],
+    [startPolling, stopDrain, stopRunWatchers],
   );
 
-  const send = useCallback(async () => {
+  const send = useCallback(async (contentOverride?: string, opts?: { skipAttachments?: boolean }) => {
     const store = useChatStore.getState();
     if (store.isRunActive) return;
 
-    const content = store.draft.trim();
-    const attachments = [...store.pendingAttachments];
+    const content = (contentOverride ?? store.draft).trim();
+    const attachments = opts?.skipAttachments ? [] : [...store.pendingAttachments];
     const chatModel = store.chatModel;
     if (!content && attachments.length === 0) return;
 
@@ -290,5 +371,26 @@ export function useAgentRun() {
     }
   }, [openStream]);
 
-  return { send, isRunActive };
+  /**
+   * রিলোড — এই assistant-বার্তার আগের user-বার্তাটি আবার পাঠায়
+   * (নতুন সৎ টার্ন হিসেবে; অ্যাটাচমেন্ট ছাড়া, টেক্সট-প্রম্পট হুবহু)।
+   */
+  const regenerate = useCallback(
+    async (assistantMessageId: string) => {
+      const store = useChatStore.getState();
+      if (store.isRunActive) return;
+      const messages = store.messages;
+      const idx = messages.findIndex((m) => m.id === assistantMessageId);
+      if (idx < 0) return;
+      let userIdx = idx - 1;
+      while (userIdx >= 0 && messages[userIdx].role !== 'user') userIdx--;
+      if (userIdx < 0) return;
+      const userContent = (messages[userIdx].content ?? '').trim();
+      if (!userContent) return;
+      await send(userContent, { skipAttachments: true });
+    },
+    [send],
+  );
+
+  return { send, regenerate, isRunActive };
 }

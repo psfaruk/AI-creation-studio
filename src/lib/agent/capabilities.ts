@@ -84,23 +84,40 @@ export const SUPPORTED_MOODS = ['sad', 'romantic', 'joyful', 'suspense', 'action
 
 /**
  * প্রতি প্রোডাকশনে সর্বোচ্চ শট-সংখ্যা।
- * ai_diffusion ইঞ্জিনে প্রতিটি শট CogVideoX-3-এ ২–৪ মিনিট নেয়
- * (৪২৯-রেট-সীমাসহ ~৩ মিনিট/শট) — তাই AI-শটের সংখ্যা কঠোরভাবে সীমিত।
+ *
+ * ২০২৬-১০-১৩-এর গভীর-প্রোব-সত্য: ভিডিও-API একসাথে একটাই টাস্ক চালায়,
+ * প্রতি শটে (জেনারেশন ২–৭ মিনিট + সমাপ্তি-পরবর্তী কুলডাউন ~২.৫ মিনিট)
+ * ≈ ৫–৯ মিনিট লাগে। আগের সীমা (AI-এ ৭–৮ শট) মানে ৩০–৬০ মিনিট —
+ * অবাস্তব। এখন AI-ইঞ্জিনে **কম কিন্তু লম্বা (১০ সে.) শট**: দ্রুত মানে
+ * ২টি, স্ট্যান্ডার্ড ৩টি, উচ্চ মানে ৪টি — মোট ২০–৪০ সেকেন্ডের বাস্তবধর্মী
+ * চলচ্চিত্র যুক্তিসঙ্গত সময়ে। cinematic_motion দ্রুত (স্থানীয়) — বেশি শট।
  */
 export function maxShots(type: ProductionType, quality: CreativeJobSpec['quality'], engine?: string): number {
   const ai = engine !== 'cinematic_motion';
   const base: Record<ProductionType, number> = {
     image: 1,
     audio: 0,
-    motion_video: ai ? 3 : 4,
-    music_video: ai ? (quality === 'draft' ? 5 : 7) : quality === 'draft' ? 8 : 14,
-    short_film: ai ? (quality === 'draft' ? 6 : 8) : quality === 'draft' ? 8 : 16,
+    motion_video: ai ? (quality === 'high' ? 3 : 2) : 4,
+    music_video: ai ? (quality === 'draft' ? 2 : quality === 'high' ? 4 : 3) : quality === 'draft' ? 8 : 14,
+    short_film: ai ? (quality === 'draft' ? 2 : quality === 'high' ? 4 : 3) : quality === 'draft' ? 8 : 16,
   };
   return base[type];
 }
 
-/** শট-প্রতি সময়ের নির্দেশনা (গল্পের আবেগও বিবেচনা করে LLM এর মধ্যে রাখবে) */
+/**
+ * শট-প্রতি সময়ের নির্দেশনা। AI-ইঞ্জিনে CogVideoX-3-এর ১০-সে. ক্লিপই
+ * একক — কম শটে দীর্ঘ দৃশ্য (কাট-ঝাট কম, বাস্তবধর্মী ধারাবাহিকতা বেশি)।
+ */
 export const SHOT_DURATION_HINT: Record<ProductionType, { min: number; max: number }> = {
+  image: { min: 0, max: 0 },
+  audio: { min: 0, max: 0 },
+  motion_video: { min: 8, max: 10 },
+  music_video: { min: 8, max: 10 },
+  short_film: { min: 8, max: 10 },
+};
+
+/** cinematic_motion-ইঞ্জিনের (দ্রুত, স্থানীয়) শট-দৈর্ঘ্য নির্দেশনা */
+export const SHOT_DURATION_HINT_LOCAL: Record<ProductionType, { min: number; max: number }> = {
   image: { min: 0, max: 0 },
   audio: { min: 0, max: 0 },
   motion_video: { min: 3, max: 6 },
@@ -428,7 +445,7 @@ export function validateSpec(raw: unknown): SpecValidationResult {
   }
   if (spec.language === 'bn') {
     notes.push(
-      'বাংলা কণ্ঠ: কোনো TTS কণ্ঠই বাংলা-প্রশিক্ষিত নয় — যাচাই-রায় "সতর্কতা" হবে; অডিও প্রিভিউ শুনে নিশ্চিত করুন (§২)।'
+      'বাংলা কণ্ঠ: bn-BD নিউরাল কণ্ঠ (নবনীতা/প্রদীপ) সত্যিকারের বাংলা-প্রশিক্ষিত — দেশীয় উচ্চারণ (২০২৬-১০-১৩ থেকে চালু); z-ai কণ্ঠ শুধু ফলব্যাক।'
     );
   }
   if (spec.quality === 'high' && (type === 'music_video' || type === 'short_film')) {

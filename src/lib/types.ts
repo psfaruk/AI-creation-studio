@@ -451,6 +451,18 @@ export type RunEvent =
     }
   | { type: 'message'; conversationId: string; message: ChatMessage }
   | {
+      /**
+       * লাইভ টোকেন-স্ট্রিম — চূড়ান্ত উত্তর তৈরি হওয়ার সময় অংশবিশেষ।
+       * `reset: true` = আগের আংশিক টেক্সট বাতিল করে নতুন করে শুরু
+       * (রিট্রাই-পুনঃস্ট্রিমের সময় ডুপ্লিকেট এড়াতে)।
+       * টুল-কল JSON কখনো স্ট্রিম হয় না — শুধু ব্যবহারকারী-দৃশ্যমান উত্তর।
+       */
+      type: 'text_delta';
+      runId: string;
+      delta: string;
+      reset?: boolean;
+    }
+  | {
       /** S9: রান-স্ট্যাটাস নোট — যেমন "রেট-লিমিট, অপেক্ষা চলছে (৪০ সে.)" */
       type: 'run_note';
       runId: string;
@@ -476,7 +488,27 @@ export type QualityPreset = 'draft' | 'standard' | 'high';
 export type AspectRatio = '1:1' | '4:5' | '3:2' | '16:9' | '9:16';
 export type OutputResolution = '720p' | '1080p';
 export type VideoSound = 'none' | 'ambient' | 'narration' | 'uploaded_song';
-export type VoicePreset = 'tongtong' | 'jam' | 'kazi' | 'chuichui' | 'xiaochen' | 'douji' | 'luodo';
+/**
+ * কণ্ঠ-প্যাক: z-ai SDK-র ৭টি কণ্ঠ + Microsoft Edge-নিউরাল কণ্ঠ
+ * (২০২৬-১০-১৩ থেকে বাংলা/ইংরেজির প্রধান পথ — bn-BD-নবনীতা/প্রদীপ
+ * সত্যিই বাংলা-প্রশিক্ষিত; z-ai কণ্ঠগুলো বাংলা পড়তে পারে না)
+ */
+export type VoicePreset =
+  | 'tongtong'
+  | 'jam'
+  | 'kazi'
+  | 'chuichui'
+  | 'xiaochen'
+  | 'douji'
+  | 'luodo'
+  | 'bn-BD-NabanitaNeural'
+  | 'bn-BD-PradeepNeural'
+  | 'bn-IN-TanishaaNeural'
+  | 'bn-IN-BashkarNeural'
+  | 'en-US-AriaNeural'
+  | 'en-US-GuyNeural'
+  | 'en-GB-SoniaNeural'
+  | 'en-GB-RyanNeural';
 export type CameraMove = 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'static';
 export type SpeechLanguage = 'bn' | 'en';
 export type VideoEngine = 'ai_diffusion' | 'cinematic_motion';

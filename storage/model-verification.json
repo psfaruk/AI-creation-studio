@@ -2,8 +2,8 @@
   "": {
     "ok": true,
     "servedModel": "glm-4-plus",
-    "ms": 415,
-    "testedAt": "2026-10-13T06:22:06.926Z"
+    "ms": 2367,
+    "testedAt": "2026-10-13T16:01:25.205Z"
   },
   "glm-4.6": {
     "ok": false,
@@ -91,73 +91,73 @@
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "glm-air-cn": {
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "glm-plus-cn": {
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "groq-llama-3.3-70b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "groq-gpt-oss-120b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "groq-gpt-oss-20b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "groq-qwen3-32b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "groq-r1-distill-70b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "or-nemotron-super-120b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "or-nemotron-ultra-550b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "or-gemma-4-31b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "or-gemma-4-26b-a4b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "glm-5.3": {
     "ok": false,
@@ -175,41 +175,72 @@
     "ok": false,
     "needsKey": true,
     "error": "DeepSeek: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "deepseek-v4-pro-fast": {
     "ok": false,
     "needsKey": true,
     "error": "DeepSeek: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "deepseek-v4-flash": {
     "ok": false,
     "needsKey": true,
     "error": "DeepSeek: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "deepseek-v4-flash-fast": {
     "ok": false,
     "needsKey": true,
     "error": "DeepSeek: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "zai-glm-5.3": {
     "ok": false,
     "needsKey": true,
     "error": "Z.ai API (GLM): API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "zai-glm-5.3-flash": {
     "ok": false,
     "needsKey": true,
     "error": "Z.ai API (GLM): API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-13T06:22:09.430Z"
+    "testedAt": "2026-10-13T16:01:27.708Z"
   },
   "custom:cp_729c2e5a:deepseek-chat": {
     "ok": false,
     "error": "টেস্ট প্ল্যাটফর্ম: কী গৃহীত হয়নি — 401 Authentication Fails, Your api key: ****e123 is invalid (request_id: bd7032b0-3929-4d45-96b8-3955c461adb3)",
     "testedAt": "2026-10-13T06:22:09.584Z"
+  },
+  "custom:cp_cb49b0b9:cogview-3": {
+    "ok": false,
+    "error": "hello: কী গৃহীত হয়নি — 403 \"This key is bound to model \\\"glm-4-plus\\\" — request used \\\"cogview-3\\\". Create a key for that model or change the r",
+    "testedAt": "2026-10-13T16:01:28.093Z"
+  },
+  "custom:cp_cb49b0b9:deepseek-chat": {
+    "ok": false,
+    "error": "hello: কী গৃহীত হয়নি — 403 \"This key is bound to model \\\"glm-4-plus\\\" — request used \\\"deepseek-chat\\\". Create a key for that model or change t",
+    "testedAt": "2026-10-13T16:01:28.188Z"
+  },
+  "custom:cp_cb49b0b9:deepseek-reasoner": {
+    "ok": false,
+    "error": "hello: কী গৃহীত হয়নি — 403 \"This key is bound to model \\\"glm-4-plus\\\" — request used \\\"deepseek-reasoner\\\". Create a key for that model or chan",
+    "testedAt": "2026-10-13T16:01:28.230Z"
+  },
+  "custom:cp_cb49b0b9:glm-4-plus": {
+    "ok": true,
+    "servedModel": "glm-4-plus",
+    "ms": 3680,
+    "testedAt": "2026-10-13T16:01:31.912Z"
+  },
+  "custom:cp_cb49b0b9:glm-5.3": {
+    "ok": false,
+    "error": "hello: কী গৃহীত হয়নি — 403 \"This key is bound to model \\\"glm-4-plus\\\" — request used \\\"glm-5.3\\\". Create a key for that model or change the req",
+    "testedAt": "2026-10-13T16:01:32.006Z"
+  },
+  "custom:cp_cb49b0b9:glm-5v-turbo": {
+    "ok": false,
+    "error": "hello: কী গৃহীত হয়নি — 403 \"This key is bound to model \\\"glm-4-plus\\\" — request used \\\"glm-5v-turbo\\\". Create a key for that model or change th",
+    "testedAt": "2026-10-13T16:01:32.112Z"
   }
 }

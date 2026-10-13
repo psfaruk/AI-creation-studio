@@ -301,6 +301,17 @@ export async function planMusicContent(idea: string, opts: MusicPlanOptions = {}
   ];
   const { data } = await chatJson<MusicPlan>(messages, 1);
   const plan = sanitizeMusicPlan(data, opts, idea);
+  // ব্যবহারকারীর নিয়ম (২০২৬-১০-১৩): চ্যাটের ভাষাতেই গান। LLM লিরিক্স
+  // ভুল ভাষায় দিলে একবার পুনর্লিখন — সৎ-নোটসহ (film-helpers-এর যাচাইকারী)।
+  try {
+    const { ensureContentLanguage } = await import('../film-helpers');
+    const checked = await ensureContentLanguage(plan.lyrics, language, 'গানের লিরিক্স');
+    if (checked.note && checked.text !== plan.lyrics) {
+      plan.lyrics = checked.text;
+    }
+  } catch {
+    /* যাচাই-ব্যর্থতা পরিকল্পনাকে আটকাবে না — নোট ছাড়াই চলবে */
+  }
   return { plan, document: formatMusicPlanDocument(plan, { ...opts, language }) };
 }
 
@@ -412,7 +423,7 @@ const speechSynthesisSpec: ToolSpec<{
   }),
   timeoutMs: 300_000,
   usage:
-    'speech_synthesis — ভাষা-নিশ্চিত কণ্ঠ তৈরি (§২ ভাষা-নিয়ন্ত্রক): স্ক্রিপ্টের ভাষা শনাক্ত করে সেই ভাষার উপযোগী কণ্ঠ বাছে, TTS চালায়, তারপর ASR ব্যাক-চেক ও দৈর্ঘ্য-যাচাই করে রায় দেয় (যাচাইকৃত/সতর্কতা/ব্যর্থ)। বাংলা লেখা বা ইংরেজি লেখা — দুটোই চলে; ভাষা মিললে স্পষ্ট ত্রুটি দেয়। ট্রান্সক্রিপ্ট ও রায়-নোটসহ প্রিভিউ-মেটাডেটা ফেরত আসে। arguments: {"script": string (১–২০০০ অক্ষর), "language"?: "bn"|"en" (না দিলে স্বয়ংক্রিয় শনাক্ত), "voice"?: string (bn: jam/douji, en: jam/tongtong/kazi/xiaochen), "speed"?: number (০.৫–২), "verify"?: boolean (ডিফল্ট true)}',
+    'speech_synthesis — ভাষা-নিশ্চিত কণ্ঠ তৈরি (§২ ভাষা-নিয়ন্ত্রক): স্ক্রিপ্টের ভাষা শনাক্ত করে সেই ভাষার উপযোগী কণ্ঠ বাছে, TTS চালায়, তারপর ASR ব্যাক-চেক ও দৈর্ঘ্য-যাচাই করে রায় দেয় (যাচাইকৃত/সতর্কতা/ব্যর্থ)। বাংলা লেখা বা ইংরেজি লেখা — দুটোই চলে; ভাষা মিললে স্পষ্ট ত্রুটি দেয়। ট্রান্সক্রিপ্ট ও রায়-নোটসহ প্রিভিউ-মেটাডেটা ফেরত আসে। arguments: {"script": string (১–২০০০ অক্ষর), "language"?: "bn"|"en" (না দিলে স্বয়ংক্রিয় শনাক্ত), "voice"?: string (bn: bn-BD-NabanitaNeural/bn-BD-PradeepNeural সুপারিশকৃত, en: en-US-AriaNeural/Guy; ফলব্যাক z-ai jam/douji/tongtong/kazi/xiaochen), "speed"?: number (০.৫–২), "verify"?: boolean (ডিফল্ট true)}',
   inputSummary: i => {
     const det = detectLanguage(i.script);
     const lang = i.language ?? det.language;

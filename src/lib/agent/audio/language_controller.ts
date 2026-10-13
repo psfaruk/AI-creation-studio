@@ -21,6 +21,7 @@ import { transcribeBuffer } from '../sdk-helpers';
 import { cachedSynthesizeSpeech } from '../tts-cache';
 import { audioQuality } from '@/lib/media/ffmpeg';
 import { normalizeBengaliSpeechText } from './bn-text-normalizer';
+import { isEdgeVoice, EDGE_TTS_LABEL, type EdgeVoiceId } from './edge_tts';
 
 // ------------------------------------------------------------
 // §২.১ AudioJobSpec
@@ -29,11 +30,14 @@ import { normalizeBengaliSpeechText } from './bn-text-normalizer';
 export type SpeechLanguage = 'bn' | 'en';
 export type AudioTask = 'speech' | 'singing' | 'instrumental';
 
+/** যেকোনো বৈধ কণ্ঠ — Edge-নিউরাল বা z-ai */
+export type SpeechVoice = TtsVoice | EdgeVoiceId;
+
 export interface AudioJobSpec {
   task: AudioTask;
   language: SpeechLanguage;
   script: string;
-  voiceId: TtsVoice;
+  voiceId: SpeechVoice;
   outputFormat: 'wav' | 'mp3';
   sampleRate: 24000 | 44100 | 48000;
   speed?: number;
@@ -46,8 +50,8 @@ export interface AudioJobSpec {
 export interface LanguageProfile {
   code: SpeechLanguage;
   name: string; // বাংলা নাম
-  /** কণ্ঠ-পছন্দক্রম (প্রথমটা ডিফল্ট) */
-  voices: TtsVoice[];
+  /** কণ্ঠ-পছন্দক্রম (প্রথমটা ডিফল্ট) — ২০২৬-১০-১৩ থেকে Edge-নিউরাল প্রধান */
+  voices: SpeechVoice[];
   /** এই ভাষার কণ্ঠগুলো প্রশিক্ষিত কি না — সৎ ঘোষণা */
   nativeSupport: 'verified' | 'partial' | 'none';
   /** ASR এই ভাষায় কতটা নির্ভরযোগ্য */
@@ -59,23 +63,24 @@ export const LANGUAGE_PROFILES: Record<SpeechLanguage, LanguageProfile> = {
   bn: {
     code: 'bn',
     name: 'বাংলা',
-    voices: ['jam', 'douji'],
-    nativeSupport: 'partial',
+    // ২০২৬-১০-১৩: প্রকৃত বাংলা-প্রশিক্ষিত Microsoft-নিউরাল কণ্ঠ প্রধান —
+    // z-ai কণ্ঠে বাংলা পড়ালে "অচেনা দেশি ভাষার" মতো শোনাত (ব্যবহারকারীর প্রত্যক্ষ অভিজ্ঞতা)
+    voices: ['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'jam', 'douji'],
+    nativeSupport: 'verified',
     asrSupport: 'weak',
     notes: [
-      'কোনো কণ্ঠই বাংলা-প্রশিক্ষিত নয় — jam কণ্ঠে সম্ভাব্য-দৈর্ঘ্যের পাঠ পাওয়া গেছে, তবে উচ্চারণ যন্ত্রে নিশ্চিত করা যায় না।',
-      'বাংলা সংলাপ তৈরি হলে অবশ্যই প্রিভিউ শুনে নিশ্চিত করুন; ASR বাংলা বোঝে না বলে স্বয়ংক্রিয় রায় "সতর্কতা" থাকে।',
-      'tongtong/chuichui/xiaochen/luodo কণ্ঠে বাংলা লেখা সঠিকভাবে পড়া হয় না — সেগুলো বাংলার জন্য ব্যবহৃত হয় না।',
+      `প্রধান কণ্ঠগুলো Microsoft-এর বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ (bn-BD: নবনীতা/প্রদীপ) — দেশীয় উচ্চারণ (${EDGE_TTS_LABEL})।`,
+      'z-ai কণ্ঠ (jam/douji) বাংলা-প্রশিক্ষিত নয় — শুধু Edge-নিউরাল অচল থাকলে জরুরি-ফলব্যাক; প্রিভিউ শুনে নিশ্চিত করতে হবে।',
     ],
   },
   en: {
     code: 'en',
     name: 'ইংরেজি',
-    voices: ['jam', 'tongtong', 'kazi', 'xiaochen'],
+    voices: ['en-US-AriaNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural', 'jam', 'tongtong', 'kazi', 'xiaochen'],
     nativeSupport: 'verified',
     asrSupport: 'good',
     notes: [
-      'jam (ব্রিটিশ) ইংরেজির জন্য প্রধান কণ্ঠ।',
+      `প্রধান কণ্ঠগুলো Microsoft-নিউরাল (আরিয়া/গাই/সোনিয়া); z-ai jam ফলব্যাক (${EDGE_TTS_LABEL})।`,
       'ASR ইংরেজি ভালো বোঝে — তৈরি হওয়া অডিওর রাউন্ড-ট্রিপ সাদৃশ্য-যাচাই কার্যকর।',
     ],
   },
@@ -113,13 +118,42 @@ export function estimateSpeechSec(text: string, language: SpeechLanguage): numbe
   return Math.max(0.8, words / wps);
 }
 
-/** ভাষা অনুযায়ী কণ্ঠ নির্বাচন (ব্যবহারকারীর পছন্দ প্রোফাইলে বৈধ হলে সেটাই) */
-export function resolveVoice(language: SpeechLanguage, preferred?: string): TtsVoice {
+/**
+ * ভাষা অনুযায়ী কণ্ঠ নির্বাচন।
+ *
+ * ২০২৬-১০-১৩-এর নিয়ম (ব্যবহারকারীর নির্দেশ: "চ্যাটের ভাষায় কথা ও অডিও"):
+ * বাংলায় z-ai কণ্ঠ (jam/douji — বাংলা-অপ্রশিক্ষিত, অস্পষ্ট-শ্রবণ) বেছে নেওয়া
+ * হলে তা **সদিচ্ছায় আপগ্রেড** হয়ে প্রধান বাংলা নিউরাল কণ্ঠ (নবনীতা) হবে —
+ * প্রোফাইলের ফলব্যাক-তালিকায় z-ai কণ্ঠ থাকে শুধু Edge অচল হলে জরুরি-ব্যবহারের
+ * জন্য। ইংরেজিতে z-ai jam যথেষ্ট, তাই সেটি অপরিবর্তিত থাকে।
+ */
+export function resolveVoice(language: SpeechLanguage, preferred?: string): SpeechVoice {
   const profile = LANGUAGE_PROFILES[language];
   if (preferred && (profile.voices as string[]).includes(preferred)) {
-    return preferred as TtsVoice;
+    const pref = preferred as SpeechVoice;
+    if (language === 'bn' && !isEdgeVoice(pref)) {
+      return profile.voices[0]; // নবনীতা (bn-BD নিউরাল) — সদিচ্ছা-আপগ্রেড
+    }
+    return pref;
   }
   return profile.voices[0];
+}
+
+/**
+ * একাধিক চরিত্রে আলাদা আলাদা কণ্ঠ বণ্টন (শর্টফিল্মের সংলাপের জন্য)।
+ * ভাষার নিউরাল-কণ্ঠগুলো ঘুরিয়ে-ফিরিয়ে বরাদ্দ — দুই চরিত্র একই কণ্ঠে নয়।
+ */
+export function assignCharacterVoices(names: string[], language: SpeechLanguage): Record<string, SpeechVoice> {
+  const neural = language === 'bn'
+    ? (['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural'] as SpeechVoice[])
+    : (['en-US-AriaNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural', 'en-GB-RyanNeural'] as SpeechVoice[]);
+  const out: Record<string, SpeechVoice> = {};
+  let i = 0;
+  for (const n of names) {
+    out[n] = neural[i % neural.length];
+    i++;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------
@@ -179,7 +213,7 @@ export function detectTranscriptLanguage(transcript: string): SpeechLanguage | '
 
 export interface SpeechVerification {
   /** ব্যবহৃত কণ্ঠ */
-  voice: TtsVoice;
+  voice: SpeechVoice;
   /** প্রত্যাশিত ভাষা */
   language: SpeechLanguage;
   /** ASR ট্রান্সক্রিপ্ট (চাঙ্ক-যুক্ত) */
@@ -204,7 +238,7 @@ export interface SynthesizedSpeech {
   buffer: Buffer;
   mimeType: string;
   ext: string;
-  voice: TtsVoice;
+  voice: SpeechVoice;
   verification: SpeechVerification;
   attempts: number;
 }
@@ -213,8 +247,10 @@ export interface SynthesizedSpeech {
 async function verifySpeechBuffer(
   buffer: Buffer,
   ext: string,
-  spec: AudioJobSpec
+  spec: AudioJobSpec,
+  voice: SpeechVoice
 ): Promise<SpeechVerification> {
+  const edgeVoice = isEdgeVoice(voice);
   const notes: string[] = [];
   const { writeFile, mkdtemp, rm } = await import('fs/promises');
   const path = await import('path');
@@ -236,13 +272,18 @@ async function verifySpeechBuffer(
   const durationOk = durationSec >= expectedSec * 0.4 && durationSec <= expectedSec * 2.6;
   const silenceRanges = quality?.silenceRanges ?? [];
 
-  // ASR ব্যাক-চেক (প্রথম ৩০ সে.-ই যথেষ্ট — খরচ নিয়ন্ত্রণ)
+  // ASR ব্যাক-চেক — কেবল যেখানে অর্থবহ: ইংরেজিতে ASR নির্ভরযোগ্য।
+  // বাংলায় ASR বোঝেই না — Edge-নিউরাল বাংলা কণ্ঠ এমনিতেই বাংলা-প্রশিক্ষিত,
+  // তাই বাংলা+Edge হলে ASR-কল বাদ (দ্রুততা + খরচ), দৈর্ঘ্য-যাচাইই রায়।
   let transcript = '';
   let asrError = '';
-  try {
-    transcript = await transcribeBuffer(buffer, ext);
-  } catch (err: any) {
-    asrError = String(err?.message ?? err).slice(0, 140);
+  const asrUseful = spec.language === 'en' || (!edgeVoice && spec.language === 'bn');
+  if (asrUseful) {
+    try {
+      transcript = await transcribeBuffer(buffer, ext);
+    } catch (err: any) {
+      asrError = String(err?.message ?? err).slice(0, 140);
+    }
   }
   const detectedLanguage = detectTranscriptLanguage(transcript);
   const similarity = transcriptSimilarity(spec.script, transcript, spec.language);
@@ -258,9 +299,15 @@ async function verifySpeechBuffer(
   } else if (!durationOk) {
     verdict = 'warn';
     notes.push('দৈর্ঘ্য প্রত্যাশার সীমার বাইরে — প্রিভিউ শুনে নিশ্চিত করুন।');
+  } else if (spec.language === 'bn' && edgeVoice) {
+    // বাংলা + Edge-নিউরাল: কণ্ঠই বাংলা-প্রশিক্ষিত — দৈর্ঘ্য-সুস্থ হলে রায় যাচাইকৃত
+    verdict = 'pass';
+    notes.push(
+      `বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ (${voice}) — দেশীয় উচ্চারণ; দৈর্ঘ্য-যাচাই স্বাভাবিক (${durationSec.toFixed(1)} সে.)।`
+    );
   } else if (asrError) {
     verdict = 'warn';
-    notes.push(`ASR ব্যাক-চেক চলানো যায়নি (${asrError}) — প্রিভিউ শুনে যাচাই করুন।`);
+    notes.push(`ASR ব্যাক-চেক চালানো যায়নি (${asrError}) — প্রিভিউ শুনে যাচাই করুন।`);
   } else if (spec.language === 'en') {
     if (similarity >= 0.5 && detectedLanguage === 'en') {
       verdict = 'pass';
@@ -273,17 +320,14 @@ async function verifySpeechBuffer(
       notes.push('ASR ট্রান্সক্রিপ্ট মূল স্ক্রিপ্টের সাথে মিলছে না — সম্ভবত সঠিক ইংরেজি পাঠ হয়নি।');
     }
   } else {
-    // বাংলা: ASR বাংলা বোঝে না — সৎ রায় 'warn', মানব-শ্রবণ বাধ্যতামূলক
+    // বাংলা + z-ai কণ্ঠ (জরুরি-ফলব্যাক): উচ্চারণ যন্ত্রে নিশ্চিত নয় — সৎ রায় 'warn'
     verdict = 'warn';
+    notes.push('z-ai কণ্ঠ বাংলা-প্রশিক্ষিত নয় — উচ্চারণ নিশ্চিত করা যায় না; প্রিভিউ শুনে নিশ্চিত করুন।');
     if (detectedLanguage === 'bn') {
-      notes.push('ASR ট্রান্সক্রিপ্টে বাংলা অক্ষর পাওয়া গেছে — ভালো লক্ষণ, তবু প্রিভিউ শুনে নিশ্চিত করুন।');
+      notes.push('ASR ট্রান্সক্রিপ্টে বাংলা অক্ষর পাওয়া গেছে — ভালো লক্ষণ।');
     } else if (detectedLanguage === 'silence') {
       verdict = 'fail';
       notes.push('ASR কোনো কথা শনাক্ত করতে পারেনি — অডিওতে স্পষ্ট কথা নেই।');
-    } else {
-      notes.push(
-        'ASR এই অডিওর ভাষা বাংলা হিসেবে চিনতে পারেনি (ASR-এর বাংলা-সমর্থন দুর্বল) — দৈর্ঘ্য স্বাভাবিক, কিন্তু উচ্চারণ যাচাইয়ে প্রিভিউ শুনা দরকার।'
-      );
     }
   }
 
@@ -296,7 +340,7 @@ async function verifySpeechBuffer(
   }
 
   return {
-    voice: spec.voiceId,
+    voice,
     language: spec.language,
     transcript,
     detectedLanguage,
@@ -322,15 +366,6 @@ export async function synthesizeVerifiedSpeech(
 ): Promise<SynthesizedSpeech> {
   const verify = opts?.verify !== false;
 
-  // §৪ (তৃতীয় ধাপ): বাংলা হলে টেক্সট-নর্মালাইজেশন — সংখ্যা/তারিখ/সময়
-  // শব্দে, ইংরেজি শব্দের ধ্বন্যাত্মক রূপ, উচ্চারণ-সমন্বয়।
-  // ভাষা-শনাক্তকরণ সবসময় *মূল* স্ক্রিপ্টেই হয় (নর্মালাইজড নয়)।
-  const bnNorm = spec.language === 'bn' ? normalizeBengaliSpeechText(spec.script) : null;
-  const speakScript = bnNorm ? bnNorm.text : spec.script;
-  const normNote = bnNorm?.changed
-    ? `টেক্সট-নর্মালাইজেশন প্রযোজ্ত (${bnNorm.adjustments.length}টি সমন্বয়: ${bnNorm.adjustments.slice(0, 3).join('; ')}${bnNorm.adjustments.length > 3 ? '…' : ''})`
-    : null;
-
   // ১. স্ক্রিপ্টের ভাষা নির্বাচিত ভাষার সাথে মিল আছে কি না
   const det = detectLanguage(spec.script);
   if (det.language === 'unknown') {
@@ -342,7 +377,7 @@ export async function synthesizeVerifiedSpeech(
     );
   }
 
-  // ২. কণ্ঠ নির্বাচন
+  // ২. কণ্ঠ নির্বাচন (Edge-নিউরাল প্রধান, z-ai ফলব্যাক)
   const primaryVoice = resolveVoice(spec.language, spec.voiceId);
   const profile = LANGUAGE_PROFILES[spec.language];
 
@@ -351,7 +386,17 @@ export async function synthesizeVerifiedSpeech(
 
   for (const voice of [primaryVoice, ...profile.voices.filter(v => v !== primaryVoice)]) {
     attempts++;
-    // নর্মালাইজড টেক্সটই বলা হয় (bn) — ইংরেজিতে speakScript === spec.script;
+    // §৪: বাংলা হলে টেক্সট-নর্মালাইজেশন — সংখ্যা/তারিখ/সময় শব্দে।
+    // Edge-নিউরাল কণ্ঠে ইংরেজি-ধ্বন্যাত্মক রূপ বাদ (ওরা মিশ্র লেখা সঠিকভাবেই পড়ে);
+    // z-ai কণ্ঠে সেটিও চালু। ভাষা-শনাক্তকরণ সবসময় *মূল* স্ক্রিপ্টেই হয়।
+    const bnNorm =
+      spec.language === 'bn'
+        ? normalizeBengaliSpeechText(spec.script, { phoneticEnglish: !isEdgeVoice(voice) })
+        : null;
+    const speakScript = bnNorm ? bnNorm.text : spec.script;
+    const normNote = bnNorm?.changed
+      ? `টেক্সট-নর্মালাইজেশন প্রযোজ্ত (${bnNorm.adjustments.length}টি সমন্বয়: ${bnNorm.adjustments.slice(0, 3).join('; ')}${bnNorm.adjustments.length > 3 ? '…' : ''})`
+      : null;
     // §১১: cachedSynthesizeSpeech — একই (কণ্ঠ+গতি+টেক্সট)-এ পুনরাবৃত্ত কল ডিস্ক-ক্যাশে/ডিডুপ
     const speech = await cachedSynthesizeSpeech(speakScript, voice, spec.speed ?? 1);
     if (!verify) {
@@ -379,7 +424,7 @@ export async function synthesizeVerifiedSpeech(
       };
     }
     // estimateSpeechSec-ভিত্তিক যাচাইও নর্মালাইজড টেক্সটে (দৈর্ঘ্য-প্রত্যাশা যথার্থ থাকে)
-    const verification = await verifySpeechBuffer(speech.buffer, speech.ext, { ...spec, voiceId: voice, script: speakScript });
+    const verification = await verifySpeechBuffer(speech.buffer, speech.ext, { ...spec, voiceId: voice, script: speakScript }, voice);
     if (normNote) verification.notes.push(normNote);
     lastResult = { buffer: speech.buffer, mimeType: speech.mimeType, ext: speech.ext, voice, verification, attempts };
     if (verification.verdict !== 'fail') return lastResult;

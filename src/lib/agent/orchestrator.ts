@@ -42,6 +42,108 @@ function looksLikeToolCall(text: string): boolean {
   return /"tool"\s*:/.test(t.slice(0, 200)) || /"arguments"\s*:/.test(t.slice(0, 300));
 }
 
+/** ```json ফেন্সে মোড়া টুল-কলও প্রথাগত (parseToolCall ফেন্স গ্রহণ করে) */
+function looksLikeFencedToolCall(text: string): boolean {
+  const t = text.trimStart();
+  if (!t.startsWith('```')) return false;
+  const head = t.slice(0, 320);
+  return /"tool"\s*:/.test(head) || /"arguments"\s*:/.test(head);
+}
+
+// ------------------------------------------------------------
+// লাইভ টোকেন-স্ট্রিমার — স্মুথ স্ট্রিমিংয়ের হৃদয়।
+//
+// নীতি: টুল-কল JSON কখনো ব্যবহারকারী-দৃশ্যমান নয়; শুধু সত্যিকারের
+// চূড়ান্ত-উত্তর টেক্সটই টোকেন-ধারায় ছড়ানো হয়। সিদ্ধান্ত-জানালা:
+//  - প্রথম অ-হোয়াইটস্পেস অক্ষর '{' বা '`' হলে টুল-কল-প্রার্থী —
+//    "tool":/"arguments": দেখা দিলে সাথে সাথেই দমন
+//  - অন্যথা (বা >২৪০ অক্ষর/নতুন-লাইন পেরিয়ে গেলে) — টেক্সট-মোড
+// কোয়ালেসিং: ~৪০ms ব্যাচে ইভেন্ট — SSE-চ্যাটার কম, ক্লায়েন্টের
+// টাইপরাইটার-ড্রেন স্মুথনেস বজায় রাখে।
+// ------------------------------------------------------------
+
+interface DeltaStreamer {
+  onDelta: (delta: string) => void;
+  onAttemptBegin: () => void;
+  /** স্ট্রিম শেষে অবশিষ্ট বাফার ফ্লাশ */
+  finish: () => void;
+  /** এই কলে কিছু টেক্সট ইতিমধ্যে ছড়ানো হয়েছে কি না */
+  emittedAny: () => boolean;
+}
+
+const DELTA_FLUSH_MS = 40;
+/** সিদ্ধান্ত-জানালা — এর বেশি অক্ষর/নতুন-লাইন পেরিলে টেক্সট-মোডে যাও */
+const DECIDE_MAX_CHARS = 240;
+
+function createDeltaStreamer(runId: string): DeltaStreamer {
+  let mode: 'deciding' | 'text' | 'suppressed' = 'deciding';
+  let pending = '';
+  let emitted = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const flush = () => {
+    clearTimer();
+    if (mode !== 'text' || pending.length === 0) return;
+    const out = pending;
+    pending = '';
+    emitted = true;
+    emit(runId, { type: 'text_delta', runId, delta: out });
+  };
+
+  const evaluate = () => {
+    const lead = pending.trimStart();
+    if (lead.length === 0) return; // এখনো শুধু হোয়াইটস্পেস
+    const head = lead[0];
+    if (head !== '{' && head !== '`') {
+      mode = 'text';
+      return;
+    }
+    if (looksLikeToolCall(pending) || looksLikeFencedToolCall(pending)) {
+      mode = 'suppressed';
+      pending = '';
+      clearTimer();
+      return;
+    }
+    if (lead.length > DECIDE_MAX_CHARS || lead.includes('\n')) {
+      mode = 'text'; // লম্বা/মাল্টি-লাইন — আমাদের কমপ্যাক্ট প্রোটোকল নয়
+      return;
+    }
+  };
+
+  return {
+    onDelta(delta) {
+      if (mode === 'suppressed' || delta.length === 0) return;
+      pending += delta;
+      if (mode === 'deciding') evaluate();
+      if (mode === 'text' && !timer) timer = setTimeout(flush, DELTA_FLUSH_MS);
+    },
+    onAttemptBegin() {
+      // রিট্রাই — পুরোনো আংশিক টেক্সট বাতিলের সৎ সংকেত
+      clearTimer();
+      pending = '';
+      mode = 'deciding';
+      if (emitted) {
+        emitted = false;
+        emit(runId, { type: 'text_delta', runId, delta: '', reset: true });
+      }
+    },
+    finish: flush,
+    emittedAny: () => emitted,
+  };
+}
+
+/** টুল-কল চালু হলে আংশিক-স্ট্রিম পরিষ্কারের রিসেট-সংকেত */
+function emitTextReset(runId: string): void {
+  emit(runId, { type: 'text_delta', runId, delta: '', reset: true });
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`টুল টাইমআউট (${label}, ${Math.round(ms / 1000)}s)`)), ms);
@@ -83,15 +185,20 @@ export function startAgentRun(runId: string): void {
 /**
  * chatComplete + প্রতিটি রেট-লিমিট-অপেক্ষায় SSE run_note —
  * ব্যবহারকারী দেখে "অপেক্ষা চলছে", নিঃশব্দ আটকে থাকা নয়।
- * নির্বাচিত মডেল ('' = ডিফল্ট) পাস-থ্রু হয়।
+ * নির্বাচিত মডেল ('' = ডিফল্ট) পাস-থ্রু হয়; streamer দিলে লাইভ
+ * টোকেন-স্ট্রিমও চলে (টুল-কল দমন-সহ)।
  */
 async function chatCompleteWithNotes(
   runId: string,
   context: LLMMessage[],
-  model?: string
+  model?: string,
+  streamer?: DeltaStreamer
 ): Promise<string> {
   return chatComplete(context, {
     ...(model ? { model } : {}),
+    ...(streamer
+      ? { onDelta: streamer.onDelta, onAttemptBegin: streamer.onAttemptBegin }
+      : {}),
     onRateLimitWait: info => {
       const sec = Math.max(1, Math.round(info.delayMs / 1000));
       emit(runId, {
@@ -443,8 +550,10 @@ async function runAgentLoop(runId: string): Promise<void> {
   loop: for (let step = 1; step <= MAX_STEPS; step++) {
     const t0 = Date.now();
     let text: string;
+    const streamer = createDeltaStreamer(runId);
     try {
-      text = await chatCompleteWithNotes(runId, context, usedModel);
+      text = await chatCompleteWithNotes(runId, context, usedModel, streamer);
+      streamer.finish();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // কী-সমস্যায় (কী নেই/অবৈধ/ব্যালান্স শেষ) স্বয়ংক্রিয় GLM-ফলব্যাক নয় —
@@ -490,7 +599,9 @@ async function runAgentLoop(runId: string): Promise<void> {
           note: `নির্বাচিত মডেল "${describeChatModel(requestedModel)}" এই মুহূর্তে ব্যবহার করা যায়নি (${msg.slice(0, 120)})। ডিফল্ট মডেলে চালিয়ে যাওয়া হচ্ছে — সৎ-ফলব্যাক।`,
         });
         try {
-          text = await chatCompleteWithNotes(runId, context, '');
+          const retryStreamer = createDeltaStreamer(runId);
+          text = await chatCompleteWithNotes(runId, context, '', retryStreamer);
+          retryStreamer.finish();
         } catch (err2) {
           const msg2 = err2 instanceof Error ? err2.message : String(err2);
           if (err2 instanceof TemporarilyUnavailableError || isRateLimitErrorText(msg2)) {
@@ -545,7 +656,9 @@ async function runAgentLoop(runId: string): Promise<void> {
       break;
     }
 
-    // LLM-এর নিজের টুল কল context-এ রাখো
+    // LLM-এর নিজের টুল কল context-এ রাখো; আংশিক-স্ট্রিম হয়ে থাকলে
+    // (শিরোনাম-টেক্সট + JSON-মিশ্রণ) ক্লায়েন্টের টেক্সট রিসেট
+    if (streamer.emittedAny()) emitTextReset(runId);
     context.push({ role: 'assistant', content: text });
 
     const validation = validateToolCall(parsed.tool, parsed.arguments);
@@ -608,7 +721,9 @@ async function runAgentLoop(runId: string): Promise<void> {
     forced = true;
     context.push({ role: 'user', content: 'আর কোনো টুল ছাড়া এখনই চূড়ান্ত উত্তর দাও।' });
     const t0 = Date.now();
-    const text = await chatCompleteWithNotes(runId, context, usedModel);
+    const forcedStreamer = createDeltaStreamer(runId);
+    const text = await chatCompleteWithNotes(runId, context, usedModel, forcedStreamer);
+    forcedStreamer.finish();
     const forcedSeq = nextSeq();
     await db.agentStep.create({
       data: {

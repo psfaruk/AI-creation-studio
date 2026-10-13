@@ -19,6 +19,7 @@ import type { VoicePreset } from '@/lib/types';
 import { runFfmpeg, mediaInfo, audioQuality } from '@/lib/media/ffmpeg';
 import type { PipelineContext, PipelineFn, PipelineResult, StepHandle } from '../runner';
 import { cachedSynthesizeSpeech } from '../../tts-cache';
+import { isEdgeVoice } from '../../audio/edge_tts';
 import {
   synthesizeVerifiedSpeech,
   detectLanguage,
@@ -154,10 +155,14 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
       );
       language = det.language;
     }
-    // ভাষা-প্রোফাইল-সচেতন কণ্ঠ (বাংলায় jam/douji ছাড়া আর কিছু নয়)
+    // ভাষা-প্রোফাইল-সচেতন কণ্ঠ (২০২৬-১০-১৩: বাংলায় bn-BD নিউরাল প্রধান)
     const voice = resolveVoice(language, ctx.spec.voice);
     if (ctx.spec.voice && ctx.spec.voice !== voice) {
-      notes.push(`কণ্ঠ "${ctx.spec.voice}" এই ভাষার প্রোফাইলে নেই — প্রোফাইল-ডিফল্ট "${voice}" ব্যবহৃত হলো।`);
+      notes.push(
+        isEdgeVoice(voice)
+          ? `কণ্ঠ "${ctx.spec.voice}" বাংলার জন্য উপযুক্ত নয় (বাংলা-অপ্রশিক্ষিত) — বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ "${voice}" ব্যবহৃত হলো।`
+          : `কণ্ঠ "${ctx.spec.voice}" এই ভাষার প্রোফাইলে নেই — প্রোফাইল-ডিফল্ট "${voice}" ব্যবহৃত হলো।`
+      );
     }
     await step.setDetail(
       `স্ক্রিপ্ট ${toBn(text.length)} অক্ষর → ${toBn(parts.length)}টি অংশ · ভাষা: ${language === 'bn' ? 'বাংলা' : 'ইংরেজি'} · কণ্ঠ: ${voice}${notes.length ? ` · ${notes[0].slice(0, 80)}…` : ''}`
@@ -169,68 +174,68 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
   const synth = await ctx.runStep('synthesize', 'কণ্ঠ সংশ্লেষণ (ভাষা-নিয়ন্ত্রক)', async step => {
     const files: string[] = [];
     let firstVerification: SpeechVerification | null = null;
-    let usedVoice = prep.voice;
-    let done = 0;
-    for (const [idx, text] of prep.parts.entries()) {
+    let usedVoice: string = prep.voice;
+
+    // ---- স্পিড-আপ (২০২৬-১০-১৩): খণ্ড ০ ভাষা-নিয়ন্ত্রকে যাচাই-সহ; ----
+    // ---- বাকি খণ্ডগুলো ৩-সমান্তরালে সংশ্লেষণ (ধারাবাহিক নয়)       ----
+    await step.setDetail(
+      `১/${toBn(prep.parts.length)} অংশ — ভাষা-নিয়ন্ত্রকে যাচাই-সহ`
+    );
+    {
+      const text = prep.parts[0];
       await ctx.checkCancelled();
-      await step.setDetail(
-        `${toBn(idx + 1)}/${toBn(prep.parts.length)} অংশ — ${idx === 0 ? 'ভাষা-নিয়ন্ত্রকে যাচাই-সহ' : 'সংশ্লেষণ'}`
+      const out = await synthesizeVerifiedSpeech(
+        {
+          task: 'speech',
+          language: prep.language,
+          script: text,
+          voiceId: prep.voice,
+          outputFormat: 'wav',
+          sampleRate: 24000,
+          speed: 1,
+        },
+        { verify: true }
       );
-      let buffer: Buffer;
-      let ext: string;
-      try {
-        if (idx === 0) {
-          // §২.২ — TTS → প্রযুক্তি-যাচাই → ASR ব্যাক-চেক → রায় (fail হলে বিকল্প কণ্ঠে ১ পুনঃচেষ্টা)
-          const out = await synthesizeVerifiedSpeech(
-            {
-              task: 'speech',
-              language: prep.language,
-              script: text,
-              voiceId: prep.voice,
-              outputFormat: 'wav',
-              sampleRate: 24000,
-              speed: 1,
-            },
-            { verify: true }
-          );
-          buffer = out.buffer;
-          ext = out.ext;
-          usedVoice = out.voice;
-          firstVerification = out.verification;
-        } else {
-          // খরচ-নিয়ন্ত্রণ: প্রথম খণ্ডের রায় থেকে কণ্ঠ নিশ্চিত — বাকিগুলো সরল TTS
-          // (§১১: ক্যাশে-সহ পথ — পুনরাবৃত্ত বিষয়বস্তুতে ৪২৯-ঝুঁকি কমে)
-          const out = await cachedSynthesizeSpeech(text, prep.voice, 1);
-          buffer = out.buffer;
-          ext = out.ext;
+      usedVoice = out.voice;
+      firstVerification = out.verification;
+      const file = path.join(ctx.workingDir, `chunk-01.${out.ext}`);
+      await writeFile(file, out.buffer);
+      const info = await mediaInfo(file);
+      if (info.durationSec > 0) files.push(file);
+      else ctx.partialNotes.push('অংশ ১ ত্রুটিপূর্ণ (দৈর্ঘ্য শূন্য)');
+    }
+    if (prep.parts.length > 1) {
+      await step.setDetail(
+        `২–${toBn(prep.parts.length)}/${toBn(prep.parts.length)} অংশ সমান্তরালে সংশ্লেষণ হচ্ছে…`
+      );
+      const rest = prep.parts.slice(1);
+      const CONCURRENCY = 3;
+      let next = 0;
+      let doneCount = 0;
+      const worker = async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= rest.length) return;
+          await ctx.checkCancelled();
+          const text = rest[i];
+          const idx = i + 1;
+          try {
+            const out = await cachedSynthesizeSpeech(text, usedVoice, 1);
+            const file = path.join(ctx.workingDir, `chunk-${String(idx + 1).padStart(2, '0')}.${out.ext}`);
+            await writeFile(file, out.buffer);
+            const info = await mediaInfo(file);
+            if (info.durationSec > 0) files.push(file);
+            else ctx.partialNotes.push(`অংশ ${toBn(idx + 1)} ত্রুটিপূর্ণ (দৈর্ঘ্য শূন্য)`);
+          } catch (err) {
+            ctx.partialNotes.push(
+              `অংশ ${toBn(idx + 1)}/${toBn(prep.parts.length)} সংশ্লেষণ ব্যর্থ: ${String((err as Error)?.message ?? err).slice(0, 160)}`
+            );
+          }
+          doneCount++;
+          await step.setDetail(`${toBn(doneCount + 1)}/${toBn(prep.parts.length)} অংশ সম্পন্ন`);
         }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // পুনঃচেষ্টা (সরল TTS) — পুনঃযাচাই নয়; ক্যাশে-সহ পথ
-        try {
-          const out = await cachedSynthesizeSpeech(text, prep.voice, 1);
-          buffer = out.buffer;
-          ext = out.ext;
-        } catch (err2) {
-          ctx.partialNotes.push(
-            `অংশ ${toBn(idx + 1)}/${toBn(prep.parts.length)} সংশ্লেষণ ব্যর্থ: ${String((err2 as Error)?.message ?? err2 ?? msg).slice(0, 180)}`
-          );
-          continue;
-        }
-      }
-      const file = path.join(ctx.workingDir, `chunk-${String(idx + 1).padStart(2, '0')}.${ext}`);
-      await writeFile(file, buffer);
-      try {
-        const info = await mediaInfo(file);
-        if (!(info.durationSec > 0)) throw new Error('অডিওর দৈর্ঘ্য শূন্য');
-        files.push(file);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.partialNotes.push(`অংশ ${toBn(idx + 1)} ত্রুটিপূর্ণ: ${msg.slice(0, 140)}`);
-        continue;
-      }
-      done++;
-      await step.setDetail(`${toBn(done)}/${toBn(prep.parts.length)} অংশ সম্পন্ন`);
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, rest.length) }, worker));
     }
     if (files.length === 0) {
       throw new Error('কোনো অংশই সংশ্লেষণ করা যায়নি — TTS পরিষেবা সাময়িকভাবে ব্যর্থ মনে হচ্ছে। একটু পরে আবার চেষ্টা করো।');
@@ -269,7 +274,7 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
     const slug = slugifyTitle(ctx.spec.title || 'voiceover');
     return validateAndRegister(ctx, master.masterWav, master.masterMp3, slug, {
       pipeline: 'audio/voiceover',
-      voice: synth.usedVoice,
+      voice: String(synth.usedVoice),
       language: prep.language,
       chunks: synth.files.length,
       targetDurationSec: ctx.spec.durationSec ?? null,
@@ -303,7 +308,7 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
       }, ${toBn(synth.files.length)}টি অংশ, কণ্ঠ ${synth.usedVoice}, ভাষা ${prep.language === 'bn' ? 'বাংলা' : 'ইংরেজি'}`,
       durationSec: master.durationSec,
       chunks: synth.files.length,
-      voice: synth.usedVoice,
+      voice: String(synth.usedVoice),
       language: prep.language,
       verification: verification
         ? {
@@ -449,6 +454,8 @@ async function runMusicPlan(ctx: PipelineContext): Promise<PipelineResult> {
     await step.setDetail('কাঠামো, লিরিক্স ও বাদ্যযন্ত্র-নির্দেশনা তৈরি হচ্ছে');
     const { plan: musicPlan, document } = await planMusicContent(idea, {
       durationSec: ctx.spec.durationSec,
+      // চ্যাটের ভাষাতেই গান — spec.language (create.ts-এ স্বয়ংক্রিয়-নির্ধারিত)
+      language: ctx.spec.language === 'en' ? 'en' : 'bn',
     });
     await ctx.registerArtifact({
       buffer: Buffer.from(document, 'utf-8'),

@@ -71,6 +71,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
               send(event);
             }
             return;
+          case 'text_delta':
+            // লাইভ টোকেন-স্ট্রিম — সরাসরি পাঠানো (dedupe নেই; reset-সংকেতসহ)।
+            // চূড়ান্ত 'message' ইভেন্টই কর্তৃত্বপূর্ণ টেক্সট — তাই হারালে ক্ষতি নেই।
+            send(event);
+            return;
           case 'run_note':
             // S9: রেট-লিমিট-অপেক্ষার মতো স্ট্যাটাস-নোট — সবসময় পাঠানো হয়
             send(event);
@@ -120,10 +125,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         }
       };
 
-      // live ইভেন্ট প্রথমে queue-তে জমা হয় — initial DB replay-এর সাথে race এড়াতে
-      const queue: RunEvent[] = [];
+      // live ইভেন্ট সাথে সাথেই ফরোয়ার্ড — ১.৫s পোল-টিকের জমা নয়।
+      // (টুল/মেসেজ/ফিনিশ ইভেন্টের dedupe নিচের forward()-এ বলি —
+      // initial DB-replay-এর সাথে race-এও ডুপ্লিকেট যায় না;
+      // text_delta/run_note কখনো DB-replay থেকে আসে না।)
       const unsubscribe = subscribe(runId, event => {
-        if (!finished && !closed) queue.push(event);
+        if (!finished && !closed) forward(event);
       });
       req.signal.addEventListener('abort', abort);
 
@@ -180,15 +187,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         }
       };
 
-      // initial replay → queued live events flush → (প্রয়োজনে বন্ধ) → polling শুরু
+      // initial DB-replay → (প্রয়োজনে বন্ধ) → polling শুরু
+      // (poll = HMR/ছিঁড়ে-যাওয়া সংযোগের নিরাপত্তা-জাল — সাধারণ পথে
+      // লাইভ ইভেন্টই সাথে সাথে চলে যায়, আর দরকার হলে dedupe ছাঁকে)
       await syncFromDb();
-      while (queue.length > 0) forward(queue.shift()!);
       if (!finished) {
         pollTimer = setInterval(() => {
           if (finished || closed) return;
-          void syncFromDb().then(() => {
-            while (queue.length > 0) forward(queue.shift()!);
-          });
+          void syncFromDb();
         }, POLL_INTERVAL_MS);
         pingTimer = setInterval(() => {
           if (!finished && !closed) send({ type: 'ping' });

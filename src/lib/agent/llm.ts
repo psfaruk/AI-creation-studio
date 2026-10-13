@@ -103,12 +103,85 @@ export interface ChatCompleteOptions {
   /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু) */
   skipCache?: boolean;
   /**
+   * লাইভ টোকেন-স্ট্রিম — প্রতিটি ডেল্টা-অংশ যথাসময়ে ফেরে।
+   * (ডিস্ক-ক্যাশ-হিট বা নন-স্ট্রিম ফলব্যাকে ডেল্টা আসে না — তখন পুরো টেক্সট একবারে।)
+   */
+  onDelta?: (delta: string) => void;
+  /** প্রতি রিট্রাই-এটেম্প্ট শুরুর আগে একবার ডাকা হয় (আংশিক-স্ট্রিম রিসেটের সংকেত) */
+  onAttemptBegin?: () => void;
+  /**
    * নির্বাচিত চ্যাট-মডেল ('' / undefined = SDK ডিফল্ট)।
    * ক্যাটালগের provider অনুযায়ী রাউট হয়:
    *   - 'zai' → z-ai-web-dev-sdk (বিল্ট-ইন, শেয়ার্ড রেট-লিমিট)
    *   - এক্সটার্নাল → সেই প্রোভাইডারের প্রকৃত API (নিজের কী)
    */
   model?: string;
+}
+
+// ------------------------------------------------------------
+// Z.ai SDK স্ট্রিম-উত্তর ভোগ — raw SSE (ReadableStream/string) থেকে
+// delta-content বের করে onDelta-তে পাঠায়, পুরো টেক্সট ফেরায়।
+// (platform/gateway.ts-এ প্রমাণিত প্যাটার্ন: stream:true → ReadableStream
+// of OpenAI-SSE-chunks; কিছু ব্যাকএন্ড পুরো-স্ট্রিং বা অবজেক্টও ফেরাতে
+// পারে — তিনটি রূপই সামলানো হয়।)
+// ------------------------------------------------------------
+
+async function consumeZaiStream(res: unknown, onDelta?: (d: string) => void): Promise<string> {
+  // রূপ ১: ReadableStream (raw SSE bytes)
+  if (res && typeof (res as ReadableStream).getReader === 'function') {
+    const reader = (res as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let sseBuf = '';
+    let full = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuf += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = sseBuf.indexOf('\n\n')) !== -1) {
+        const rawEvent = sseBuf.slice(0, sep);
+        sseBuf = sseBuf.slice(sep + 2);
+        full += extractDeltaFromSseEvent(rawEvent, onDelta);
+      }
+    }
+    return full;
+  }
+  // রূপ ২: পুরো SSE-স্ট্রিং একবারে
+  if (typeof res === 'string') {
+    return extractDeltaFromSseEvent(res.replace(/\r\n/g, '\n'), onDelta);
+  }
+  // রূপ ৩: সাধারণ নন-স্ট্রিম completion-অবজেক্ট
+  const r = res as Record<string, unknown> | null;
+  const content = (r?.choices as Array<Record<string, unknown>> | undefined)?.[0];
+  const msg = (content?.message as Record<string, unknown> | undefined)?.content;
+  if (typeof msg === 'string' && msg.length > 0) {
+    onDelta?.(msg);
+    return msg;
+  }
+  return '';
+}
+
+/** একটি raw SSE-ইভেন্ট-ব্লক (data:-লাইনসমূহ) থেকে delta-content যোগ করে ফেরায় */
+function extractDeltaFromSseEvent(rawEvent: string, onDelta?: (d: string) => void): string {
+  let out = '';
+  for (const line of rawEvent.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') continue;
+    try {
+      const chunk = JSON.parse(data) as {
+        choices?: Array<{ delta?: { content?: unknown } }>;
+      };
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string' && delta.length > 0) {
+        out += delta;
+        onDelta?.(delta);
+      }
+    } catch {
+      // malformed chunk — উপেক্ষা
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------------
@@ -142,11 +215,14 @@ export async function chatComplete(
 
   // ---- এক্সটার্নাল-প্রোভাইডার রাউটিং ----
   const requestedId = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : '';
+  const streamOpts = opts?.onDelta
+    ? { onDelta: opts.onDelta, onAttemptBegin: opts.onAttemptBegin }
+    : undefined;
 
   // কাস্টম-প্ল্যাটফর্ম মডেল (custom:<providerId>:<apiModel>) —
   // ব্যবহারকারীর নিজের Base URL + কী-তে প্রকৃত OpenAI SDK-কল
   if (isCustomModelId(requestedId)) {
-    const text = await customChatComplete(messages, requestedId);
+    const text = await customChatComplete(messages, requestedId, streamOpts);
     if (text && text.length > 0) {
       await writeLlmCache(key, text);
     }
@@ -155,24 +231,26 @@ export async function chatComplete(
 
   const entry = requestedId !== '' ? findChatModel(requestedId) : undefined;
   if (entry && entry.provider !== 'zai') {
-    const text = await externalChatComplete(messages, entry);
+    const text = await externalChatComplete(messages, entry, streamOpts);
     if (text && text.length > 0) {
       await writeLlmCache(key, text);
     }
     return text;
   }
 
-  // ---- Z.ai SDK-পথ (আগের মতোই) ----
+  // ---- Z.ai SDK-পথ (স্ট্রিমিংসহ — স্মুথ লাইভ-আউটপুটের উৎস) ----
   const zai = await getZAI();
   const model = requestedId !== '' ? requestedId : undefined;
   const text = await withRetry(
     async () => {
+      opts?.onAttemptBegin?.();
       const res = await zai.chat.completions.create({
         messages,
         ...(model ? { model } : {}),
+        stream: true,
         thinking: { type: 'disabled' },
       });
-      const content = res?.choices?.[0]?.message?.content;
+      const content = await consumeZaiStream(res, opts?.onDelta);
       return typeof content === 'string' ? content : '';
     },
     'LLM (চ্যাট)',

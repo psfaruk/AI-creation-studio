@@ -14,6 +14,7 @@
 import type { CreativeJobSpec, ValidatedSpec } from '@/lib/types';
 import { db } from '@/lib/db';
 import { validateSpec } from '../capabilities';
+import { detectLanguage } from '../audio/language_controller';
 
 export type CreateProductionResult =
   | {
@@ -45,6 +46,27 @@ export async function createProduction(
     };
   }
   const caps = validation.validated;
+
+  // --- ভাষা-প্রচার (২০২৬-১০-১৩, ব্যবহারকারীর সুস্পষ্ট নিয়ম):
+  //     "যেই ভাষায় চ্যাট মেসেজ থাকবে সেই ভাষায় কথা ও অডিও তৈরি হবে"।
+  //     spec.language না দেওয়া থাকলে কথোপকথনের সর্বশেষ ব্যবহারকারী-বার্তার
+  //     ভাষা থেকে স্বয়ংক্রিয়ভাবে নির্ধারণ হয়। (LLM ভুল ভাষা বসালেও সংশোধন।)
+  if (!caps.spec.language) {
+    const lastUserMsg = await db.message.findFirst({
+      where: { conversationId, role: 'user' },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true },
+    });
+    if (lastUserMsg?.content) {
+      const det = detectLanguage(lastUserMsg.content);
+      if (det.language === 'bn' || det.language === 'en') {
+        caps.spec.language = det.language;
+        caps.notes.push(
+          `ভাষা স্বয়ংক্রিয়: চ্যাট-বার্তা ${det.language === 'bn' ? 'বাংলা' : 'ইংরেজি'} লেখায় — সব কণ্ঠ/লিরিক্স/সংলাপ সেই ভাষায় তৈরি হবে (${Math.round(det.confidence * 100)}% নিশ্চয়তা)`
+        );
+      }
+    }
+  }
 
   // --- অটো-ওয়্যার: মিউজিক ভিডিওতে গান আবার যুক্ত করা ---
   // LLM কখনো কখনো songArtifactId দিতে ভুলে যায় — কথোপকথনের

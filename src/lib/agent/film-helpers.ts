@@ -9,6 +9,7 @@ import { copyFile, writeFile, stat } from 'fs/promises';
 import path from 'path';
 import type { AspectRatio, CameraMove } from '@/lib/types';
 import { runFfmpeg, mediaInfo, buildSrt } from '@/lib/media/ffmpeg';
+import { detectLanguage } from './audio/language_controller';
 import { chatJson } from './sdk-helpers';
 import type { LLMMessage } from './llm';
 
@@ -427,7 +428,7 @@ export async function segmentDialogueToCues(
       content:
         'তুমি একজন প্রফেশনাল সাবটাইটেল এডিটর। নিচের লেখাকে ১–৪ সেকেন্ডে পড়ার মতো ছোট ছোট কিউতে ভাগো। ' +
         'প্রতিটি কিউ স্বাভাবিক বাক্য-সীমায় কাটবে (মাঝ-বাক্যে নয়, যতটা সম্ভব)। ' +
-        `মোট প্রদর্শন-সময় ≈ ${budget.toFixed(1)} সেকেন্ড। ভাষা: ${opts.language === 'bn' ? 'বাংলা' : 'বাংলা'}। ` +
+        `মোট প্রদর্শন-সময় ≈ ${budget.toFixed(1)} সেকেন্ড। ভাষা: ${opts.language === 'en' ? 'ইংরেজি' : 'বাংলা'} — কিউ-লেখা যেন ভাঙা না হয়। ` +
         'শুধুমাত্র এই JSON দিয়ে উত্তর দাও, অন্য কিছু নয়: {"cues":[{"text":"..."}...]}',
     },
     { role: 'user', content: text.slice(0, 6000) },
@@ -546,4 +547,55 @@ export function portraitPrompt(name: string, appearance: string): string {
     'Waist-up, facing camera, neutral studio-like background, soft even lighting, ' +
     'consistent character reference sheet style, cinematic, high detail, 35mm'
   ).slice(0, 1100);
+}
+
+// ------------------------------------------------------------
+// বিষয়বস্তু-ভাষা যাচাই ও সংশোধন (২০২৬-১০-১৩, ব্যবহারকারীর নিয়ম)
+// ------------------------------------------------------------
+
+/**
+ * LLM-লিখা বিষয়বস্তুর ভাষা প্রত্যাশার সাথে মিলছে কি না। না মিললে
+ * একবার স্পষ্ট নির্দেশনায় পুনর্লিখন (লিরিক্স/সংলাপ চ্যাটের ভাষাতেই
+ * হবে — ব্যবহারকারীর সুস্পষ্ট নিয়ম)। যাচাই-ফল সৎ-নোটসহ।
+ */
+export async function ensureContentLanguage(
+  content: string,
+  language: 'bn' | 'en',
+  kind: string
+): Promise<{ text: string; note: string | null }> {
+  const det = detectLanguage(content);
+  if (det.language === 'unknown' || det.language === 'mixed' || det.language === language) {
+    return { text: content, note: null };
+  }
+  // ভাষা মিলেনি — একবার পুনর্লিখন
+  const wanted = language === 'bn' ? 'বাংলা (বাংলা লিপি)' : 'English';
+  try {
+    const { chatJson } = await import('./sdk-helpers');
+    const { data } = await chatJson<{ text?: string }>([
+      {
+        role: 'assistant',
+        content:
+          `The following ${kind} is written in the wrong language. Rewrite it entirely in ${wanted}. ` +
+          `Keep the meaning, structure, emotion and length. Do not add any commentary. ` +
+          `Respond only with JSON: {"text": "..."}`,
+      },
+      { role: 'user', content: content.slice(0, 6000) },
+    ]);
+    const fixed = String(data?.text ?? '').trim();
+    if (fixed && detectLanguage(fixed).language === language) {
+      return {
+        text: fixed,
+        note: `${kind}-এর ভাষা প্রত্যাশার বাইরে ছিল — ${language === 'bn' ? 'বাংলায়' : 'ইংরেজিতে'} পুনর্লিখিত হয়েছে।`,
+      };
+    }
+    return {
+      text: content,
+      note: `${kind}-এর ভাষা যাচাই-সংশোধন সফল হয়নি — প্রিভিউতে ভাষা মিলিয়ে দেখুন।`,
+    };
+  } catch {
+    return {
+      text: content,
+      note: `${kind}-এর ভাষা মিলেনি (পুনর্লিখন-কল ব্যর্থ) — প্রিভিউতে ভাষা মিলিয়ে দেখুন।`,
+    };
+  }
 }

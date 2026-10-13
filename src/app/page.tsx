@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/sheet';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
+import { useAgentRun } from '@/hooks/use-agent-run';
 import { useConversations } from '@/hooks/use-conversations';
 import { useChatStore } from '@/hooks/use-chat-store';
 import { useUiView } from '@/hooks/use-ui-view';
@@ -38,6 +39,7 @@ export default function Home() {
   const isLoadingDetail = useChatStore((s) => s.isLoadingDetail);
   const isRunActive = useChatStore((s) => s.isRunActive);
   const activeView = useUiView((s) => s.activeView);
+  const { regenerate } = useAgentRun();
 
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -127,6 +129,7 @@ export default function Home() {
                 key={activeId ?? 'new'}
                 messages={messages}
                 isLoadingDetail={isLoadingDetail}
+                onRegenerate={regenerate}
               />
             )}
             {/* S9: রেট-লিমিটেড হলে সৎ-অ্যাম্বার ব্যানার (ব্লকড না থাকলে কিছুই রেন্ডার হয় না) */}

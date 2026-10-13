@@ -125,7 +125,13 @@ function statusOf(err: unknown): number | undefined {
 export async function externalChatComplete(
   messages: ExternalLLMMessage[],
   entry: ChatModelOption,
-  opts?: { timeoutMs?: number; maxTokens?: number }
+  opts?: {
+    timeoutMs?: number;
+    maxTokens?: number;
+    /** লাইভ টোকেন-স্ট্রিম (llm.ts chatComplete থেকে আসে) */
+    onDelta?: (delta: string) => void;
+    onAttemptBegin?: () => void;
+  }
 ): Promise<string> {
   const providerInfo = PROVIDERS[entry.provider];
   const apiModel = entry.apiModel;
@@ -141,18 +147,39 @@ export async function externalChatComplete(
 
   const timeoutMs = opts?.timeoutMs ?? 120_000;
   const client = getClient(entry.provider, key, timeoutMs);
-  const body = buildRequestBody(entry, toExternalMessages(messages), opts);
 
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const res = await client.chat.completions.create(
-        body as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-        { timeout: timeoutMs }
-      );
-      const content = res?.choices?.[0]?.message?.content;
-      if (typeof content === 'string' && content.trim() !== '') return content;
-      lastErr = new ExternalRetryableError('খালি উত্তর এসেছে');
+      opts?.onAttemptBegin?.();
+      if (opts?.onDelta) {
+        // স্ট্রিমিং-পথ — প্রকৃত OpenAI SDK stream (টোকেন-বাই-টোকেন)
+        const body = { ...buildRequestBody(entry, toExternalMessages(messages), opts), stream: true };
+        const stream = (await client.chat.completions.create(
+          body as unknown as OpenAI.Chat.ChatCompletionCreateParamsStreaming,
+          { timeout: timeoutMs }
+        )) as unknown as AsyncIterable<{
+          choices?: Array<{ delta?: { content?: unknown } }>;
+        }>;
+        let full = '';
+        for await (const chunk of stream) {
+          const d = chunk?.choices?.[0]?.delta?.content;
+          if (typeof d === 'string' && d.length > 0) {
+            full += d;
+            opts.onDelta(d);
+          }
+        }
+        if (full.trim() !== '') return full;
+        lastErr = new ExternalRetryableError('খালি উত্তর এসেছে');
+      } else {
+        const res = await client.chat.completions.create(
+          buildRequestBody(entry, toExternalMessages(messages), opts) as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
+          { timeout: timeoutMs }
+        );
+        const content = res?.choices?.[0]?.message?.content;
+        if (typeof content === 'string' && content.trim() !== '') return content;
+        lastErr = new ExternalRetryableError('খালি উত্তর এসেছে');
+      }
     } catch (err) {
       const status = statusOf(err);
       const errText = err instanceof Error ? err.message : String(err);

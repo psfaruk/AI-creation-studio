@@ -37,8 +37,12 @@ import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
 import type { CameraMove } from '@/lib/types';
 import { audioQuality, ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
-import { AI_VIDEO_MODEL } from '../../video/ai_video';
-import { generateAiShot, buildAiVideoPrompt, toDataUrl } from './motion_video';
+import {
+  AI_VIDEO_MODEL,
+  prewarmVideoClip,
+  videoGenerationEtaNote,
+} from '../../video/ai_video';
+import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec } from './motion_video';
 import {
   synthesizeInstrumental,
   analyzeAudioEnergy,
@@ -47,6 +51,7 @@ import {
   MUSIC_ENGINE_LABEL,
   type MusicMood,
 } from '../../audio/music_engine';
+import { resolveVoice } from '../../audio/language_controller';
 import { db } from '@/lib/db';
 
 type MvShotType = 'performance' | 'close_up' | 'wide' | 'establishing';
@@ -192,7 +197,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
   await ctx.runStep('visual_plan', 'ভিজ্যুয়াল পরিকল্পনা (সেকশন-ভিত্তিক শট-তালিকা)', async (step: StepHandle) => {
     const limit = maxShots('music_video', spec.quality, engine);
     // AI-পথে প্রতি শট ≤৯ সে. (৫/১০-গ্রিড + ট্রানজিশন-প্যাড), সিনেম্যাটিকে ২.৫–৬ সে.
-    const segCap = engine === 'ai_diffusion' ? 9 : 6;
+    // AI-পথে CogVideoX-3-এর ১০-সে. ক্লিপই একক — সেগমেন্ট-জানালা তার মধ্যে
+    const segCap = engine === 'ai_diffusion' ? 10 : 6;
     const shotCount = Math.max(engine === 'ai_diffusion' ? 1 : 3, Math.min(limit, Math.ceil(targetDuration / segCap)));
 
     // বিট-মার্কার থেকে কাট-পয়েন্ট — সমান দূরত্বে বিট বাছাই (প্রতিটি বিট নয়)
@@ -292,6 +298,31 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     await step.setDetail(
       `${shots.length}টি শট (বিট-কাটে), ${characters.length > 0 ? `চরিত্র: ${characters[0].name}` : 'দৃশ্য-কেন্দ্রিক'}`
     );
+
+    // স্পিড-আপ (২০২৬-১০-১৩): AI-পথে প্রথম শট এখনই চালু — চরিত্র-পোর্ট্রেট
+    // ও পরের ধাপগুলোর সাথে জেনারেশন ওভারল্যাপ করবে (~২–৭ মিনিট সাশ্রয়)।
+    // i2v-রেফারেন্স (শিল্পী-পোর্ট্রেট) পরে আসে বলে প্রথম শট scene-ভিত্তিক।
+    if (engine === 'ai_diffusion' && shots.length > 0) {
+      prewarmVideoClip(
+        {
+          prompt: buildAiVideoPrompt(
+            shots[0].description,
+            visualStyle || spec.style,
+            shots[0].cameraMove,
+            SHOT_TYPE_HINT[shots[0].shotType]
+          ),
+          durationSec: aiClipDurationSec(shots[0].durationSec),
+          quality: 'speed' as const,
+          requestKey: `mv-${ctx.productionId}-shot-1`,
+        },
+        {
+          onStatus: note => {
+            step.setDetail(`শট ১ ব্যাকগ্রাউন্ডে: ${note}`).catch(() => undefined);
+          },
+        }
+      );
+      ctx.partialNotes.push('স্পিড-আপ: প্রথম AI-শট ভিজ্যুয়াল-পরিকল্পনার পরেই চালু (ওভারল্যাপ)।');
+    }
   }, { timeoutMs: 6 * 60_000 }); // S10
 
   // ------------------------------------------------------- characters
@@ -386,7 +417,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
           description: ch.appearance.slice(0, 500),
           appearanceJson: JSON.stringify({ appearance: ch.appearance }),
           language: spec.language ?? 'bn',
-          voice: spec.voice ?? 'jam',
+          voice: spec.voice ?? resolveVoice(spec.language === 'en' ? 'en' : 'bn'),
           portraitArtifactId: art.id,
         },
         update: { portraitArtifactId: art.id },
@@ -399,7 +430,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
   let aiShots = 0;
   await ctx.runStep(
     'generate_shots',
-    engine === 'ai_diffusion' ? `পারফরম্যান্স ক্লিপ জেনারেশন (${AI_VIDEO_MODEL})` : 'পারফরম্যান্স ক্লিপ জেনারেশন (স্টোরিবোর্ড+ক্যামেরা-মোশন)',
+    engine === 'ai_diffusion' ? `পারফরম্যান্স ক্লিপ জেনারেশন (${AI_VIDEO_MODEL} — ${videoGenerationEtaNote()})` : 'পারফরম্যান্স ক্লিপ জেনারেশন (স্টোরিবোর্ড+ক্যামেরা-মোশন)',
     async (step: StepHandle) => {
       // ট্রানজিশন-প্যাডিং সহ প্রয়োজনীয় দৈর্ঘ্য (timeline-ধাপের কাট-গণিত মেনে)
       const useXfade = shots.length <= 6;
@@ -569,7 +600,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       await step.setDetail(`${valid.length}টি ক্লিপ সম্পন্ন`);
     },
     // S10: ai_diffusion প্রতি শটে মিনিট নেয় — দীর্ঘ সীমা; cinematic_motion দ্রুত
-    { timeoutMs: engine === 'ai_diffusion' ? 55 * 60_000 : 15 * 60_000 }
+    { timeoutMs: engine === 'ai_diffusion' ? 45 * 60_000 : 15 * 60_000 }
   );
 
   // ------------------------------------------------------- timeline

@@ -37,9 +37,11 @@ function LoadingConversation() {
 export function MessageList({
   messages,
   isLoadingDetail,
+  onRegenerate,
 }: {
   messages: ChatMessage[];
   isLoadingDetail: boolean;
+  onRegenerate: (assistantMessageId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nearBottomRef = useRef(true);
@@ -85,6 +87,7 @@ export function MessageList({
               key={message.id}
               message={message}
               isPending={message.id.startsWith('pending-')}
+              onRegenerate={onRegenerate}
             />
           ))
         )}

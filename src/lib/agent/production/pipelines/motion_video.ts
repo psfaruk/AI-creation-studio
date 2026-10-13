@@ -32,8 +32,22 @@ import { cachedSynthesizeSpeech } from '../../tts-cache';
 import type { ImageSize } from '../../sdk-helpers';
 import type { CameraMove } from '@/lib/types';
 import { mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
-import { ASPECT_TO_GEN_SIZE, outputDims, maxShots, SHOT_DURATION_HINT } from '../../capabilities';
-import { generateVideoClip, AI_VIDEO_MODEL } from '../../video/ai_video';
+import {
+  ASPECT_TO_GEN_SIZE,
+  outputDims,
+  maxShots,
+  SHOT_DURATION_HINT,
+  SHOT_DURATION_HINT_LOCAL,
+} from '../../capabilities';
+import {
+  generateVideoClip,
+  prewarmVideoClip,
+  consumePrewarmedClip,
+  videoGenerationEtaNote,
+  AI_VIDEO_MODEL,
+} from '../../video/ai_video';
+// পাইপলাইন-ভাইয়োরা (short_film) সরাসরি ai_video থেকে না নিয়ে এখান থেকে নেয়
+export { prewarmVideoClip, videoGenerationEtaNote };
 import { planSoundscape, renderSoundscapeBed } from '../../audio/sound_design';
 
 // ------------------------------------------------------------
@@ -137,24 +151,29 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
   const clipPath = path.join(req.workingDir, `aishot-${req.index}.mp4`);
   const duration = aiClipDurationSec(req.neededSec);
   let lastErr = '';
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // ২০২৬-১৩-১০: নতুন শিডিউলার নিজেই ধৈর্যশীল (৪২৯-ল্যাডার ~৮ মিনিট) —
+  // আর দুই পূর্ণ-চক্র নয়; এক চক্র + সৎ-ফলব্যাক। প্রি-ওয়ার্ম থাকলে সেটিই।
+  for (let attempt = 0; attempt < 1; attempt++) {
     try {
       await req.onStatus?.(
-        attempt === 0
-          ? `${AI_VIDEO_MODEL}-এ জেনারেট হচ্ছে (${duration} সে. — ২–৪ মিনিট লাগতে পারে)…`
-          : 'AI-জেনারেশন পুনঃচেষ্টা চলছে…'
+        `${AI_VIDEO_MODEL}-এ জেনারেট হচ্ছে (${duration} সে. — ${videoGenerationEtaNote()})…`
       );
-      const clip = await generateVideoClip(
-        {
-          prompt: req.prompt,
-          durationSec: duration,
-          quality: 'speed',
-          ...(req.imageUrl ? { imageUrl: req.imageUrl } : {}),
-          // §১০: লজিক্যাল শটের আইডেম্পোটেন্সি-চাবি — পুনঃচেষ্টায়ও একই request_id
-          ...(req.requestKey ? { requestKey: req.requestKey } : {}),
-        },
-        { onStatus: note => void req.onStatus?.(note) }
-      );
+      const clipPromise = req.requestKey
+        ? consumePrewarmedClip(req.requestKey)
+        : null;
+      const clip = clipPromise
+        ? await clipPromise
+        : await generateVideoClip(
+            {
+              prompt: req.prompt,
+              durationSec: duration,
+              quality: 'speed',
+              ...(req.imageUrl ? { imageUrl: req.imageUrl } : {}),
+              // §১০: লজিক্যাল শটের আইডেম্পোটেন্সি-চাবি — পুনঃচেষ্টায়ও একই request_id
+              ...(req.requestKey ? { requestKey: req.requestKey } : {}),
+            },
+            { onStatus: note => void req.onStatus?.(note) }
+          );
       await writeFile(rawPath, clip.buffer);
       // লক্ষ্য-মাত্রা/fps-এ স্বাভাবিকীকরণ (কেন্দ্র-ক্রপ)
       await runFfmpeg(
@@ -313,7 +332,8 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     try {
       shots = await shotPlanFromLLM(spec.idea ?? spec.title, {
         count,
-        durationHintSec: SHOT_DURATION_HINT.motion_video,
+        durationHintSec:
+          engine === 'ai_diffusion' ? SHOT_DURATION_HINT.motion_video : SHOT_DURATION_HINT_LOCAL.motion_video,
         maxCount: limit,
         aspect,
         totalDurationSec: durationSec,
@@ -341,9 +361,29 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     }
     await step.setDetail(
       `${shots.length}টি শট পরিকল্পিত — ইঞ্জিন: ${
-        engine === 'ai_diffusion' ? `প্রকৃত AI (${AI_VIDEO_MODEL}, প্রতি শটে ২–৪ মিনিট)` : 'cinematic_motion (স্টোরিবোর্ড+ক্যামেরা-মোশন)'
+        engine === 'ai_diffusion'
+          ? `প্রকৃত AI (${AI_VIDEO_MODEL}, ${videoGenerationEtaNote()})`
+          : 'cinematic_motion (স্টোরিবোর্ড+ক্যামেরা-মোশন)'
       }`
     );
+    // স্পিড-আপ: AI-পথে প্রথম শট এখনই ব্যাকগ্রাউন্ডে চালু — পরের ধাপের
+    // কাজের সাথে জেনারেশন ওভারল্যাপ করবে (~২–৭ মিনিট সাশ্রয়)
+    if (engine === 'ai_diffusion' && !sourceImageFile && shots.length > 0) {
+      prewarmVideoClip(
+        {
+          prompt: buildAiVideoPrompt(shots[0].description, spec.style, shots[0].cameraMove),
+          durationSec: aiClipDurationSec(shots[0].durationSec),
+          quality: 'speed' as const,
+          requestKey: `${ctx.productionId}-shot-1`,
+        },
+        {
+          onStatus: note => {
+            step.setDetail(`শট ১ ব্যাকগ্রাউন্ডে: ${note}`).catch(() => undefined);
+          },
+        }
+      );
+      ctx.partialNotes.push('স্পিড-আপ: প্রথম AI-শট পরিকল্পনার সাথে-সাথেই চালু হয়েছে (ওভারল্যাপ)।');
+    }
   }, { timeoutMs: 6 * 60_000 }); // S10
 
   // ------------------------------------------------------- generate_shots

@@ -137,8 +137,8 @@ const LANGUAGE_LABELS: Record<SpeechLanguage, string> = {
 };
 
 const VIDEO_ENGINE_LABELS: Record<VideoEngine, string> = {
-  ai_diffusion: 'প্রকৃত AI (CogVideoX-3)',
-  cinematic_motion: 'স্টোরিবোর্ড+ক্যামেরা-মোশন (দ্রুত)',
+  ai_diffusion: 'প্রকৃত AI ভিডিও (CogVideoX-3) — রিয়েলিস্টিক, ধীর (প্রতি শটে ~৫ মিনিট)',
+  cinematic_motion: 'স্টোরিবোর্ড+ক্যামেরা-মোশন — দ্রুত (মিনিটের ভেতর)',
 };
 
 const FILM_MODE_LABELS: Record<FilmMode, string> = {
@@ -157,15 +157,26 @@ const MOOD_LABELS: Record<MusicMood, string> = {
   peaceful: 'শান্ত',
 };
 
-/** ৭টি বৈধ কণ্ঠ (§২ ভাষা-প্রোব-যাচাইকৃত) */
-const VOICE_OPTIONS: VoicePreset[] = [
-  'tongtong',
-  'chuichui',
-  'xiaochen',
-  'jam',
-  'kazi',
-  'douji',
-  'luodo',
+/**
+ * কণ্ঠ-রেজিস্ট্রি (২০২৬-১০-১৩): Microsoft Edge-নিউরাল প্রধান —
+ * bn-BD কণ্ঠগুলো সত্যিই বাংলা-প্রশিক্ষিত (দেশীয় উচ্চারণ); z-ai কণ্ঠগুলো
+ * ফলব্যাক (বাংলা পড়তে পারে না)।
+ */
+const VOICE_OPTIONS: { id: VoicePreset; label: string; group: string }[] = [
+  { id: 'bn-BD-NabanitaNeural', label: 'নবনীতা — বাংলা নিউরাল (নারী)', group: 'বাংলা নিউরাল (সুপারিশকৃত)' },
+  { id: 'bn-BD-PradeepNeural', label: 'প্রদীপ — বাংলা নিউরাল (পুরুষ)', group: 'বাংলা নিউরাল (সুপারিশকৃত)' },
+  { id: 'bn-IN-TanishaaNeural', label: 'তানিশা — বাংলা, ভারত (নারী)', group: 'বাংলা নিউরাল (সুপারিশকৃত)' },
+  { id: 'bn-IN-BashkarNeural', label: 'ভাস্কর — বাংলা, ভারত (পুরুষ)', group: 'বাংলা নিউরাল (সুপারিশকৃত)' },
+  { id: 'en-US-AriaNeural', label: 'আরিয়া — ইংরেজি নিউরাল (নারী)', group: 'ইংরেজি নিউরাল' },
+  { id: 'en-US-GuyNeural', label: 'গাই — ইংরেজি নিউরাল (পুরুষ)', group: 'ইংরেজি নিউরাল' },
+  { id: 'en-GB-SoniaNeural', label: 'সোনিয়া — ব্রিটিশ ইংরেজি (নারী)', group: 'ইংরেজি নিউরাল' },
+  { id: 'jam', label: 'jam — ইংরেজি (z-ai)', group: 'z-ai (ফলব্যাক)' },
+  { id: 'douji', label: 'douji (z-ai)', group: 'z-ai (ফলব্যাক)' },
+  { id: 'tongtong', label: 'tongtong (z-ai)', group: 'z-ai (ফলব্যাক)' },
+  { id: 'kazi', label: 'kazi (z-ai)', group: 'z-ai (ফলব্যাক)' },
+  { id: 'chuichui', label: 'chuichui (z-ai)', group: 'z-ai (ফলব্যাক)' },
+  { id: 'xiaochen', label: 'xiaochen (z-ai)', group: 'z-ai (ফলব্যাক)' },
+  { id: 'luodo', label: 'luodo (z-ai)', group: 'z-ai (ফলব্যাক)' },
 ];
 
 const MOOD_OPTIONS: MusicMood[] = ['sad', 'romantic', 'joyful', 'suspense', 'action', 'peaceful'];
@@ -192,7 +203,10 @@ function specSummaryText(spec: CreativeJobSpec): string[] {
   } else if (spec.sound) {
     bits.push(`শব্দ: ${{ none: 'নীরব', ambient: 'পরিবেশ-শব্দ', narration: 'ভয়েসওভার', uploaded_song: 'আপলোড করা গান' }[spec.sound]}`);
   }
-  if (spec.voice) bits.push(`কণ্ঠ: ${spec.voice}`);
+  if (spec.voice) {
+    const vLabel = VOICE_OPTIONS.find(v => v.id === spec.voice);
+    bits.push(`কণ্ঠ: ${vLabel ? vLabel.label : spec.voice}`);
+  }
   if (spec.subtitles) bits.push('সাবটাইটেল: হ্যাঁ');
   if (spec.format) bits.push(`ফরম্যাট: ${IMAGE_FORMAT_LABELS[spec.format]}`);
   return bits;
@@ -391,13 +405,21 @@ function SpecEditor({
       {spec.type === 'audio' && (
         <div className="col-span-1 space-y-1.5">
           <Label className="text-xs text-muted-foreground">কণ্ঠ</Label>
-          <Select value={spec.voice ?? 'tongtong'} onValueChange={v => patch({ voice: v as CreativeJobSpec['voice'] })}>
+          <Select
+            value={spec.voice ?? (spec.language === 'en' ? 'en-US-AriaNeural' : 'bn-BD-NabanitaNeural')}
+            onValueChange={v => patch({ voice: v as CreativeJobSpec['voice'] })}
+          >
             <SelectTrigger className="h-9 bg-background text-sm" aria-label="কণ্ঠ">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {VOICE_OPTIONS.map(voice => (
-                <SelectItem key={voice} value={voice}>{voice}</SelectItem>
+              {['বাংলা নিউরাল (সুপারিশকৃত)', 'ইংরেজি নিউরাল', 'z-ai (ফলব্যাক)'].map(group => (
+                <div key={group}>
+                  <div className="px-2 py-1 text-[11px] font-medium text-muted-foreground">{group}</div>
+                  {VOICE_OPTIONS.filter(v => v.group === group).map(v => (
+                    <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>
+                  ))}
+                </div>
               ))}
             </SelectContent>
           </Select>

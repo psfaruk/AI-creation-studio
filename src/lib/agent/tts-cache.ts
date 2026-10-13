@@ -8,9 +8,11 @@
 //  - একই মুহূর্তে একই জোড়ার দুটি অনুরোধ এলে একটিই API কল চলে (in-flight ম্যাপ);
 //    দ্বিতীয়টি সেই Promise-এ যোগ দেয় — ডুপ্লিকেট কাজ নয়।
 //  - ক্যাশ-লেখা সর্বোচ্চ-প্রচেষ্টা: ডিস্ক-ব্যর্থতায় কল কখনো ব্যর্থ হবে না।
-//  - sdk-helpers.ts-এর synthesizeSpeech অপরিবর্তিত (খাঁটি API-পথ);
-//    স্বাস্থ্য-পরীক্ষা (system-info) ও ভাষা-নিয়ন্ত্রক চুক্তির জন্য সেটিই ব্যবহৃত হয়।
-//    (ইমপোর্ট-চক্র এড়াতে sdk-helpers কখনো এই ফাইল ইমপোর্ট করে না।)
+//
+// ২০২৬-১০-১৩ (বাংলা-ভাষা সমাধান): কণ্ঠ-নাম Edge-নিউরাল হলে
+// (bn-BD-NabanitaNeural ইত্যাদি) Microsoft Edge TTS-এ যায়, নয়তো
+// z-ai SDK-তে — একই ক্যাশ + একই চুক্তিতে। ইঞ্জিন-নাম ক্যাশ-কীতে
+// জড়িত নয় (কণ্ঠ-নামই ইঞ্জিন নির্ধারণ করে), তাই পুরনো ক্যাশ বৈধ থাকে।
 // ============================================================
 
 import { createHash } from 'node:crypto';
@@ -18,6 +20,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { synthesizeSpeech } from './sdk-helpers';
 import type { SpeechResult, TtsVoice } from './sdk-helpers';
+import { isEdgeVoice, synthesizeEdgeSpeech, type EdgeVoiceId } from './audio/edge_tts';
 
 const PROJECT_ROOT = process.cwd();
 /** ক্যাশ-গুচ্ছ: storage/tts-cache/<প্রথম২>/<পরের২>/<পূর্ণহ্যাশ>.<ext> + .meta.json */
@@ -34,6 +37,7 @@ export interface TtsCacheStats {
 
 interface TtsCacheMeta {
   voice: string;
+  engine: 'edge' | 'zai';
   speed: number;
   mimeType: string;
   ext: string;
@@ -62,7 +66,7 @@ function inFlightMap(): Map<string, Promise<SpeechResult>> {
 }
 
 /** ক্যাশ-কী: sha1(`${voice}|${speed.toFixed(2)}|${text}`) */
-function cacheKey(text: string, voice: TtsVoice, speed: number): string {
+function cacheKey(text: string, voice: string, speed: number): string {
   return createHash('sha1').update(`${voice}|${speed.toFixed(2)}|${text}`).digest('hex');
 }
 
@@ -93,7 +97,8 @@ async function readFromCache(hash: string): Promise<SpeechResult | null> {
 async function writeToCache(
   hash: string,
   text: string,
-  voice: TtsVoice,
+  voice: string,
+  engine: 'edge' | 'zai',
   speed: number,
   result: SpeechResult
 ): Promise<void> {
@@ -102,6 +107,7 @@ async function writeToCache(
     await mkdir(dir, { recursive: true });
     const meta: TtsCacheMeta = {
       voice,
+      engine,
       speed,
       mimeType: result.mimeType,
       ext: result.ext,
@@ -116,15 +122,27 @@ async function writeToCache(
 }
 
 /**
- * ক্যাশে-সহ কণ্ঠ-সংশ্লেষণ — synthesizeSpeech-এর সমান চুক্তি
+ * কণ্ঠ-অনুযায়ী ইঞ্জিন-নির্বাচন ছাড়াই মূল সংশ্লেষণ:
+ * Edge-নিউরাল নাম → Microsoft Edge TTS; অন্য সব → z-ai SDK।
+ */
+async function synthRaw(text: string, voice: string, speed: number): Promise<SpeechResult & { engine: 'edge' | 'zai' }> {
+  if (isEdgeVoice(voice)) {
+    const res = await synthesizeEdgeSpeech(text, voice as EdgeVoiceId, { speed });
+    return { buffer: res.buffer, mimeType: res.mimeType, ext: res.ext, engine: 'edge' };
+  }
+  const res = await synthesizeSpeech(text, voice as TtsVoice, speed);
+  return { ...res, engine: 'zai' };
+}
+
+/**
+ * ক্যাশে-সহ কণ্ঠ-সংশ্লেষণ — যেকোনো বৈধ কণ্ঠ (Edge-নিউরাল বা z-ai)।
  * (SpeechResult: buffer/mimeType/ext), শুধু আগে-ক্যাশ-পরে-API।
  * ব্যবহারকারীমুখী পথে (প্রোডাকশন পাইপলাইন) পুনরাবৃত্ত বিষয়বস্তুতে
- * এটিই ব্যবহার করুন; স্বাস্থ্য-পরীক্ষা/ভাষা-নিয়ন্ত্রক-যাচাই চুক্তির জন্য
- * খাঁটি synthesizeSpeech থাকবে।
+ * এটিই ব্যবহার করুন; স্বাস্থ্য-পরীক্ষার জন্য খাঁটি synthesizeSpeech থাকবে।
  */
 export async function cachedSynthesizeSpeech(
   text: string,
-  voice: TtsVoice = 'tongtong',
+  voice: string = 'tongtong',
   speed = 1
 ): Promise<SpeechResult> {
   const key = cacheKey(text, voice, speed);
@@ -143,9 +161,9 @@ export async function cachedSynthesizeSpeech(
       return cached;
     }
     stats().misses++;
-    // ৩) প্রকৃত API-কল (৪২৯-পুনঃচেষ্টাসহ) + সফল হলে ক্যাশে লেখা (best-effort)
-    const result = await synthesizeSpeech(text, voice, speed);
-    await writeToCache(key, text, voice, speed, result);
+    // ৩) প্রকৃত API-কল (ইঞ্জিন-সচেতন) + সফল হলে ক্যাশে লেখা (best-effort)
+    const result = await synthRaw(text, voice, speed);
+    await writeToCache(key, text, voice, result.engine, speed, result);
     return result;
   })();
 

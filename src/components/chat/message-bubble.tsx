@@ -9,6 +9,7 @@ import { formatRunStatsBn, formatTimeBn } from '@/components/chat/bn-format';
 import { ActivityCard } from '@/components/chat/activity-card';
 import { ArtifactList } from '@/components/chat/artifact-view';
 import { Markdown } from '@/components/chat/markdown';
+import { MessageActions } from '@/components/chat/message-actions';
 import { PulsingDots } from '@/components/chat/pulsing-dots';
 import { ProductionCard } from '@/components/studio/production-card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -87,7 +88,25 @@ function UserBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending: boolean }) {
+/** স্ট্রিমিং-কার্সর — টাইপরাইটার-ড্রেন চলাকালীন প্রান্তে জ্বলে-নেভে */
+function StreamingCursor() {
+  return (
+    <span
+      aria-hidden="true"
+      className="ml-0.5 inline-block h-4 w-[7px] translate-y-[2px] animate-pulse rounded-[2px] bg-emerald-600 dark:bg-emerald-400"
+    />
+  );
+}
+
+function AssistantTurn({
+  message,
+  isPending,
+  onRegenerate,
+}: {
+  message: ChatMessage;
+  isPending: boolean;
+  onRegenerate: (assistantMessageId: string) => void;
+}) {
   const activities = message.activities ?? [];
   const shownArtifactIds = new Set(
     activities.flatMap((a) => (a.artifacts ?? []).map((x) => x.id)),
@@ -147,6 +166,7 @@ function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending
         message.content && (
           <div className="rounded-2xl rounded-bl-md border bg-card px-4 py-3 shadow-sm">
             <Markdown content={message.content} />
+            {isPending && <StreamingCursor />}
           </div>
         )
       )}
@@ -154,6 +174,15 @@ function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending
       {extraArtifacts.length > 0 && <ArtifactList artifacts={extraArtifacts} />}
 
       {message.productionId && <ProductionCard productionId={message.productionId} />}
+
+      {/* ফিনিশিং-সিস্টেম: স্ট্রিম শেষ হলে ছোট অ্যাকশন-সারি */}
+      {!isPending && message.content && (
+        <MessageActions
+          messageId={message.id}
+          content={message.content}
+          onRegenerate={onRegenerate}
+        />
+      )}
 
       {message.runStats && (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -173,10 +202,12 @@ function AssistantTurn({ message, isPending }: { message: ChatMessage; isPending
 export function MessageBubble({
   message,
   isPending,
+  onRegenerate,
 }: {
   message: ChatMessage;
   isPending: boolean;
+  onRegenerate: (assistantMessageId: string) => void;
 }) {
   if (message.role === 'user') return <UserBubble message={message} />;
-  return <AssistantTurn message={message} isPending={isPending} />;
+  return <AssistantTurn message={message} isPending={isPending} onRegenerate={onRegenerate} />;
 }

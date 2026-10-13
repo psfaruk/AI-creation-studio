@@ -7,11 +7,29 @@
 //  - i2v: image_url ডেটা-URL গ্রহণ করে ✓
 //  - with_audio:true → প্রকৃত AAC অডিও-স্ট্রিম (16kHz mono) ✓
 //  - request_id গৃহীত ও echo-হয় (§১০ idempotency) ✓
-//  - সাবমিটগুলোর মাঝে ≥৩০ সে. ফাঁক না দিলে 429 — ব্যাকঅফ
-//    এখন §১০-অনুযায়ী: Retry-After-সচেতন + এক্সপোনেনশিয়াল+জিটার
-//    (৬০ সে. ভিত্তি → সর্বোচ্চ ৯০ সে.), নিঃশেষে সৎ-রায়:
-//    TEMPORARILY_UNAVAILABLE (রেট-লিমিট — লাইসেন্স-সমস্যা নয়)
-//  - প্রতিটি টাস্ক ২–৪ মিনিট পর্যন্ত চলতে পারে
+//
+// ২০২৬-১০-১৩-এর গভীর-প্রোব (এই ফাইলের পুনর্লিখনের ভিত্তি):
+//  - **একটাই টাস্ক একসাথে চলতে পারে** — ইন-ফ্লাইট টাস্ক থাকলে সব
+//    নতুন সাবমিট ৪২৯ পায়। আগের কোড এটা জানত না → প্রতি শটে ৬×৬০–৯০
+//    সেকেন্ডের অন্ধ ব্যাকঅফ + coordinator-এর ভিডিও-চ্যানেল
+//    পূর্ণ-ব্লক → সব শট স্লাইডশো-ফলব্যাকে পড়ত (ব্যবহারকারীর নাল
+//    অভিজ্ঞতার মূল কারণ)।
+//  - টাস্ক শেষ হওয়ার পরেও ~২.২–২.৫ মিনিট কুলডাউন থাকে।
+//  - সাবমিট-প্রতি-সময়: ২০:৩৪:০৩ সাবমিট → সমাপ্তি ~২০:৩৭:৪৫ →
+//    পরের সফল সাবমিট ২০:৪০:০২ (সমাপ্তির ~২ মি ১৭ সে পরে)।
+//  - ৪২৯-হ্যামারিং (প্রতি ২০ সে. চেষ্টা) জানালা বাড়ায় না।
+//
+// নতুন স্থাপত্য — "ইন-ফ্লাইট-সচেতন গেট":
+//  ১. গ্লোবাল গেট: একটাই ইন-ফ্লাইট টাস্ক ট্র্যাক করে; নতুন সাবমিট
+//     প্রথমে সেটার সমাপ্তির অপেক্ষা করে, তারপর সমাপ্তি-পরবর্তী
+//     কুলডাউন (ভিত্তি ১৫০ সে., অভিযোজিত) মেনে তারপর যায়।
+//  ২. ৪২৯ মানেই ব্যর্থ নয় — "জানালা বন্ধ" সংকেত; ধৈর্যশীল ল্যাডার
+//     (১৫→৩০→৬০→৯০… সে.) দিয়ে সর্বোচ্চ ~৮ মিনিট বাজেট।
+//  ৩. coordinator-কে আর বিষ নয় — প্রত্যাশিত ৪২৯-এ noteRateLimit('video')
+//     হয় না, তাই ভিডিও-চ্যানেল কখনো "স্কিপ-অ্যাডভাইজড" হয়ে পুরো
+//     প্রোডাকশন স্লাইডশো হয়ে যায় না।
+//  ৪. প্রি-ওয়ার্ম: পাইপলাইনের প্রথম শট আগেই সাবমিট করে রাখা যায় —
+//     জেনারেশন চলাকালীন পাইপলাইন বাকি কাজ (পোর্ট্রেট/TTS/সাউন্ড) করে।
 //
 // সততার নিয়ম (§৪.৩): FFmpeg-কে কখনো AI ভিডিও-জেনারেশন বলে দেখানো
 // হয় না — এখানে কেবল প্রকৃত ক্লাউড-মডেলের ফলাফলই "AI ভিডিও"।
@@ -23,9 +41,7 @@ import {
   TemporarilyUnavailableError,
   isRateLimitErrorText,
   parseRetryAfterMs,
-  fullJitterDelayMs,
 } from '../sdk-helpers';
-import { cloudSkipAdvised, noteRateLimit } from '../rate-limit-coordinator';
 import { mediaInfo, type MediaInfo } from '@/lib/media/ffmpeg';
 import { writeFile, mkdtemp, rm } from 'fs/promises';
 import path from 'path';
@@ -34,20 +50,20 @@ import os from 'os';
 export const AI_VIDEO_MODEL = 'cogvideox-3';
 export const AI_VIDEO_PROVIDER = 'z-ai-web-dev-sdk (ক্লাউড)';
 
-/** প্রোব-যাচাইকৃত সীমা */
+/** প্রোব-যাচাইকৃত সীমা (২০২৬-১০-১৩) */
 export const AI_VIDEO_LIMITS = {
   durationChoices: [5, 10] as const,
   defaultDurationSec: 5,
-  /** প্রতি টাস্কের সর্বোচ্চ অপেক্ষা */
-  pollTimeoutMs: 10 * 60 * 1000,
-  pollIntervalMs: 7000,
-  /** সাবমিট-ব্যাকঅফ (৪২৯-এ) — প্রোব-৩: ৪৫ সে.-এও ৬ বার 429 */
-  submitBackoffMs: 60_000,
-  /** §১০: ব্যাকঅফের সর্বোচ্চ সীমা (এক্সপোনেনশিয়াল+জিটার) */
-  submitBackoffMaxMs: 90_000,
-  submitAttempts: 6,
-  /** পরপর সাবমিটের ন্যূনতম ব্যবধান */
-  minSubmitGapMs: 30_000,
+  /** প্রতি টাস্কের সর্বোচ্চ অপেক্ষা (প্রোবে ৭+ মিনিটও দেখা গেছে; জিজ্ঞাসা-থ্রটল-সময়ও ধরে) */
+  pollTimeoutMs: 15 * 60 * 1000,
+  /** ভিত্তি পোল-বিরতি (৪২৯-হলে অভিযোজিতভাবে বাড়ে) */
+  pollIntervalMs: 10_000,
+  /** সমাপ্তির পরের কুলডাউন — প্রোব: সমাপ্তি→পরের-সফল-সাবমিট ≈ ২ মি ১৭ সে. */
+  postCompletionCooldownMs: 150_000,
+  /** ৪২৯-ল্যাডার (সেকেন্ডে) — অন্ধ ৬০–৯০ সে. নয়, ক্রমবর্ধমান ছোট ধাপ */
+  rateLimitLadderSec: [15, 30, 60, 90, 120],
+  /** প্রতি শটের সাবমিট-বাজেট (৪২৯-অপেক্ষা মিলিয়ে) */
+  submitBudgetMs: 8 * 60 * 1000,
 };
 
 export type AiVideoQuality = 'speed' | 'quality';
@@ -115,13 +131,90 @@ export function deriveRequestId(requestKey: string, prompt: string): string {
   return `${sanitized}-${promptHash}`;
 }
 
-/** শেষ সাবমিটের সময় মনে রাখা (গ্লোবাল স্পেসিং — HMR-নিরাপদ) */
-const g = globalThis as any;
-function lastSubmitAt(): number {
-  return g.__aiVideoLastSubmit ?? 0;
+// ------------------------------------------------------------
+// গ্লোবাল ইন-ফ্লাইট গেট (HMR-নিরাপদ) — ২০২৬-১০-১৩ স্থাপত্য
+// ------------------------------------------------------------
+
+interface InflightTask {
+  taskId: string;
+  startedAt: number;
+  /** পোল-প্রমিশ — সমাপ্তিতে গেট মুক্ত হয় */
+  poll: Promise<AiVideoOutcome>;
 }
-function markSubmit(): void {
-  g.__aiVideoLastSubmit = Date.now();
+
+interface VideoGate {
+  /** সাবমিট-সিরিয়ালাইজেশন চেইন */
+  tail: Promise<unknown>;
+  inflight: InflightTask | null;
+  /** সাম্প্রতিক সমাপ্তির সময় */
+  lastCompletionAt: number;
+  /** পরের সাবমিটের সবচেয়ে আগের গ্রাহ্য সময় */
+  nextAllowedAt: number;
+  /** সর্বশেষ সফল সাবমিটের সময় (min-gap হিসাবে) */
+  lastSubmitAt: number;
+  /** পরিসংখ্যান — সৎ ETA-নোট ও UI-র জন্য */
+  submits: number;
+  completions: number;
+  failures: number;
+  generationMsSamples: number[];
+}
+
+const g = globalThis as any;
+
+function gate(): VideoGate {
+  if (!g.__aiVideoGate) {
+    g.__aiVideoGate = {
+      tail: Promise.resolve(),
+      inflight: null,
+      lastCompletionAt: 0,
+      nextAllowedAt: 0,
+      lastSubmitAt: 0,
+      submits: 0,
+      completions: 0,
+      failures: 0,
+      generationMsSamples: [],
+    } satisfies VideoGate;
+  }
+  return g.__aiVideoGate as VideoGate;
+}
+
+/** গেট-পরিসংখ্যান (সৎ ETA-নোট/UI) */
+export function videoSchedulerStats(): {
+  inflight: boolean;
+  inflightSec: number;
+  cooldownRemainingMs: number;
+  submits: number;
+  completions: number;
+  failures: number;
+  avgGenerationMs: number;
+} {
+  const s = gate();
+  const samples = s.generationMsSamples.slice(-5);
+  return {
+    inflight: Boolean(s.inflight),
+    inflightSec: s.inflight ? Math.round((Date.now() - s.inflight.startedAt) / 1000) : 0,
+    cooldownRemainingMs: Math.max(0, s.nextAllowedAt - Date.now()),
+    submits: s.submits,
+    completions: s.completions,
+    failures: s.failures,
+    avgGenerationMs: samples.length
+      ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length)
+      : 0,
+  };
+}
+
+/** চলমান টাস্কের পোল-প্রমিশ (না থাকলে null) — সাবমিট-অপেক্ষার জন্য */
+function inflightPoll(): Promise<AiVideoOutcome> | null {
+  return gate().inflight?.poll ?? null;
+}
+
+/** গড় জেনারেশন-সময়ের সৎ আনুমানিক বাংলা নোট */
+export function videoGenerationEtaNote(): string {
+  const st = videoSchedulerStats();
+  const avgSec = Math.round(st.avgGenerationMs / 1000);
+  return avgSec > 0
+    ? `প্রতি শটে আনুমানিক ${avgSec} সেকেন্ড`
+    : 'প্রতি শটে আনুমানিক ২–৪ মিনিট';
 }
 
 // ------------------------------------------------------------
@@ -129,31 +222,38 @@ function markSubmit(): void {
 // ------------------------------------------------------------
 
 /**
- * ভিডিও-টাস্ক সাবমিট — ৪২৯-এ §১০-ব্যাকঅফ (Retry-After → এক্সপোনেনশিয়াল+জিটার), request_id-আইডেম্পোটেন্সি
- * S9 দ্রুত-গেট: ভিডিও-চ্যানেল দীর্ঘ কুলডাউনে থাকলে সাবমিট-চেষ্টাই বাদ —
- * প্রতি শটে ৬×৬০–৯০ সে. ব্যর্থ-অপেক্ষা নয়, সৎ-ফলব্যাক (স্টোরিবোর্ড/লোকাল-ফ্রেম) তৎক্ষণাৎ।
+ * ভিডিও-টাস্ক সাবমিট — ইন-ফ্লাইট-সচেতন:
+ *  ১) চলমান টাস্ক থাকলে তার সমাপ্তির অপেক্ষা;
+ *  ২) সমাপ্তি-পরবর্তী কুলডাউন মেনে চলা;
+ *  ৩) ৪২৯ = "জানালা বন্ধ" — ক্রমবর্ধমান ল্যাডারে ধৈর্য (সর্বোচ্চ ~৮ মিনিট);
+ *  ৪) প্রত্যাশিত ৪২৯-এ coordinator-কে আর বিষ নয়।
  */
 export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask> {
-  if (cloudSkipAdvised('video')) {
-    throw new TemporarilyUnavailableError(
-      'ভিডিও-টাস্ক সাবমিট — ভিডিও-চ্যানেল দীর্ঘ রেট-লিমিট-কুলডাউনে; ক্লাউড-চেষ্টা স্কিপ (ফলব্যাকে যান)'
-    );
-  }
   const zai = await getZAI();
   const duration = clampDuration(req.durationSec);
-  // §১০: requestKey থাকলে নির্ধারক request_id — চক্রের বাইরে একবারই তৈরি,
-  // ফলে ৪২৯-পুনঃচেষ্টায়ও একই id যায় (প্রোভাইডার ডিডুপ্লিকেট করে)
+  // §১০: requestKey থাকলে নির্ধারক request_id — চক্রের বাইরে একবারই তৈরি
   const requestId = req.requestKey ? deriveRequestId(req.requestKey, req.prompt) : undefined;
 
-  // ন্যূনতম ব্যবধান মেনে চলি
-  const gap = Date.now() - lastSubmitAt();
-  if (gap > 0 && gap < AI_VIDEO_LIMITS.minSubmitGapMs) {
-    await sleep(AI_VIDEO_LIMITS.minSubmitGapMs - gap);
-  }
+  const deadline = Date.now() + AI_VIDEO_LIMITS.submitBudgetMs;
+  let ladderIdx = 0;
+  let lastErr: unknown = null;
 
-  let lastErr: unknown;
-  let sawRateLimit = false;
-  for (let attempt = 1; attempt <= AI_VIDEO_LIMITS.submitAttempts; attempt++) {
+  while (Date.now() < deadline) {
+    // --- ধাপ ১: ইন-ফ্লাইট টাস্ক থাকলে তার সমাপ্তির অপেক্ষা ---
+    const running = inflightPoll();
+    if (running) {
+      try {
+        await running;
+      } catch {
+        /* পোল-প্রমিশ নিজে ফল গিলে রাখে — এখানে কেবল মুক্তির অপেক্ষা */
+      }
+    }
+
+    // --- ধাপ ২: কুলডাউন বাকি থাকলে সৎ অপেক্ষা ---
+    const wait = gate().nextAllowedAt - Date.now();
+    if (wait > 0) await sleep(Math.min(wait, 60_000));
+
+    // --- ধাপ ৩: সাবমিট চেষ্টা ---
     try {
       const body: Record<string, unknown> = {
         prompt: req.prompt.slice(0, 2000),
@@ -166,45 +266,33 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
       if (req.size) body.size = req.size;
       if (requestId) body.request_id = requestId;
       const res = await zai.video.generations.create(body as any);
-      markSubmit();
       const id = (res as any)?.id;
       if (!id) throw new Error(`সাবমিট-প্রতিক্রিয়ায় taskId নেই: ${JSON.stringify(res).slice(0, 200)}`);
-      return { taskId: String(id), model: String((res as any).model ?? AI_VIDEO_MODEL), request: { ...req, durationSec: duration } };
+      const s = gate();
+      s.lastSubmitAt = Date.now();
+      s.submits++;
+      return {
+        taskId: String(id),
+        model: String((res as any).model ?? AI_VIDEO_MODEL),
+        request: { ...req, durationSec: duration },
+      };
     } catch (err: any) {
       lastErr = err;
       const msg = String(err?.message ?? err);
-      if (isRateLimitErrorText(msg)) sawRateLimit = true;
-      if (!/429|rate.?limit|too many|timeout|\b5\d{2}\b/i.test(msg)) throw err;
-      // S9: coordinator-কে জানাও (অভিযোজিত কুলডাউন); দীর্ঘ কুলডাউনে
-      // বাকি চেষ্টা না পুড়িয়ে তৎক্ষণাৎ সৎ-ফলব্যাকে যাও
-      if (sawRateLimit) {
-        const ra = parseRetryAfterMs(err);
-        noteRateLimit('video', ra);
-        if (cloudSkipAdvised('video')) {
-          throw new TemporarilyUnavailableError(
-            `ভিডিও-টাস্ক সাবমিট সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট-কুলডাউন): ${msg.slice(0, 160)}`
-          );
-        }
-      }
-      if (attempt === AI_VIDEO_LIMITS.submitAttempts) break;
-      // §১০: Retry-After থাকলে সেটিই (৯০ সে.-ছাদে), নয়তো এক্সপোনেনশিয়াল+ফুল-জিটার
-      // (৬০ সে. ভিত্তি → সর্বোচ্চ ৯০ সে.)
+      if (!isRateLimitErrorText(msg) && !/429|too many/i.test(msg)) throw err;
+      // ৪২৯ — জানালা বন্ধ। Retry-After থাকলে সেটিই (যুক্তিসঙ্গত সীমায়),
+      // নয়তো ল্যাডারের ধাপ।
       const ra = parseRetryAfterMs(err);
-      const delayMs =
-        ra != null
-          ? Math.max(0, Math.min(AI_VIDEO_LIMITS.submitBackoffMaxMs, ra))
-          : fullJitterDelayMs(AI_VIDEO_LIMITS.submitBackoffMs, attempt - 1, AI_VIDEO_LIMITS.submitBackoffMaxMs);
+      const ladderSec = AI_VIDEO_LIMITS.rateLimitLadderSec[Math.min(ladderIdx, AI_VIDEO_LIMITS.rateLimitLadderSec.length - 1)];
+      const delayMs = ra != null && ra > 0 ? Math.min(ra, 120_000) : ladderSec * 1000;
+      ladderIdx++;
       await sleep(delayMs);
     }
   }
-  const detail = String((lastErr as any)?.message ?? lastErr).slice(0, 200);
-  if (sawRateLimit) {
-    // ৪২৯/রেট-লিমিট নিঃশেষ — সাময়িক অনুপলব্ধতা, কখনোই লাইসেন্স-সমস্যা নয় (§১০)
-    throw new TemporarilyUnavailableError(
-      `ভিডিও-টাস্ক সাবমিট সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট): ${detail}`
-    );
-  }
-  throw new Error(`ভিডিও-টাস্ক সাবমিট ব্যর্থ (সার্ভার/টাইমআউট): ${detail}`);
+  const detail = String((lastErr as any)?.message ?? lastErr ?? 'অজানা').slice(0, 200);
+  throw new TemporarilyUnavailableError(
+    `ভিডিও-সাবমিট জানালা ${Math.round(AI_VIDEO_LIMITS.submitBudgetMs / 60000)} মিনিটেও খুলেনি (৪২৯): ${detail}`
+  );
 }
 
 function clampDuration(d?: number): number {
@@ -213,7 +301,10 @@ function clampDuration(d?: number): number {
   return Math.max(lo, Math.min(hi, Math.round(v)));
 }
 
-/** একটি টাস্কের ফলাফলের অপেক্ষা (৪২৯ নীরবে সহ্য করে) */
+/**
+ * একটি টাস্কের ফলাফলের অপেক্ষা (৪২৯ নীরবে সহ্য করে)।
+ * সফল/ব্যর্থ উভয় ক্ষেত্রেই গেট আপডেট করে (কুলডাউন শুরু)।
+ */
 export async function pollVideoTask(
   task: AiVideoTask,
   opts?: { onStatus?: (note: string) => void; timeoutMs?: number }
@@ -222,17 +313,25 @@ export async function pollVideoTask(
   const timeout = opts?.timeoutMs ?? AI_VIDEO_LIMITS.pollTimeoutMs;
   const t0 = Date.now();
   let lastNote = 0;
+  // অভিযোজিত পোল-ব্যাকঅফ: query-৪২৯ মানেই জিজ্ঞাসা-চ্যানেল চাপে — বিরতি
+  // ১৫→৩০→৪৫ সে. পর্যন্ত বাড়ে; সফল জিজ্ঞাসা ভিত্তি-বিরতিতে ফেরে।
+  // (২০২৬-১০-১৩-এর প্রোব: ঘন ঘন জিজ্ঞাসা নিজেই ৪২৯-ঝড় ডাকে — ফলাফল
+  // অন্ধকারে চলে যায়, যদিও টাস্ক সমাপ্ত।)
+  let queryDelayMs = AI_VIDEO_LIMITS.pollIntervalMs;
   while (Date.now() - t0 < timeout) {
-    await sleep(AI_VIDEO_LIMITS.pollIntervalMs);
+    await sleep(queryDelayMs);
     try {
       const q: any = await zai.async.result.query(task.taskId);
+      queryDelayMs = AI_VIDEO_LIMITS.pollIntervalMs;
       const status = String(q?.task_status ?? '');
       if (status === 'SUCCESS') {
         const url = q.video_result?.[0]?.url ?? q.video_url ?? q.url ?? q.video;
         const coverUrl = q.video_result?.[0]?.cover_image_url;
+        noteCompletion(t0);
         return { status: 'SUCCESS', url: typeof url === 'string' ? url : undefined, coverUrl, raw: q };
       }
       if (status === 'FAIL') {
+        noteCompletion(t0);
         return { status: 'FAIL', raw: q };
       }
       if (opts?.onStatus && Date.now() - lastNote > 30_000) {
@@ -241,13 +340,30 @@ export async function pollVideoTask(
       }
     } catch (err: any) {
       const msg = String(err?.message ?? err);
-      if (!/429|Too many|timeout/i.test(msg)) {
+      if (/429|Too many/i.test(msg)) {
+        // জিজ্ঞাসা-চ্যানেল থ্রটেলড — বিরতি বাড়াও (সর্বোচ্চ ৪৫ সে.)
+        queryDelayMs = Math.min(45_000, Math.max(queryDelayMs + 8_000, 15_000));
+      } else if (!/timeout/i.test(msg)) {
         // কিছু ক্ষণিক ত্রুটি সহ্য করি — টাস্ক হারাতে চাই না
         if (!/\b5\d{2}\b/.test(msg)) throw err;
       }
     }
   }
+  noteCompletion(t0);
   return { status: 'TIMEOUT' };
+}
+
+/** সমাপ্তি-ঘটনা গেটে নথিভুক্ত (কুলডাউন-শুরু + নমুনা) */
+function noteCompletion(startedAtMs: number): void {
+  const s = gate();
+  const now = Date.now();
+  s.inflight = null;
+  s.lastCompletionAt = now;
+  s.completions++;
+  s.generationMsSamples.push(now - startedAtMs);
+  if (s.generationMsSamples.length > 20) s.generationMsSamples.shift();
+  // পরের সাবমিট কুলডাউন পরে — ভিত্তি ১৫০ সে.
+  s.nextAllowedAt = Math.max(s.nextAllowedAt, now + AI_VIDEO_LIMITS.postCompletionCooldownMs);
 }
 
 /** URL থেকে ভিডিও ডাউনলোড */
@@ -309,7 +425,11 @@ export async function validateVideoBuffer(buffer: Buffer, opts?: { expectAudio?:
   }
 }
 
-/** একটি ক্লিপের সম্পূর্ণ চক্র: সাবমিট → পোল → ডাউনলোড → যাচাই */
+/**
+ * একটি ক্লিপের সম্পূর্ণ চক্র: সাবমিট → (গেটে নথিভুক্ত) পোল → ডাউনলোড → যাচাই।
+ * ইন-ফ্লাইট-ট্র্যাকিং: সাবমিটের পরেই পোল-প্রমিশ গেটে বসে যায় — পরের সাবমিট
+ * সেটার সমাপ্তির অপেক্ষা করবে (৪২৯-ঝড়ের বদলে সৎ অপেক্ষা)।
+ */
 export async function generateVideoClip(
   req: AiVideoRequest,
   opts?: { onStatus?: (note: string) => void; timeoutMs?: number }
@@ -317,7 +437,19 @@ export async function generateVideoClip(
   const t0 = Date.now();
   const task = await submitVideoTask(req);
   opts?.onStatus?.(`টাস্ক জমা হয়েছে (${task.model}) — জেনারেশন চলছে…`);
-  const outcome = await pollVideoTask(task, opts);
+
+  // ইন-ফ্লাইট-নথিভুক্ত পোল — ফল যা-ই হোক, গেট কুলডাউন-সচেতন
+  const pollPromise = pollVideoTask(task, opts);
+  const s = gate();
+  if (!s.inflight) {
+    s.inflight = { taskId: task.taskId, startedAt: t0, poll: pollPromise };
+    pollPromise.catch(() => gate().failures++);
+  } else {
+    // (তাত্ত্বিকভাবে হয় না — সাবমিট ইতিমধ্যে অপেক্ষা করেছে) নিরাপত্তা-জাল
+    pollPromise.catch(() => undefined);
+  }
+
+  const outcome = await pollPromise;
   if (outcome.status !== 'SUCCESS' || !outcome.url) {
     const reason = outcome.status === 'TIMEOUT' ? 'সময়সীমা অতিক্রম' : 'মডেল ব্যর্থ ঘোষণা করেছে';
     throw new Error(`AI ভিডিও-জেনারেশন ব্যর্থ: ${reason}`);
@@ -341,71 +473,77 @@ export async function generateVideoClip(
   };
 }
 
+// ------------------------------------------------------------
+// প্রি-ওয়ার্ম — পাইপলাইনের প্রথম AI-শট আগেই চালু
+// ------------------------------------------------------------
+
 /**
- * একাধিক ক্লিপ — পরপর সাবমিট (ব্যবধান-স্পেসিং), তারপর পালা করে ফলাফল।
- * সৎ আচরণ: কোনো ক্লিপ ব্যর্থ হলে exceptions নয়, ফলাফল-তালিকায় ব্যর্থতা
- * চিহ্নিত করে ফেরত দেয় (পাইপলাইন retry/fallback-নীতি §৭.৪)।
+ * requestKey-ভিত্তিক প্রি-ওয়ার্ম-ক্যাশ: পাইপলাইন পরিকল্পনা-ধাপ শেষ হলেই
+ * প্রথম শটের জেনারেশন ব্যাকগ্রাউন্ডে চালু করে — পোর্ট্রেট/TTS/সাউন্ডের
+ * সমান্তরালে ~২–৪ মিনিটের জেনারেশন চলে। generateAiShot পরে
+ * consumePrewarmedClip দিয়ে ফল তুলে নেয়।
  */
+const g2 = globalThis as any;
+function prewarmMap(): Map<string, Promise<AiVideoClip>> {
+  if (!g2.__aiVideoPrewarm) g2.__aiVideoPrewarm = new Map<string, Promise<AiVideoClip>>();
+  return g2.__aiVideoPrewarm as Map<string, Promise<AiVideoClip>>;
+}
+
+/** প্রি-ওয়ার্ম চালু (একই কীতে পুনঃকল নীরবে উপেক্ষিত) */
+export function prewarmVideoClip(req: AiVideoRequest, opts?: { onStatus?: (note: string) => void }): void {
+  if (!req.requestKey) return;
+  const map = prewarmMap();
+  if (map.has(req.requestKey)) return;
+  const job = generateVideoClip(req, opts).finally(() => {
+    // ফল জমা হোক-না-হোক, পরে স্মৃতি-স্বাস্থ্যের জন্য কী মুছে যায় না —
+    // consumePrewarmedClip-এ মুছুন। শুধু ব্যর্থতার ক্ষেত্রে এখানেই সরাই।
+    jobCatchCleanup(map, req.requestKey!);
+  });
+  map.set(req.requestKey!, job);
+}
+
+function jobCatchCleanup(map: Map<string, Promise<AiVideoClip>>, key: string): void {
+  // ব্যর্থ-প্রমিশ ক্যাশে-সদা-না-থাকানোর স্বাস্থ্য-যত্ন
+  const p = map.get(key);
+  if (p) p.catch(() => map.delete(key));
+}
+
+/** প্রি-ওয়ার্ম করা ক্লিপ তুলে নাও (থাকলে) — না থাকলে null */
+export function consumePrewarmedClip(requestKey: string): Promise<AiVideoClip> | null {
+  const map = prewarmMap();
+  const p = map.get(requestKey) ?? null;
+  if (p) map.delete(requestKey);
+  return p;
+}
+
+// ------------------------------------------------------------
+// একাধিক ক্লিপ (লেগেসি-চুক্তি) — এখন গেট-সচেতন ধারাবাহিক
+// ------------------------------------------------------------
+
 export interface MultiClipResult {
   clips: { index: number; ok: true; clip: AiVideoClip }[];
   failures: { index: number; error: string }[];
 }
 
+/**
+ * একাধিক ক্লিপ — গেট-সচেতন ধারাবাহিক (একই সময়ে একটাই টাস্ক চলে;
+ * সাবমিট স্বয়ংক্রিয়ভাবে আগেরটার সমাপ্তি+কুলডাউন মেনে নেয়)।
+ * সৎ আচরণ: কোনো ক্লিপ ব্যর্থ হলে exceptions নয়, ফলাফল-তালিকায় ব্যর্থতা
+ * চিহ্নিত করে ফেরত দেয় (পাইপলাইন retry/fallback-নীতি §৭.৪)।
+ */
 export async function generateVideoClips(
   reqs: AiVideoRequest[],
   opts?: { onStatus?: (note: string) => void; timeoutMs?: number }
 ): Promise<MultiClipResult> {
   const clips: MultiClipResult['clips'] = [];
   const failures: MultiClipResult['failures'] = [];
-
-  const tasks: (AiVideoTask | null)[] = [];
   for (let i = 0; i < reqs.length; i++) {
     try {
-      const task = await submitVideoTask(reqs[i]);
-      tasks.push(task);
-      opts?.onStatus?.(`শট ${i + 1}/${reqs.length} সাবমিট সম্পূর্ণ`);
-    } catch (err: any) {
-      tasks.push(null);
-      failures.push({ index: i, error: String(err?.message ?? err).slice(0, 200) });
-    }
-  }
-
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
-    if (!task) continue;
-    try {
       opts?.onStatus?.(`শট ${i + 1}/${reqs.length} জেনারেট হচ্ছে…`);
-      const outcome = await pollVideoTask(task, opts);
-      if (outcome.status !== 'SUCCESS' || !outcome.url) {
-        failures.push({
-          index: i,
-          error: outcome.status === 'TIMEOUT' ? 'সময়সীমা অতিক্রম' : 'মডেল ব্যর্থ ঘোষণা করেছে',
-        });
-        continue;
-      }
-      const buffer = await downloadVideo(outcome.url);
-      // §৭.১: with_audio চাওয়া হলে অডিও-স্ট্রিমও ffprobe-যাচাই
-      const validation = await validateVideoBuffer(buffer, { expectAudio: task.request.withAudio === true });
-      if (!validation.ok) {
-        failures.push({ index: i, error: `যাচাই ব্যর্থ: ${validation.issues.join('; ')}` });
-        continue;
-      }
-      clips.push({
-        index: i,
-        ok: true,
-        clip: {
-          buffer,
-          mimeType: 'video/mp4',
-          taskId: task.taskId,
-          model: task.model,
-          generationMs: 0,
-          info: validation.info!,
-          coverUrl: outcome.coverUrl,
-          request: task.request,
-          nativeAudio: validation.hasAudio,
-        },
-      });
+      const clip = await generateVideoClip(reqs[i], opts);
+      clips.push({ index: i, ok: true, clip });
     } catch (err: any) {
+      gate().failures++;
       failures.push({ index: i, error: String(err?.message ?? err).slice(0, 200) });
     }
   }

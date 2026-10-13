@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { measureHardware, runToolHealthChecks } from '@/lib/system-info';
 import { ttsCacheStats } from '@/lib/agent/tts-cache';
+import { edgeTtsHealth } from '@/lib/agent/audio/edge_tts';
 import { llmCacheStats } from '@/lib/agent/llm';
 import { coordinatorStatus } from '@/lib/agent/rate-limit-coordinator';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
@@ -17,10 +18,16 @@ function clientKey(req: NextRequest): string {
 
 export async function GET() {
   try {
-    const [hardware, tools] = await Promise.all([measureHardware(), runToolHealthChecks()]);
+    const [hardware, tools, edgeTts] = await Promise.all([
+      measureHardware(),
+      runToolHealthChecks(),
+      edgeTtsHealth().catch(() => ({ ok: false, note: 'অজানা' })),
+    ]);
     return NextResponse.json({
       hardware,
       tools,
+      // ২০২৬-১০-১৩: বাংলা নিউরাল কণ্ঠ-পরিষেবা (Microsoft Edge) — bn-BD স্বাস্থ্য
+      edgeTts,
       // §১১: TTS ডিস্ক-ক্যাশ/ডিডুপ-পরিসংখ্যান (hits=ক্যাশ-থেকে, misses=প্রকৃত API-কল)
       ttsCache: ttsCacheStats(),
       // S9: LLM-উত্তরের ডিস্ক-ক্যাশ পরিসংখ্যান

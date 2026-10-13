@@ -32,6 +32,16 @@ export interface BnNormalizationResult {
   adjustments: string[];
 }
 
+export interface BnNormalizeOptions {
+  /**
+   * ধাপ ৮–৯ (ইংরেজি শব্দের ধ্বন্যাত্মক রূপ + উচ্চারণ-ওভাররাইড) চালানো হবে কি না।
+   * ডিফল্ট true — z-ai কণ্ঠের জন্য দরকার (ওরা ইংরেজি শব্দ বাংলা লেখায় পড়তে পারে না)।
+   * Microsoft Edge-এর নিউরাল কণ্ঠে false দিন — ওরা মিশ্র লেখার ইংরেজি
+   * অংশ সঠিকভাবেই পড়ে; ধ্বন্যাত্মক বানান বরং উচ্চারণ নষ্ট করে।
+   */
+  phoneticEnglish?: boolean;
+}
+
 // ------------------------------------------------------------
 // মৌলিক সারণি — বাংলা সংখ্যা-শব্দ (০–৯৯, কুড়ি-প্রকৃতির সঠিক রূপ)
 // মান বিশুদ্ধতাই এখানে সবচেয়ে জরুরি — তাই ১০০টি শব্দই হাতে-সারানো।
@@ -150,7 +160,11 @@ const BN_LETTER_RE = /[\u0980-\u09FF]/;
 // ------------------------------------------------------------
 // মূল ফাংশন
 // ------------------------------------------------------------
-export function normalizeBengaliSpeechText(input: string): BnNormalizationResult {
+export function normalizeBengaliSpeechText(
+  input: string,
+  opts: BnNormalizeOptions = {}
+): BnNormalizationResult {
+  const phoneticEnglish = opts.phoneticEnglish !== false;
   const original = input ?? '';
   if (!original.trim()) {
     return { text: original, changed: false, adjustments: [] };
@@ -296,66 +310,68 @@ export function normalizeBengaliSpeechText(input: string): BnNormalizationResult
   if (text !== spaceBefore) note('যতিচিহ্নের আগের অতিরিক্ত ফাঁকা জায়গা সরানো হয়েছে');
   text = text.replace(/\s+/g, ' ').trim();
 
-  // ---- ধাপ ৮: ইংরেজি শব্দ → ধ্বন্যাত্মক রূপ (অভিধানে থাকলে) ----
-  const tokens = text.split(' ');
-  for (let i = 0; i < tokens.length; i++) {
-    if (!tokens[i]) continue;
-    // দুই-টোকেনের বাক্যাংশ (যেমন "thank you")
-    if (i + 1 < tokens.length) {
-      const sa = splitLatinToken(tokens[i]);
-      const sb = splitLatinToken(tokens[i + 1]);
-      if (sa && sb && PUNCT_ONLY_RE.test(sa.suffix) && PUNCT_ONLY_RE.test(sb.suffix)) {
-        const key = `${sa.core.toLowerCase()} ${sb.core.toLowerCase()}`;
-        const phraseRep = ENGLISH_WORD_RESPellINGS[key];
-        if (phraseRep) {
-          const words = phraseRep.split(' ');
-          if (words.length === 2) {
-            tokens[i] = `${sa.prefix}${words[0]}${sa.suffix}`;
-            tokens[i + 1] = `${sb.prefix}${words[1]}${sb.suffix}`;
-          } else {
-            tokens[i] = `${sa.prefix}${phraseRep}${sa.suffix}`;
-            tokens[i + 1] = '';
+  // ---- ধাপ ৮: ইংরেজি শব্দ → ধ্বন্যাত্মক রূপ (z-ai কণ্ঠের জন্য; Edge-নিউরালে বাদ) ----
+  if (phoneticEnglish) {
+    const tokens = text.split(' ');
+    for (let i = 0; i < tokens.length; i++) {
+      if (!tokens[i]) continue;
+      // দুই-টোকেনের বাক্যাংশ (যেমন "thank you")
+      if (i + 1 < tokens.length) {
+        const sa = splitLatinToken(tokens[i]);
+        const sb = splitLatinToken(tokens[i + 1]);
+        if (sa && sb && PUNCT_ONLY_RE.test(sa.suffix) && PUNCT_ONLY_RE.test(sb.suffix)) {
+          const key = `${sa.core.toLowerCase()} ${sb.core.toLowerCase()}`;
+          const phraseRep = ENGLISH_WORD_RESPellINGS[key];
+          if (phraseRep) {
+            const words = phraseRep.split(' ');
+            if (words.length === 2) {
+              tokens[i] = `${sa.prefix}${words[0]}${sa.suffix}`;
+              tokens[i + 1] = `${sb.prefix}${words[1]}${sb.suffix}`;
+            } else {
+              tokens[i] = `${sa.prefix}${phraseRep}${sa.suffix}`;
+              tokens[i + 1] = '';
+            }
+            note(`ইংরেজি শব্দের ধ্বন্যাত্মক রূপ: ${key} → ${phraseRep}`);
+            i++;
+            continue;
           }
-          note(`ইংরেজি শব্দের ধ্বন্যাত্মক রূপ: ${key} → ${phraseRep}`);
-          i++;
-          continue;
         }
       }
+      const s = splitLatinToken(tokens[i]);
+      if (!s) continue;
+      if (!PUNCT_ONLY_RE.test(s.suffix) && !BN_SUFFIX_RE.test(s.suffix)) continue;
+      const lower = s.core.toLowerCase();
+      if (ENGLISH_WORD_RESPellINGS[lower]) {
+        const rep = ENGLISH_WORD_RESPellINGS[lower];
+        tokens[i] = `${s.prefix}${rep}${s.suffix}`;
+        note(`ইংরেজি শব্দের ধ্বন্যাত্মক রূপ: ${lower} → ${rep}`);
+        continue;
+      }
+      const monthIdx = EN_MONTHS[lower];
+      if (monthIdx) {
+        const rep = BN_MONTHS[monthIdx - 1];
+        tokens[i] = `${s.prefix}${rep}${s.suffix}`;
+        note(`মাসের নাম বাংলায়: ${s.core} → ${rep}`);
+        continue;
+      }
+      // অজানা ইংরেজি শব্দ সজ্ঞানে অপরিবর্তিত থাকে — সৎ আচরণ
     }
-    const s = splitLatinToken(tokens[i]);
-    if (!s) continue;
-    if (!PUNCT_ONLY_RE.test(s.suffix) && !BN_SUFFIX_RE.test(s.suffix)) continue;
-    const lower = s.core.toLowerCase();
-    if (ENGLISH_WORD_RESPellINGS[lower]) {
-      const rep = ENGLISH_WORD_RESPellINGS[lower];
-      tokens[i] = `${s.prefix}${rep}${s.suffix}`;
-      note(`ইংরেজি শব্দের ধ্বন্যাত্মক রূপ: ${lower} → ${rep}`);
-      continue;
-    }
-    const monthIdx = EN_MONTHS[lower];
-    if (monthIdx) {
-      const rep = BN_MONTHS[monthIdx - 1];
-      tokens[i] = `${s.prefix}${rep}${s.suffix}`;
-      note(`মাসের নাম বাংলায়: ${s.core} → ${rep}`);
-      continue;
-    }
-    // অজানা ইংরেজি শব্দ সজ্ঞানে অপরিবর্তিত থাকে — সৎ আচরণ
-  }
-  text = tokens.filter(Boolean).join(' ');
+    text = tokens.filter(Boolean).join(' ');
 
-  // ---- ধাপ ৯: বাংলা উচ্চারণ-ওভাররাইড (নির্বাচিত শব্দে) ----
-  text = text
-    .split(' ')
-    .map(tok => {
-      const m = tok.match(/^([^\p{L}\p{N}]*)([\u0980-\u09FF]+)([\s\S]*)$/u);
-      if (!m) return tok;
-      const word = m[2];
-      const rep = BN_PRONUNCIATION_OVERRIDES[word];
-      if (!rep) return tok;
-      note(`উচ্চারণ-সমন্বয়: ${word} → ${rep}`);
-      return `${m[1]}${rep}${m[3]}`;
-    })
-    .join(' ');
+    // ---- ধাপ ৯: বাংলা উচ্চারণ-ওভাররাইড (নির্বাচিত শব্দে; Edge-নিউরালে বাদ) ----
+    text = text
+      .split(' ')
+      .map(tok => {
+        const m = tok.match(/^([^\p{L}\p{N}]*)([\u0980-\u09FF]+)([\s\S]*)$/u);
+        if (!m) return tok;
+        const word = m[2];
+        const rep = BN_PRONUNCIATION_OVERRIDES[word];
+        if (!rep) return tok;
+        note(`উচ্চারণ-সমন্বয়: ${word} → ${rep}`);
+        return `${m[1]}${rep}${m[3]}`;
+      })
+      .join(' ');
+  }
 
   text = text.replace(/\s+/g, ' ').trim();
 
