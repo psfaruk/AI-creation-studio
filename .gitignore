@@ -40,7 +40,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-local-*
+# local-* নিয়মটি সরানো হলো — এটি src/lib/agent/local-frames.ts-কে নীরবে
+# ignore করত, তাই ফাইলটি কখনো git-এ যেত না এবং প্রতি রিসেটে build ভেঙে পড়ত
 .claude
 .z-ai-config
 *.log

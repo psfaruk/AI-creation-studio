@@ -155,16 +155,18 @@ export async function synthesizeSpeech(
       { channel: 'tts', maxDelayMs: 90_000, cooldownBudgetMs: 90_000 }
     );
   let buffer: Buffer;
-  let ext = 'mp3';
-  let mimeType = 'audio/mpeg';
+  let ext = 'wav';
+  let mimeType = 'audio/wav';
+  // ২০২৬-১০: upstream-এ response_format:'mp3' বাতিল (400/1214) — wav
+  // আগে চেষ্টা; mp3 শুধু পুরনো-সার্ভার সামঞ্জস্যের জন্য ফলব্যাক
   try {
-    buffer = await attempt('mp3');
+    buffer = await attempt('wav');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (!/response_format|1214/i.test(msg)) throw err;
-    buffer = await attempt('wav');
-    ext = 'wav';
-    mimeType = 'audio/wav';
+    buffer = await attempt('mp3');
+    ext = 'mp3';
+    mimeType = 'audio/mpeg';
   }
   if (buffer.length === 0) throw new Error('অডিও ডেটা খালি এসেছে');
   // RIFF হেডার পেলে সঠিক wav
