@@ -943,3 +943,28 @@ Stage Summary:
 - নতুন API-Key প্ল্যাটফর্ম (ব্যবহারকারীর নিজ-সিস্টেমের হুবহু): amai_sk_ কী (SHA-256-হ্যাশড, মডেল-বাউন্ড, রেট-লিমিটেড, প্রতি-কল-লগড) + OpenAI-কম্প্যাটিবল /api/v1 (models/chat/completions+স্ট্রিমিং+ভিশন/images) + Keys UI — সব E2E-সত্যায়িত
 - প্ল্যাটফর্ম-মডেল (লাইভ-যাচাইকৃত served-model): glm-4-plus (চ্যাট) · glm-5v-turbo (ভিশন) · cogview-3 (ইমেজ)
 - ffmpeg lut-bypass + overlay-negotiation আবিষ্কার — ভবিষ্যৎ ফিল্টার-গ্রাফে মনে রাখার শিক্ষা
+
+---
+Task ID: custom-platform-1 (মূল-এজেন্ট — কাস্টম API-প্ল্যাটফর্ম: Base URL + API Key + মডেল নির্বাচন)
+Agent: main (Z.ai Code orchestrator)
+Task: ব্যবহারকারীর সবচেয়ে গুরুত্বপূর্ণ চাহিদা — "App-এ নিজের লোকাল-চালিত সিস্টেম যুক্ত করার ব্যবস্থা: Base URL + API key + মডেল সিলেক্ট (অথবা ল্যাঙ্গোয়েজ)"। পূর্ববর্তী সেশনে build-error + ১:১ মডেল-ম্যাপিং + নিজের amai_sk কী-প্ল্যাটফর্ম হয়ে গিয়েছিল; এই সেশনে বাকি থাকা বাহ্যিক-সংযোগ-পথটি নির্মিত।
+
+Work Log:
+- অবস্থা-নিরীক্ষণ: dev-server মৃত → dev.sh-ধাঁচের নতুন .zscripts/dev-start.sh (disowned-grandchild প্যাটার্ন) দিয়ে পুনরায় চালু; টুল-কলের মাঝেও বাঁচে এখন
+- নতুন src/lib/agent/custom-providers.ts (server-only): স্টোর storage/custom-providers.json (.gitignore-সুরক্ষিত — কী কখনো git-এ নয়), CRUD (add/update/remove/list — উত্তরে কী সবসময় মাস্কড), মডেল-আইডি ফরম্যাট custom:<providerId>:<apiModel> (কোলন-যুক্ত apiModel-সুরক্ষিত), probeProviderModels (লাইভ GET /models), customChatComplete (প্রকৃত OpenAI SDK কল ব্যবহারকারীর Base URL-এ, ভাষা-নির্দেশ সিস্টেম-বার্তায়), verifyCustomModel (৮-টোকেন প্রকৃত কল)
+- **গুরুত্বপূর্ণ আবিষ্কার**: Next.js 16-র প্যাচড গ্লোবাল fetch রুট-হ্যান্ডলার থেকে বাইরের GET-এ ডেডলক — সার্ভার ৬২% CPU-স্পিনে আটকে যেত (AbortController-ও আগুন দেখাত না); সমাধান: প্রোবে OpenAI SDK-র client.models.list() — এই স্ট্যাক এই পরিবেশে ইতিমধ্যে প্রমাণিত (verifyExternalModel-এর পথ)
+- chat-models.ts: ChatProviderId-তে 'custom' + CUSTOM_MODEL_PREFIX + isCustomModelId (client-safe); ChatModelOption-এ customProvider? মেটা; describeChatModel কাস্টম-আইডি সামলায়; PROVIDERS-টাইপ StaticProviderId-তে সংকুচিত
+- llm.ts chatComplete-এ কাস্টম-রাউটিং শাখা; orchestrator-এর কী-সমস্যা-গার্ড এখন কাস্টম মডেলের জন্যও findCustomModel দিয়ে রেজলভ করে → কী-সমস্যায় নীরব GLM-ফলব্যাক নিষিদ্ধই থাকে
+- API রুট: GET/POST /api/custom-providers, POST /api/custom-providers/probe (লাইভ মডেল-তালিকা, সংরক্ষণ ছাড়া), PATCH/DELETE /api/custom-providers/[id], POST /api/custom-providers/[id]/refresh (সংরক্ষিত কী দিয়ে রিফ্রেশ — কী ব্রাউজারে যায় না)
+- /api/models: GET-এ কাস্টম-মডেল ক্যাটালগের শেষে যুক্ত (সিরিয়াল-ক্রম অক্ষত), POST-এ প্রতিটি কাস্টম মডেলে প্রকৃত ৮-টোকেন যাচাই; /api/chat-এ কাস্টম-আইডি যাচাই (স্টোরে আছে কি না সার্ভারেই দেখে)
+- UI: নতুন custom-provider-dialog.tsx (বিদ্যমান প্ল্যাটফর্ম-তালিকা + রিফ্রেশ/মুছে ফেলা + যোগ-ফর্ম: নাম/Base URL/কী/ভাষা + "মডেল তালিকা আনুন (লাইভ)" প্রোব → চেকবক্স-নির্বাচন + ইমেজ-মডেল সতর্কতা-ব্যাজ + /models-নেই-প্ল্যাটফর্মের জন্য হাতে-লেখা মডেল-যোগ); model-selector.tsx-এ কাস্টম-গ্রুপ রেন্ডার (সিরিয়াল-নম্বর চলমান, ↳ apiModel, "নিজের Base URL" পিল) + নিচে "নিজের API-প্ল্যাটফর্ম যোগ করুন" এন্ট্রি + সৎ-ব্যানার হালনাগাদ
+- curl-E2E: খালি তালিকা ✓ · খারাপ URL → সৎ ত্রুটি ✓ · api.deepseek.com ভুয়া কী → প্রকৃত 401 (218ms, authFailed) ✓ · **ব্যবহারকারীর আসল প্ল্যাটফর্ম (preview-chat-…space-z.ai/api/v1) ভুয়া কী → প্রকৃত 401 (197ms — প্ল্যাটফর্মটি জীবিত!)** ✓ · যোগ → ক্যাটালগে #20 ✓ · যাচাই → আসল 401+request_id ✓ · চ্যাট → সৎ failed (GLM-ফলব্যাক নেই) ✓
+- **পজিটিভ-E2E (নিজের amai_sk গেটওয়ে দিয়ে)**: কী-তৈরি → কাস্টম প্রোভাইডার হিসেবে যোগ → প্রোব লাইভ-তালিকা দেয় (cogview-3/glm-4-plus/glm-5v-turbo) → চ্যাট "২+২ কত?" → উত্তর "৪" (রান completed, usedModel="কাস্টম প্ল্যাটফর্ম · glm-4-plus", গেটওয়ে-লগে কল রেকর্ডেড) ✓ → মুছে ফেলা ✓
+- ব্রাউজার-E2E (1280×800 + 390×844): ড্রপডাউনে কাস্টম-গ্রুপ ✓ → নির্বাচন+localStorage ✓ → UI থেকে চ্যাট → "নীল" (টুল-লুপসহ) ✓ → যোগ-ডায়ালগ সম্পূর্ণ ✓ → UI-প্রোব ব্যবহারকারীর প্ল্যাটফর্মে 401-সৎ-বার্তা ✓ → হাতে-লেখা glm-5.3 + সংরক্ষণ → ২য় গ্রুপ, সিরিয়াল #21, ↳ glm-5.3 ✓ → UI থেকে উভয় প্রোভাইডার মুছে ফেলা ✓ → কী revoke + মডেল-নির্বাচন রিসেট ✓ → কনসোল/পেজ-এরর শূন্য ✓ → মোবাইল ওভারফ্লো-শূন্য, ফুটার নিচে আটকে (844/844, 800/800) ✓
+- tsc ০ এরর, lint ০ সমস্যা, dev.log স্বাস্থ্যকর (সব ২০০)
+
+Stage Summary:
+- কাস্টম API-প্ল্যাটফর্ম সিস্টেম সম্পূর্ণ: ব্যবহারকারী এখন নিজের যেকোনো OpenAI-কম্প্যাটিবল সিস্টেম Base URL + API Key + মডেল-নির্বাচন (+ ভাষা) দিয়ে যুক্ত করতে পারেন — প্রতিটি চ্যাট-কল সরাসরি তাঁর প্ল্যাটফর্মে যায়
+- প্রমাণিত: ব্যবহারকারীর আসল প্ল্যাটফর্ম URL জীবিত ও সংযোগযোগ্য; ভাল কী দিলেই glm-5.3 চলবে (এই E2E-তে নিজের গেটওয়ে দিয়ে হুবহু পথ প্রমাণিত)
+- Next.js-প্যাচড-fetch ডেডলক আবিষ্কার ও সমাধান — ভবিষ্যতে রুট-হ্যান্ডলারে বাইরের HTTP দরকার হলে OpenAI SDK/undici-ক্লায়েন্ট ব্যবহার করতে হবে, র-গ্লোবাল fetch নয়
+- dev-server survival-প্যাটার্ন ডকুমেন্টেড: disowned-grandchild (.zscripts/dev-start.sh)

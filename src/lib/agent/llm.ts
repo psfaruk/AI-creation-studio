@@ -19,8 +19,9 @@ import { createHash } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { withRetry, type RetryWaitInfo } from './retry';
-import { findChatModel, type ChatModelOption } from './chat-models';
+import { findChatModel, isCustomModelId, type ChatModelOption } from './chat-models';
 import { externalChatComplete } from './external-llm';
+import { customChatComplete } from './custom-providers';
 
 export { externalChatComplete, ExternalFatalError, ExternalRetryableError } from './external-llm';
 
@@ -141,6 +142,17 @@ export async function chatComplete(
 
   // ---- এক্সটার্নাল-প্রোভাইডার রাউটিং ----
   const requestedId = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : '';
+
+  // কাস্টম-প্ল্যাটফর্ম মডেল (custom:<providerId>:<apiModel>) —
+  // ব্যবহারকারীর নিজের Base URL + কী-তে প্রকৃত OpenAI SDK-কল
+  if (isCustomModelId(requestedId)) {
+    const text = await customChatComplete(messages, requestedId);
+    if (text && text.length > 0) {
+      await writeLlmCache(key, text);
+    }
+    return text;
+  }
+
   const entry = requestedId !== '' ? findChatModel(requestedId) : undefined;
   if (entry && entry.provider !== 'zai') {
     const text = await externalChatComplete(messages, entry);

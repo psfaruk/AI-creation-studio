@@ -1,9 +1,9 @@
 {
   "": {
-    "ok": false,
-    "rateLimited": true,
-    "error": "রেট-লিমিট (৪২৯) — সাময়িক; পরে আবার যাচাই করুন",
-    "testedAt": "2026-10-12T13:56:55.704Z"
+    "ok": true,
+    "servedModel": "glm-4-plus",
+    "ms": 415,
+    "testedAt": "2026-10-13T06:22:06.926Z"
   },
   "glm-4.6": {
     "ok": false,
@@ -91,73 +91,73 @@
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "glm-air-cn": {
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "glm-plus-cn": {
     "ok": false,
     "needsKey": true,
     "error": "GLM · BigModel: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "groq-llama-3.3-70b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "groq-gpt-oss-120b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "groq-gpt-oss-20b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "groq-qwen3-32b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "groq-r1-distill-70b": {
     "ok": false,
     "needsKey": true,
     "error": "Groq: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "or-nemotron-super-120b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "or-nemotron-ultra-550b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "or-gemma-4-31b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "or-gemma-4-26b-a4b": {
     "ok": false,
     "needsKey": true,
     "error": "OpenRouter: API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:52:54.279Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "glm-5.3": {
     "ok": false,
@@ -173,34 +173,43 @@
   },
   "deepseek-v4-pro": {
     "ok": false,
-    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: cb6e055f-9153-464e-b34d-a59105770481)",
-    "testedAt": "2026-10-12T15:15:22.566Z"
+    "needsKey": true,
+    "error": "DeepSeek: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "deepseek-v4-pro-fast": {
     "ok": false,
-    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: 848dffa5-6894-41f1-bbb0-a3b0a689f49c)",
-    "testedAt": "2026-10-12T15:15:22.569Z"
+    "needsKey": true,
+    "error": "DeepSeek: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "deepseek-v4-flash": {
     "ok": false,
-    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: 531281fc-b941-4313-863b-965753ed67f7)",
-    "testedAt": "2026-10-12T15:15:22.570Z"
+    "needsKey": true,
+    "error": "DeepSeek: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "deepseek-v4-flash-fast": {
     "ok": false,
-    "error": "DeepSeek: কী অবৈধ/অনুমতি নেই — 401 Authentication Fails, Your api key: ****9999 is invalid (request_id: 62d2bc76-173f-4b98-a213-f0ff900d38d8)",
-    "testedAt": "2026-10-12T15:15:22.568Z"
+    "needsKey": true,
+    "error": "DeepSeek: API কী যোগ করা হয়নি",
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "zai-glm-5.3": {
     "ok": false,
     "needsKey": true,
     "error": "Z.ai API (GLM): API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
   },
   "zai-glm-5.3-flash": {
     "ok": false,
     "needsKey": true,
     "error": "Z.ai API (GLM): API কী যোগ করা হয়নি",
-    "testedAt": "2026-10-12T15:15:22.571Z"
+    "testedAt": "2026-10-13T06:22:09.430Z"
+  },
+  "custom:cp_729c2e5a:deepseek-chat": {
+    "ok": false,
+    "error": "টেস্ট প্ল্যাটফর্ম: কী গৃহীত হয়নি — 401 Authentication Fails, Your api key: ****e123 is invalid (request_id: bd7032b0-3929-4d45-96b8-3955c461adb3)",
+    "testedAt": "2026-10-13T06:22:09.584Z"
   }
 }

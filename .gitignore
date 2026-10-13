@@ -66,3 +66,6 @@ storage/logs/
 
 # AI provider API keys (local-only, never commit!)
 storage/provider-keys.json
+
+# Custom provider configs with API keys (local-only!)
+storage/custom-providers.json

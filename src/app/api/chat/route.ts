@@ -3,7 +3,8 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { startAgentRun } from '@/lib/agent/orchestrator';
-import { isValidChatModelId } from '@/lib/agent/chat-models';
+import { isCustomModelId, isValidChatModelId } from '@/lib/agent/chat-models';
+import { customModelExists } from '@/lib/agent/custom-providers';
 import { buildMessageView, toAttachmentView } from '@/lib/agent/serialize';
 import { saveArtifactFile } from '@/lib/agent/storage';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
@@ -77,8 +78,16 @@ export async function POST(req: Request) {
   const rawAttachments: any[] = Array.isArray(body?.attachments) ? body.attachments : [];
   const trimmed = content.trim();
 
-  // চ্যাট-মডেল নির্বাচন ('' বা ক্যাটালগের id; অজানা মান → 400)
-  if (body?.model != null && !isValidChatModelId(body.model)) {
+  // চ্যাট-মডেল নির্বাচন ('' / ক্যাটালগের id / কাস্টম-প্ল্যাটফর্মের id; অজানা মান → 400)
+  if (body?.model != null && typeof body.model === 'string' && body.model !== '' && isCustomModelId(body.model)) {
+    // কাস্টম-মডেল: প্ল্যাটফর্ম+মডেল সংরক্ষণে আছে কি না সার্ভারেই দেখে নিই
+    if (!(await customModelExists(body.model))) {
+      return NextResponse.json(
+        { error: 'নির্বাচিত কাস্টম মডেলটি আর তালিকায় নেই — মডেল-সিলেক্টর থেকে আবার বেছে নিন' },
+        { status: 400 }
+      );
+    }
+  } else if (body?.model != null && !isValidChatModelId(body.model)) {
     return NextResponse.json(
       { error: 'অজানা চ্যাট-মডেল — মডেল-তালিকা সদ্যি বদলেছে; মডেল-সিলেক্টর থেকে আবার বেছে নিন' },
       { status: 400 }

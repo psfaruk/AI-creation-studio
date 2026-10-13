@@ -17,8 +17,24 @@
 // এই ফাইল client-safe — কোনো fs/server-only import নয়।
 // ============================================================
 
-/** চ্যাট-প্রোভাইডার শনাক্তকারী ('zai-api' = Z.ai-র আন্তর্জাতিক API, নিজের কী) */
-export type ChatProviderId = 'zai' | 'deepseek' | 'zai-api' | 'glm' | 'groq' | 'openrouter';
+/**
+ * চ্যাট-প্রোভাইডার শনাক্তকারী
+ * ('zai-api' = Z.ai-র আন্তর্জাতিক API, নিজের কী;
+ *  'custom' = ব্যবহারকারীর নিজের যোগ করা OpenAI-কম্প্যাটিবল প্ল্যাটফর্ম —
+ *  Base URL + API Key + মডেল-নির্বাচন, রানটাইমে সংরক্ষিত)
+ */
+export type ChatProviderId = 'zai' | 'deepseek' | 'zai-api' | 'glm' | 'groq' | 'openrouter' | 'custom';
+
+/**
+ * কাস্টম-মডেল আইডির প্রিফিক্স: custom:<providerId>:<apiModel>
+ * (client-safe আকার-পরীক্ষা মাত্র — রেজল্যুশন সার্ভারে custom-providers.ts-এ)
+ */
+export const CUSTOM_MODEL_PREFIX = 'custom:';
+
+/** এই আইডিটি কাস্টম-প্ল্যাটফর্মের মডেল কি না (client-safe শুধু-আকার পরীক্ষা) */
+export function isCustomModelId(id: string | null | undefined): boolean {
+  return typeof id === 'string' && id.startsWith(CUSTOM_MODEL_PREFIX);
+}
 
 /** প্রোভাইডার-মেটাডেটা (client-safe — কোনো গোপন তথ্য নেই) */
 export interface ProviderInfo {
@@ -38,7 +54,10 @@ export interface ProviderInfo {
   note: string;
 }
 
-export const PROVIDERS: Record<ChatProviderId, ProviderInfo> = {
+/** স্ট্যাটিক প্রোভাইডারের আইডি-ইউনিয়ন ('custom' বাদ — সেটি রানটাইমে তালিকাভুক্ত হয়) */
+export type StaticProviderId = Exclude<ChatProviderId, 'custom'>;
+
+export const PROVIDERS: Record<StaticProviderId, ProviderInfo> = {
   zai: {
     id: 'zai',
     label: 'Z.ai SDK (বিল্ট-ইন)',
@@ -130,6 +149,16 @@ export interface ChatModelOption {
   thinking?: 'enabled' | 'disabled';
   /** থিংকিং চালু হলে reasoning_effort (DeepSeek V4: low/high/max, ডিফল্ট high) */
   reasoningEffort?: 'low' | 'high' | 'max';
+  /**
+   * কাস্টম-প্ল্যাটফর্মের তথ্য (provider === 'custom' হলেই থাকে) —
+   * UI-গ্রুপিং ও সৎ প্রদর্শনের জন্য; কোনো গোপন তথ্য নেই।
+   */
+  customProvider?: {
+    id: string;
+    name: string;
+    host: string;
+    language: 'auto' | 'bn' | 'en';
+  };
 }
 
 /** ক্যাটালগ — ক্রমই সিরিয়াল; প্রতিটি এন্ট্রি = প্রকৃত ব্যাকএন্ড-মডেল */
@@ -341,6 +370,13 @@ export function isValidChatModelId(id: unknown): id is string {
 /** সৎ প্রদর্শন-নাম: এক্সটার্নাল হলে "প্রোভাইডার · apiModel" */
 export function describeChatModel(id: string | null | undefined): string {
   if (id == null || id === '') return 'GLM-4-Plus (Z.ai SDK ডিফল্ট)';
+  // কাস্টম-প্ল্যাটফর্ম মডেল — স্ট্যাটিক ক্যাটালগে নেই; আইডি থেকেই সৎ বর্ণনা
+  if (isCustomModelId(id)) {
+    const rest = id.slice(CUSTOM_MODEL_PREFIX.length);
+    const colon = rest.indexOf(':');
+    const apiModel = colon > 0 ? rest.slice(colon + 1) : rest;
+    return `কাস্টম প্ল্যাটফর্ম · ${apiModel}`;
+  }
   const entry = findChatModel(id);
   if (!entry) return id;
   if (entry.provider === 'zai' || !entry.apiModel) return entry.label;
