@@ -7,14 +7,17 @@
 // নামের সাথে কোনো সিরিয়াল-নম্বর / ব্যাকেন্ড-চিপ / ট্যাগ / ব্যাজ /
 // বর্ণনা নয়। গ্রুপ-হেডারে শুধু প্ল্যাটফর্মের নাম।
 //
-// আচরণ-নীতি (অপরিবর্তিত):
+// GLM-only-নীতি (ব্যবহারকারীর নির্দেশ): শুধু GLM-পরিবারের
+// মডেল-গ্রুপ — Z.ai SDK (বিল্ট-ইন), Z.ai API ও BigModel (নিজের কী)।
+//
+// আচরণ-নীতি:
 //  - কী-বিহীন এক্সটার্নাল মডেলে ক্লিক = নীরব নির্বাচন নয়, কী-ডায়ালগ
 //  - নির্বাচিত মডেলে টিক-চিহ্ন
-//  - নিচে "নিজের API-প্ল্যাটফর্ম যোগ করুন" (Base URL + কী + মডেল)
+//  - পুরনো/সরানো মডেল-id সিলেক্টরে ঢুকলে সৎ-ডিফল্টে মাইগ্রেট
 // ============================================================
 
 import { useCallback, useEffect, useState } from 'react';
-import { Check, ChevronDown, Cpu, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { Check, ChevronDown, Cpu, Loader2, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -29,7 +32,6 @@ import { useChatStore } from '@/hooks/use-chat-store';
 import type { ChatModelOption, ChatProviderId, ModelVerificationEntry } from '@/lib/agent/chat-models';
 import { EXTERNAL_PROVIDER_ORDER, PROVIDERS } from '@/lib/agent/chat-models';
 import { ProviderKeyDialog, type ProviderKeyStatusView } from '@/components/chat/provider-key-dialog';
-import { CustomProviderDialog } from '@/components/chat/custom-provider-dialog';
 
 interface ModelWithVerification extends ChatModelOption {
   verification: ModelVerificationEntry | null;
@@ -48,7 +50,6 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
   const [isOpen, setIsOpen] = useState(false);
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [keyDialogProvider, setKeyDialogProvider] = useState<ChatProviderId | null>(null);
-  const [customDialogOpen, setCustomDialogOpen] = useState(false);
 
   const loadModels = useCallback(async () => {
     try {
@@ -92,12 +93,6 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
   const providers = data?.providers ?? {};
   const current = models.find(m => m.id === chatModel);
   const currentLabel = current?.label ?? 'GLM-4-Plus (Z.ai SDK)';
-
-  // কাস্টম-প্ল্যাটফর্ম গ্রুপিং — প্রতিটি প্ল্যাটফর্মের নামে আলাদা গ্রুপ
-  const customModels = models.filter(m => m.provider === 'custom' && m.customProvider);
-  const customGroups = Array.from(
-    new Map(customModels.map(m => [m.customProvider!.id, m.customProvider!])).values()
-  );
 
   /** মডেল-সারি — শুধু নাম + নির্বাচিত-টিক */
   const renderRow = (m: ModelWithVerification, keyless: boolean) => {
@@ -157,21 +152,6 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
     );
   };
 
-  /** কাস্টম-প্ল্যাটফর্ম গ্রুপ — হেডারে শুধু প্ল্যাটফর্ম-নাম */
-  const renderCustomGroup = (grp: { id: string; name: string }) => {
-    const groupModels = customModels.filter(m => m.customProvider!.id === grp.id);
-    if (groupModels.length === 0) return null;
-    return (
-      <div key={`custom-${grp.id}`}>
-        <DropdownMenuSeparator className="my-1" />
-        <DropdownMenuLabel className="py-1.5">
-          <span className="truncate text-xs font-semibold">{grp.name}</span>
-        </DropdownMenuLabel>
-        {groupModels.map(m => renderRow(m, false))}
-      </div>
-    );
-  };
-
   return (
     <>
       <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
@@ -193,7 +173,7 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="max-h-96 w-64 overflow-y-auto">
           <DropdownMenuLabel className="flex items-center justify-between gap-2">
-            <span>মডেল</span>
+            <span>মডেল (GLM)</span>
             <button
               type="button"
               onClick={() => void runVerification()}
@@ -212,21 +192,6 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
 
           {renderGroup('zai')}
           {EXTERNAL_PROVIDER_ORDER.map(p => renderGroup(p))}
-          {customGroups.map(grp => renderCustomGroup(grp))}
-
-          {/* নিজের API-প্ল্যাটফর্ম যোগ — Base URL + API Key + মডেল */}
-          <DropdownMenuSeparator className="my-1" />
-          <DropdownMenuItem
-            onClick={() => {
-              setIsOpen(false);
-              setCustomDialogOpen(true);
-            }}
-            className="gap-2 py-1.5"
-            aria-label="নিজের API-প্ল্যাটফর্ম যোগ করুন (Base URL, API কী, মডেল নির্বাচন)"
-          >
-            <Plus className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-            <span className="text-xs font-medium">নিজের API-প্ল্যাটফর্ম যোগ করুন</span>
-          </DropdownMenuItem>
 
           {models.length === 0 && (
             <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
@@ -243,12 +208,6 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
         initialProvider={keyDialogProvider}
         keyStatuses={data?.providers ?? null}
         onKeysChanged={() => void loadModels()}
-      />
-
-      <CustomProviderDialog
-        open={customDialogOpen}
-        onOpenChange={setCustomDialogOpen}
-        onProvidersChanged={() => void loadModels()}
       />
     </>
   );

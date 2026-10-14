@@ -5,7 +5,6 @@ import {
   BookOpen,
   Factory,
   Images,
-  KeyRound,
   LayoutGrid,
   Lock,
   MessageSquare,
@@ -114,7 +113,6 @@ const VIEWS: { key: AppView; label: string; icon: typeof MessageSquare }[] = [
   { key: 'gallery', label: 'গ্যালারি', icon: Images },
   { key: 'productions', label: 'প্রোডাকশন', icon: Factory },
   { key: 'registry', label: 'রেজিস্ট্রি', icon: ShieldCheck },
-  { key: 'keys', label: 'API কী', icon: KeyRound },
   { key: 'guide', label: 'গাইড', icon: BookOpen },
 ];
 

@@ -196,58 +196,6 @@ model Character {
 }
 
 // ------------------------------------------------------------
-// Platform API Keys — OpenAI-কম্প্যাটিবল গেটওয়ে (/api/v1)
-// "Let other people and apps use your real AI models — each key
-//  is bound to one model, rate-limited, and every call is logged.
-//  Stored as SHA-256 hash."
-// ------------------------------------------------------------
-
-model ApiKey {
-  id              String       @id @default(cuid())
-  /** প্রদর্শন-নাম (যেমন: "Hello") */
-  name            String
-  /** SHA-256(full key) hex — পূর্ণ কী কখনোই জমা রাখা হয় না */
-  keyHash         String       @unique
-  /** মাস্কড রূপ: amai_sk_413d…6019 */
-  keyMasked       String
-  /** এই কী যে প্ল্যাটফর্ম-মডেলে বাঁধা (glm-4-plus | glm-5v-turbo | cogview-3) */
-  modelId         String
-  /** প্রতি মিনিটে সর্বোচ্চ অনুরোধ (কী-ভিত্তিক রেট-লিমিট) */
-  rateLimitPerMin Int          @default(120)
-  /** ঐচ্ছিক ডিফল্ট ভাষা-নির্দেশ ('bn' | 'en' | 'auto') */
-  defaultLanguage String       @default("auto")
-  status          String       @default("active") // active | revoked
-  totalRequests   Int          @default(0)
-  lastUsedAt      DateTime?
-  createdAt       DateTime     @default(now())
-  revokedAt       DateTime?
-  calls           ApiCallLog[]
-
-  @@index([keyHash])
-  @@index([status])
-}
-
-model ApiCallLog {
-  id        String   @id @default(cuid())
-  keyId     String
-  key       ApiKey   @relation(fields: [keyId], references: [id], onDelete: Cascade)
-  /** কোন endpoint-এ ডাক পড়েছে (/api/v1/chat/completions ইত্যাদি) */
-  endpoint  String
-  /** অনুরোধের model-স্ট্রিং (null = /models-এর মতো মডেলবিহীন) */
-  model     String?
-  /** ফেরত পাঠানো HTTP স্ট্যাটাস */
-  status    Int
-  /** মিলিসেকেন্ড */
-  latencyMs Int
-  /** ত্রুটি-সারাংশ (না থাকলে null) */
-  error     String?
-  createdAt DateTime @default(now())
-
-  @@index([keyId, createdAt])
-  @@index([keyId, status])
-}
-
-// ------------------------------------------------------------
 // Model & License Registry (মাস্টার প্ল্যান §৮)
 // ------------------------------------------------------------
 

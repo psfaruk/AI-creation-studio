@@ -1163,3 +1163,34 @@ Work Log:
 
 Stage Summary:
 - অডিট-রিপোর্টের সব প্রধান ফাইন্ডিং গভীরভাবে সমাধান ও ব্রাউজার-যাচাইকৃত; ইউজারের জন্য নির্মল প্রথম-বার অভিজ্ঞতা (নিজের পাসকোড সেটআপ); সবকিছু GitHub-এ
+
+---
+Task ID: 12 (single-agent deep-audit-fix round)
+Agent: main (Z.ai Code)
+Task: ব্যবহারকারীর নতুন ডিপ-অডিট রিপোর্ট বাস্তবায়ন — চ্যাট-এরর দৃশ্যমানতা, GLM-only ক্যাটালগ, অ্যাপ-ইস্যু API-key সিস্টেম অপসারণ, কাস্টম-প্রোভাইডার অপসারণ, পুরনো model-id মাইগ্রেশন
+
+Work Log:
+- use-agent-run.ts: !res.ok পথে এরর-বডি পড়া (data.error) + HTTP-status সহ সৎ বার্তা; res.json() ব্যর্থ/অবৈধ-উত্তর আলাদা; catch-এ TypeError=নেটওয়ার্ক বনাম HTTP-এরর পার্থক্য; টোস্টে শিরোনাম+বিবরণ (লেখা-অক্ষত নোটসহ); ড্রাফট+অ্যাটাচমেন্ট পুনরুদ্ধার অক্ষত (আগের থেকেই ছিল, নথিভুক্ত)
+- chat-models.ts সম্পূর্ণ পুনর্লিখন (GLM-only): ChatProviderId = 'zai' | 'zai-api' | 'glm'; PROVIDERS-থেকে deepseek/groq/openrouter অপসারণ; CUSTOM_MODEL_PREFIX/isCustomModelId/customProvider-ফিল্দ/thinking/reasoningEffort (DeepSeek-নির্দিষ্ট) সরানো; নতুন sanitizeChatModel() — অবৈধ/সরানো id → '' (SDK ডিফল্ট); ক্যাটালগ: '' (GLM-4-Plus SDK), zai-glm-5.3, zai-glm-5.3-flash, glm-flash-free, glm-air-cn, glm-plus-cn
+- external-llm.ts: DeepSeek-থিংকিং ব্রাঞ্চ + openrouter X-Title হেডার সরানো; এখন সাধারণ OpenAI-কম্প্যাটিবল বডি (temperature 0.7) — শুধু api.z.ai ও open.bigmodel.cn
+- llm.ts: custom-providers ইমপোর্ট/রাউটিং-ব্লক সরানো; ChatCallMeta.provider এখন 'zai' | 'external' (custom শাখা মুছে ফেলা)
+- orchestrator.ts: findCustomModel/isCustomModelId অপসারণ; কী-সমস্যা-শনাক্তকরণ এখন স্ট্যাটিক ক্যাটালগ-ভিত্তিক
+- chat/route.ts: কাস্টম-মডেল যাচাই-শাখা সরানো; অজানা model → স্পষ্ট 400 ("এখন শুধু GLM")
+- models/route.ts: কাস্টম-মডেল এন্ট্রি/যাচাই-শাখা সরানো; ক্যাটালগ=CHAT_MODELS একক উৎস
+- model-selector.tsx: CustomProviderDialog + কাস্টম-গ্রুপ + "নিজের API-প্ল্যাটফর্ম যোগ করুন" বাটন সরানো; হেডার "মডেল (GLM)"
+- provider-key-dialog.tsx: ডিফল্ট 'zai-api' (আগে 'deepseek'); পুরনো-id সুরক্ষা (effectiveProvider); টেক্সট GLM-নির্দিষ্ট; ২-কলাম রেডিওগ্রুপ
+- use-chat-store.ts: loadChatModel এখন sanitizeChatModel() দিয়ে পুরনো saved id (deepseek-*/groq-*/or-*/custom:*) সৎ-ডিফল্টে মাইগ্রেট + localStorage-এ পুনঃসংরক্ষণ
+- ডিলিট (অ্যাপ-ইস্যু কী-সিস্টেম): src/lib/platform/{api-keys,gateway,platform-models}.ts, src/app/api/keys/{route,[id],verify}, src/app/api/v1/{models,chat/completions,images/generations}, src/components/studio/keys-view.tsx (716 লাইন)
+- ডিলিট (কাস্টম-প্রোভাইডার): src/lib/agent/custom-providers.ts (723 লাইন), src/app/api/custom-providers/ (4 রুট), custom-provider-dialog.tsx, storage/custom-providers.json, storage/platform-verification.json
+- UI-নেভ: studio-home.tsx 'keys' ভিউ-সেকশন সরানো; sidebar.tsz VIEWS-থেকে 'API কী' এন্ট্রি + KeyRound আইকন; types.ts AppView থেকে 'keys' বাদ
+- prisma/schema.prisma: ApiKey + ApiCallLog মডেল অপসারণ (ModelEntry রেখেছি — রেজিস্ট্রি-ফিচার পৃথক, /api/registry ব্যবহার করে); db:push সফল — টেবিল-তালিকা এখন ১০টি (ApiKey/ApiCallLog ড্রপ)
+- .env.example: DEEPSEEK/GROQ/OPENROUTER_API_KEY অপসারণ — এখন শুধু ZAI_API_KEY + GLM_API_KEY; README: স্টোরেজ-ট্রি, নিরাপত্তা-সেকশন (/api/v1 উল্লেখ সরানো, GLM-only নোট), গোপন-ফাইল তালিকা আপডেট
+- E2E যাচাই (agent-browser + curl, মিন্ট করা ১-ঘণ্টার মালিক-সেশন টোকেন দিয়ে — ব্যবহারকারীর পাসকোড অস্পৃষ্ট): ৬টি সরানো এন্ডপয়েন্ট 404 ✓; টোকেনবিহীন /api/models,/api/chat → 401 ✓; /api/models শুধু GLM ✓; invalid model → 400+সৎ বার্তা ✓; প্রকৃত চ্যাট-রান chat_only → "নীল" (completed/final_answer/miss) ✓; UI-পাঠানো বার্তা → "হ্যাঁ, চ্যাট চলছে।" স্ট্রিম+ফিনিশিং-অ্যাকশনবার ✓; মডেল-সিলেক্টর GLM-only (কোনো DeepSeek/Groq/OpenRouter/কাস্টম-বাটন নেই) ✓; কী-ডায়ালগ ২টি GLM-প্রোভাইডার ✓; localStorage-এ deepseek-v4-pro বসিয়ে রিলোড → সিলেক্টর GLM-4-Plus + localStorage মাইগ্রেটেড null ✓; নেটওয়ার্ক-এবর্ট টোস্ট "নেটওয়ার্ক সমস্যা… লেখা অক্ষত" + ড্রাফট অক্ষত ✓; 200+এরর-বডি মক → অবৈধ-উত্তর পথ + ড্রাফট অক্ষত ✓; রেজিস্ট্রি-ভিউ অক্ষত ✓; মোবাইল 390px ফুটার স্টিকি ✓; কনসোলে ০ ত্রুটি ✓
+- পরিচ্ছন্নকরণ: টেস্ট-কথোপকথন wipe (DB প্রিস্টাইন), storage/{artifacts,productions,llm-chat} খালি, security.json (ব্যবহারকারীর আজকের পাসকোড) অস্পৃষ্ট রাখা
+- গুণগত গেট: bun run lint = ০ ত্রুটি; bun run typecheck = ০ ত্রুটি; dev-server নির্মল
+
+Stage Summary:
+- GLM-only এনফোর্সমেন্ট এখন এন্ড-টু-এন্ড: ফ্রন্টএন্ড সিলেক্টর + ব্যাকএন্ড allowlist (400) + রাউটিং — তিন স্তরে; পুরনো saved id নীরবে নয়, সৎ-ডিফল্টে মাইগ্রেট
+- ব্যক্তিগত GLM কী-ইনপুট ব্যবস্থা সম্পূর্ণ সচল (zai-api + glm, মাস্কড, সংযোগ-যাচাই); অ্যাপ-ইস্যু API-key প্রোডাক্ট (amai_sk_, /api/v1, /api/keys, KeysView, gateway) ও কাস্টম-প্ল্যাটফর্ম ফিচার সম্পূর্ণ অপসারিত — প্রায় ২,৮০০+ লাইন ডেড-কোড বাদ
+- ⚠ নোট: db/custom.db আমার db:push-এর আগেই অনুপস্থিত ছিল (sandbox অবস্থা) — ফাইল নতুন করে তৈরি হয়েছে, ফলে আজ-সকালের (যদি থেকে থাকে) টেস্ট-চ্যাট থাকলে সেগুলো ছিল না; security.json (পাসকোড, আজ ০৫:৫৫-এ সেট) সংরক্ষিত
+- Z.ai SDK (glm-4-plus, কীবিহীন) ব্যাকবোন হিসেবে রাখা হয়েছে — এটিও GLM-পরিবার; কী-ভিত্তিক GLM-৫.৩ (api.z.ai) ও BigModel আলাদা কোটা-পথ, এন্ডপয়েন্ট-মিশ্রণ নিষিদ্ধ

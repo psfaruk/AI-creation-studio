@@ -950,7 +950,7 @@ export interface TtsBenchmarkReport {
 // UI view switching (শেল)
 // ------------------------------------------------------------
 
-export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'keys' | 'guide';
+export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'guide';
 
 // ============================================================
 // (অ্যাড-অন) এজেন্ট-রান অবজারভেবিলিটি — অডিট §১-B/§১-E/§১-A

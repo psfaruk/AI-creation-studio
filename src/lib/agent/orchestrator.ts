@@ -18,8 +18,7 @@ import { chatComplete, parseToolCall, type ChatCallMeta, type LLMMessage } from 
 import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
 import { isChannelBlocked } from './rate-limit-coordinator';
 import { CHAT_ONLY_DIRECTIVE, SYSTEM_PROMPT } from './prompts';
-import { describeChatModel, findChatModel, isCustomModelId, type ChatModelOption } from './chat-models';
-import { findCustomModel } from './custom-providers';
+import { describeChatModel, findChatModel, type ChatModelOption } from './chat-models';
 import { validateToolCall, type ToolOutput, type ToolSpec } from './registry';
 import { buildMessageView } from './serialize';
 import { createProduction } from './production/create';
@@ -799,18 +798,13 @@ async function runAgentLoop(runId: string): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // কী-সমস্যায় (কী নেই/অবৈধ/ব্যালান্স শেষ) স্বয়ংক্রিয় GLM-ফলব্যাক নয় —
-      // ব্যবহারকারী স্পষ্টভাবে এক্সটার্নাল/কাস্টম মডেল বেছেছেন; "ব্যাকএন্ডে GLM,
-      // লেবেলে DeepSeek/কাস্টম" নিষিদ্ধ — সৎ ব্যর্থতাই একমাত্র পথ।
-      let selectedEntry: ChatModelOption | undefined = usedModel !== '' ? findChatModel(usedModel) : undefined;
-      if (!selectedEntry && isCustomModelId(usedModel)) {
-        // কাস্টম-প্ল্যাটফর্ম মডেল — স্ট্যাটিক ক্যাটালগে নেই; স্টোর থেকে রেজলভ
-        const custom = await findCustomModel(usedModel);
-        selectedEntry = custom?.entry;
-      }
+      // ব্যবহারকারী স্পষ্টভাবে এক্সটার্নাল GLM-মডেল বেছেছেন; নীরব
+      // ক্রস-ফলব্যাক নিষিদ্ধ — সৎ ব্যর্থতাই একমাত্র পথ।
+      const selectedEntry: ChatModelOption | undefined = usedModel !== '' ? findChatModel(usedModel) : undefined;
       const isKeyProblem =
         !!selectedEntry &&
         selectedEntry.provider !== 'zai' &&
-        (/কী যোগ করা হয়নি|কী অবৈধ|ব্যালান্স শেষ|কী গৃহীত হয়নি/.test(msg) || isCustomModelId(usedModel));
+        /কী যোগ করা হয়নি|কী অবৈধ|ব্যালান্স শেষ|কী গৃহীত হয়নি/.test(msg);
       if (isKeyProblem) {
         emit(runId, {
           type: 'run_note',

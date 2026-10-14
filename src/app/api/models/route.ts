@@ -24,11 +24,6 @@ import {
   type ModelVerificationEntry,
   type ModelVerificationFile,
 } from '@/lib/agent/chat-models';
-import {
-  allCustomModelIds,
-  customModelEntries,
-  verifyCustomModel,
-} from '@/lib/agent/custom-providers';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -113,21 +108,11 @@ async function verifyZaiOne(
 
 async function buildResponse(verification: ModelVerificationFile, testedCount: number) {
   const providers = await providerKeyStatuses();
-  // কাস্টম-প্ল্যাটফর্ম মডেলগুলো স্ট্যাটিক ক্যাটালগের পরে যুক্ত হয়
-  // (সিরিয়াল-ক্রম অক্ষত থাকে — ১, ২, ৩… স্ট্যাটিকের পরে কাস্টম-গ্রুপ)
-  const customEntries = await customModelEntries();
-  const customVerified = customEntries.map(m => ({
-    ...m,
-    verification: verification[m.id] ?? null,
-  }));
   return NextResponse.json({
-    models: [
-      ...CHAT_MODELS.map(m => ({
-        ...m,
-        verification: verification[m.id] ?? null,
-      })),
-      ...customVerified,
-    ],
+    models: CHAT_MODELS.map(m => ({
+      ...m,
+      verification: verification[m.id] ?? null,
+    })),
     providers,
     testedCount,
   });
@@ -208,17 +193,6 @@ export async function POST(req: Request) {
       verification[id] = entry;
       tested++;
     }
-    await saveVerification(verification);
-  }
-
-  await saveVerification(verification);
-
-  // ---- ৩. কাস্টম-প্ল্যাটফর্ম মডেল: প্রতিটিতে প্রকৃত ৮-টোকেন কল (নিজের Base URL + কী) ----
-  const customIds = await allCustomModelIds();
-  for (const id of customIds) {
-    if (isFresh(verification[id])) continue;
-    verification[id] = await verifyCustomModel(id);
-    tested++;
     await saveVerification(verification);
   }
 

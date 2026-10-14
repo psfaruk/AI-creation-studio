@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 
 import { toast } from '@/hooks/use-toast';
+import { sanitizeChatModel } from '@/lib/agent/chat-models';
 import type { ChatMessage, ChatMode, ConversationDetail, ConversationSummary } from '@/lib/types';
 
 export const GENERIC_ERROR = 'কিছু একটা সমস্যা হয়েছে। আবার চেষ্টা করুন।';
@@ -26,10 +27,22 @@ function rememberActiveConversation(id: string | null): void {
   }
 }
 
-/** নির্বাচিত চ্যাট-মডেল localStorage-এ মনে রাখা */
+/**
+ * নির্বাচিত চ্যাট-মডেল localStorage-এ মনে রাখা।
+ * (অডিট §৭) পুরনো/সরানো id (deepseek-* / groq-* / or-* / custom:*) —
+ * sanitizeChatModel() সৎ-ডিফল্ট '' (SDK GLM-4-Plus)-এ মাইগ্রেট করে;
+ * পুরনো saved value-র কারণে চ্যাট আর আটকে থাকে না।
+ */
 function loadChatModel(): string {
   try {
-    return window.localStorage.getItem(CHAT_MODEL_KEY) ?? '';
+    const raw = window.localStorage.getItem(CHAT_MODEL_KEY);
+    const sanitized = sanitizeChatModel(raw);
+    if (raw !== sanitized) {
+      // পুরনো/সরানো id পাওয়া গেছে — সৎ-ডিফল্টে মাইগ্রেট করে সংরক্ষণও করে দাও,
+      // যেন পরের লোডে আর পুরনো মান দেখা না যায়
+      rememberChatModel(sanitized);
+    }
+    return sanitized;
   } catch {
     return '';
   }

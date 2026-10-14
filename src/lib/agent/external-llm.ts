@@ -1,24 +1,14 @@
 // ============================================================
-// এক্সটার্নাল-প্রোভাইডার LLM — প্রকৃত OpenAI SDK (npm `openai`)
-// দিয়ে DeepSeek / Z.ai API / BigModel / Groq / OpenRouter।
+// এক্সটার্নাল-GLM প্রোভাইডার LLM — প্রকৃত OpenAI SDK (npm `openai`)
+// দিয়ে Z.ai API (api.z.ai) ও Zhipu BigModel (open.bigmodel.cn)।
 //
-// কেন `openai` প্যাকেজটাই "রিয়েল DeepSeek SDK":
-//  - DeepSeek-এর অফিসিয়াল ডকুমেন্টেশন (api-docs.deepseek.com,
-//    "Your First API Call") বলে: "OpenAI SDK first: npm install openai"
-//    — baseURL বদলেই কল প্রকৃত api.deepseek.com-এ যায়।
-//  - npm-এ `deepseek-sdk` নামে ২০৮-বাইটের একটি প্লেসহোল্ডার প্যাকেজ
-//    আছে (২০২৫-০২-১০, র‍্যান্ডম প্রকাশক, ১টি ফাইল) — সেটি ভুয়া;
-//    ব্যবহার করলেই "রিয়েল" শর্ত ভাঙত।
-//  - Z.ai (api.z.ai), BigModel, Groq, OpenRouter-ও নিজ নিজ ডকসে
-//    OpenAI-কম্প্যাটিবল বলে একই SDK-তে চলে।
-//
-// সততার নিয়ম (আগের মতোই):
-//  - প্রতিটি কল প্রোভাইডারের আসল endpoint-এ যায় — ব্যাকএন্ডে
-//    কখনোই GLM/অন্য কিছু লুকিয়ে "DeepSeek" লেবেল নয়।
+// নীতি (GLM-only — ব্যবহারকারীর সুস্পষ্ট নির্দেশ):
+//  - শুধু GLM-পরিবারের দুটি এক্সটার্নাল এন্ডপয়েন্ট; DeepSeek /
+//    Groq / OpenRouter সরানো হয়েছে।
+//  - প্রতিটি কল প্রোভাইডারের আসল endpoint-এ যায় — এন্ডপয়েন্ট-মিশ্রণ
+//    বা নীরব ক্রস-ফলব্যাক কখনোই নয়।
 //  - ত্রুটি-বার্তায় প্রোভাইডারের নাম + HTTP কোড থাকে; ৪২৯-টেক্সট
 //    থাকে যেন orchestrator-এর isRateLimitErrorText ধরতে পারে।
-//  - DeepSeek V4-র থিংকিং-মোড টগল অফিসিয়াল extra_body-প্যারামিটারে
-//    (thinking.type + reasoning_effort) — ক্যাটালগ-এন্ট্রি অনুযায়ী।
 //  - Node.js runtime লাগে (সব কল-সাইট ইতিমধ্যে runtime='nodejs')।
 // ============================================================
 
@@ -72,7 +62,6 @@ function getClient(provider: ChatProviderId, apiKey: string, defaultTimeoutMs: n
     timeout: defaultTimeoutMs,
     // আমাদের নিজস্ব ২-চেষ্টা সিম্যান্টিক্স — SDK-র ভেতরের রিট্রাই নয়
     maxRetries: 0,
-    defaultHeaders: provider === 'openrouter' ? { 'X-Title': 'AI Creative Studio' } : undefined,
   });
 
   // একই প্রোভাইডারের পুরনো-কী ক্লায়েন্ট বাদ (মেমোরি-লিক ও পুরনো কী-ব্যবহার রোধ)
@@ -84,7 +73,7 @@ function getClient(provider: ChatProviderId, apiKey: string, defaultTimeoutMs: n
 }
 
 // ------------------------------------------------------------
-// রিকোয়েস্ট-বডি নির্মাণ (DeepSeek V4 থিংকিং-টগলসহ)
+// রিকোয়েস্ট-বডি নির্মাণ (GLM-প্রোভাইডার — সাধারণ OpenAI-কম্প্যাটিবল)
 // ------------------------------------------------------------
 
 function buildRequestBody(
@@ -92,24 +81,13 @@ function buildRequestBody(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   opts?: { maxTokens?: number }
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
+  return {
     model: entry.apiModel,
     messages,
     stream: false,
-    max_tokens: opts?.maxTokens ?? (entry.thinking === 'enabled' ? 8192 : 4096),
+    max_tokens: opts?.maxTokens ?? 4096,
+    temperature: 0.7,
   };
-  if (entry.provider === 'deepseek') {
-    // অফিসিয়াল DeepSeek V4 প্যারামিটার (Thinking Mode গাইড):
-    //   thinking.type = enabled/disabled, reasoning_effort = low/high/max
-    // থিংকিং-মোডে temperature নীরবে উপেক্ষিত — তাই পাঠাই না।
-    body.thinking = { type: entry.thinking ?? 'disabled' };
-    if ((entry.thinking ?? 'disabled') === 'enabled') {
-      body.reasoning_effort = entry.reasoningEffort ?? 'high';
-    }
-  } else {
-    body.temperature = 0.7;
-  }
-  return body;
 }
 
 /** OpenAI SDK-র ত্রুটি থেকে HTTP স্ট্যাটাস (APIError-এ .status থাকে) */
@@ -246,9 +224,6 @@ export async function verifyExternalModel(
       stream: false,
       max_tokens: 8,
     };
-    // যাচাই-কলে থিংকিং বন্ধ — ৮ টোকেনের বাজেটে সরাসরি উত্তর আসুক
-    // (থিংকিং-মোডে CoT-ই আগে বসে যেত)। মডেল-আইডি/endpoint একই থাকে।
-    if (entry.provider === 'deepseek') body.thinking = { type: 'disabled' };
 
     const res = await client.chat.completions.create(
       body as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,

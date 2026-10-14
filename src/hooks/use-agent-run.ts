@@ -356,8 +356,28 @@ export function useAgentRun() {
           attachments: attachments.map(({ kind, name, dataUrl }) => ({ kind, name, dataUrl })),
         } satisfies ChatRequest),
       });
-      if (!res.ok) throw new Error('chat request failed');
-      const data = (await res.json()) as ChatResponse;
+      // (অডিট §২.৩) প্রকৃত ব্যর্থতার কারণ বের করা — generic "চ্যাট ব্যর্থ"
+      // নয়: HTTP status + সার্ভারের সুরক্ষিত বার্তা (data.error) দেখানো হয়।
+      // সার্ভার-বার্তাগুলি ইতিমধ্যে স্যানিটাইজড (কোনো stack-trace/কী নয়)।
+      if (!res.ok) {
+        let serverMessage: string | null = null;
+        try {
+          const errBody = (await res.json()) as { error?: unknown } | null;
+          if (errBody && typeof errBody.error === 'string' && errBody.error.trim() !== '') {
+            serverMessage = errBody.error;
+          }
+        } catch {
+          // বডি JSON নয় — status-ই যথেষ্ট
+        }
+        const statusText = `HTTP ${res.status}`;
+        throw new Error(
+          serverMessage ? `${serverMessage} (${statusText})` : `চ্যাট-অনুরোধ ব্যর্থ (${statusText})`
+        );
+      }
+      const data = (await res.json().catch(() => null)) as ChatResponse | null;
+      if (!data || typeof data.runId !== 'string' || typeof data.conversationId !== 'string') {
+        throw new Error('সার্ভার থেকে অবৈধ উত্তর এসেছে — আবার চেষ্টা করুন');
+      }
 
       const st = useChatStore.getState();
       // নতুন কথোপকথন হলে active হিসেবে সেট করো
@@ -382,13 +402,25 @@ export function useAgentRun() {
         void st.refetchConversations();
         openStream(data.runId, data.conversationId, data.userMessage.id, `pending-${data.runId}`);
       }
-    } catch {
+    } catch (err) {
       const st = useChatStore.getState();
       st.removeMessage(optimisticId);
       st.setIsRunActive(false);
       st.setDraft(content);
       st.addAttachments(attachments);
-      toast({ title: GENERIC_ERROR, variant: 'destructive' });
+      // (অডিট §২.৩) নেটওয়ার্ক-ব্যর্থতা বনাম HTTP-ব্যর্থতা আলাদা করে দেখানো —
+      // উপরের পাথ থ্রো করা বার্তা বহন করে (সার্ভারের স্যানিটাইজড বার্তা +
+      // HTTP status); fetch নিজে ব্যর্থ হলে সেটি নেটওয়ার্ক-সমস্যা।
+      // ড্রাফট ও অ্যাটাচমেন্ট অক্ষত ফিরে এসেছে — আবার পাঠানো যাবে।
+      const isNetworkError = err instanceof TypeError;
+      const message = err instanceof Error ? err.message : String(err);
+      toast({
+        title: isNetworkError ? 'নেটওয়ার্ক সমস্যা — সার্ভারে পৌঁছানো যায়নি' : 'বার্তা পাঠানো যায়নি',
+        description: isNetworkError
+          ? 'ইন্টারনেট-সংযোগ পরীক্ষা করে আবার চেষ্টা করুন। আপনার লেখা অক্ষত আছে।'
+          : `${message.slice(0, 220)} — আপনার লেখা অক্ষত আছে, আবার চেষ্টা করতে পারেন।`,
+        variant: 'destructive',
+      });
     }
   }, [openStream]);
 

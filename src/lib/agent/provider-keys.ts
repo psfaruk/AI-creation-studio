@@ -15,7 +15,7 @@ import { PROVIDERS, isExternalProvider, type ChatProviderId } from './chat-model
 
 const KEYS_PATH = path.join(process.cwd(), 'storage', 'provider-keys.json');
 
-/** কী ফাইলের আকৃতি: { "deepseek": "sk-...", ... } */
+/** কী ফাইলের আকৃতি: { "zai-api": "id.secret", "glm": "…" } */
 type KeyFile = Partial<Record<ChatProviderId, string>>;
 
 const g = globalThis as unknown as { __providerKeyCache?: { at: number; data: KeyFile } };

@@ -3,7 +3,7 @@
 //
 //  GET    → সব এক্সটার্নাল প্রোভাইডারের কী-অবস্থা (মাস্কড — raw কী কখনোই নয়)
 //  POST   → { provider, key } — কী সংরক্ষণ (storage/provider-keys.json, 0600)
-//  DELETE → ?provider=deepseek — কী মুছে ফেলা
+//  DELETE → ?provider=glm — কী মুছে ফেলা
 //
 // সততা ও নিরাপত্তা:
 //  - কী শুধু স্থানীয় ফাইলে থাকে (.gitignore-সুরক্ষিত, GitHub-এ যায় না)

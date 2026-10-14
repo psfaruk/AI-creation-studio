@@ -52,7 +52,7 @@ export function ProviderKeyDialog({
   /** কী সেভ/মুছে ফেলার পরে কলব্যাক (স্ট্যাটাস রিফ্রেশের জন্য) */
   onKeysChanged?: () => void;
 }) {
-  const [provider, setProvider] = useState<ChatProviderId>(initialProvider ?? 'deepseek');
+  const [provider, setProvider] = useState<ChatProviderId>(initialProvider ?? 'zai-api');
   const [keyValue, setKeyValue] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -60,14 +60,17 @@ export function ProviderKeyDialog({
 
   useEffect(() => {
     if (open) {
-      setProvider(initialProvider ?? 'deepseek');
+      setProvider(initialProvider ?? 'zai-api');
       setKeyValue('');
       setShowKey(false);
     }
   }, [open, initialProvider]);
 
-  const info = PROVIDERS[provider];
-  const status = keyStatuses?.[provider];
+  // GLM-only ক্যাটালগে EXTERNAL_PROVIDER_ORDER-এ সব স্লট বৈধ —
+  // পুরনো মান থাকলে সৎ-ডিফল্টে ফেরাও
+  const effectiveProvider: ChatProviderId = provider in PROVIDERS ? provider : 'zai-api';
+  const effectiveInfo = PROVIDERS[effectiveProvider];
+  const status = keyStatuses?.[effectiveProvider];
 
   const saveKey = useCallback(async () => {
     if (isSaving) return;
@@ -85,7 +88,7 @@ export function ProviderKeyDialog({
       const res = await fetch('/api/provider-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, key: trimmed }),
+        body: JSON.stringify({ provider: effectiveProvider, key: trimmed }),
       });
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok) {
@@ -98,7 +101,7 @@ export function ProviderKeyDialog({
       }
       setKeyValue('');
       toast({
-        title: `${info.label}: কী সংরক্ষিত`,
+        title: `${effectiveInfo.label}: কী সংরক্ষিত`,
         description: 'মডেল-তালিকায় "যাচাই করুন" চাপলে প্রকৃত সংযোগ পরীক্ষা হবে।',
       });
       onKeysChanged?.();
@@ -107,13 +110,13 @@ export function ProviderKeyDialog({
     } finally {
       setIsSaving(false);
     }
-  }, [isSaving, keyValue, provider, info.label, onKeysChanged]);
+  }, [isSaving, keyValue, effectiveProvider, effectiveInfo.label, onKeysChanged]);
 
   const removeKey = useCallback(async () => {
     if (isRemoving) return;
     setIsRemoving(true);
     try {
-      const res = await fetch(`/api/provider-keys?provider=${encodeURIComponent(provider)}`, {
+      const res = await fetch(`/api/provider-keys?provider=${encodeURIComponent(effectiveProvider)}`, {
         method: 'DELETE',
       });
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -125,14 +128,14 @@ export function ProviderKeyDialog({
         });
         return;
       }
-      toast({ title: `${info.label}: কী মুছে ফেলা হয়েছে` });
+      toast({ title: `${effectiveInfo.label}: কী মুছে ফেলা হয়েছে` });
       onKeysChanged?.();
     } catch {
       toast({ title: 'নেটওয়ার্ক সমস্যা — আবার চেষ্টা করুন', variant: 'destructive' });
     } finally {
       setIsRemoving(false);
     }
-  }, [isRemoving, provider, info.label, onKeysChanged]);
+  }, [isRemoving, effectiveProvider, effectiveInfo.label, onKeysChanged]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -140,18 +143,18 @@ export function ProviderKeyDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <KeyRound className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-            নিজের AI প্রোভাইডারের API কী
+            নিজের GLM প্রোভাইডারের API কী
           </DialogTitle>
           <DialogDescription>
-            Z.ai SDK-র বিল্ট-ইন পথ সবার সাথে শেয়ার্ড রেট-লিমিটে চলে। নিজের কী দিলে আলাদা
-            কোটায় প্রকৃত ওপেন-সোর্স মডেল চলবে।
+            Z.ai SDK-র বিল্ট-ইন পথ সবার সাথে শেয়ার্ড রেট-লিমিটে চলে। নিজের GLM কী দিলে
+            আলাদা কোটায় GLM-৫.৩ / GLM-৪ সিরিজের মডেল চলবে।
           </DialogDescription>
         </DialogHeader>
 
-        {/* প্রোভাইডার নির্বাচন */}
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="প্রোভাইডার নির্বাচন">
+        {/* প্রোভাইডার নির্বাচন (দুটি GLM-এন্ডপয়েন্ট — মিশ্রণ নেই) */}
+        <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="GLM প্রোভাইডার নির্বাচন">
           {EXTERNAL_PROVIDER_ORDER.map(p => {
-            const active = provider === p;
+            const active = effectiveProvider === p;
             const has = keyStatuses?.[p]?.hasKey;
             return (
               <button
@@ -184,16 +187,16 @@ export function ProviderKeyDialog({
 
         {/* নির্বাচিত প্রোভাইডারের তথ্য */}
         <div className="rounded-lg bg-muted/60 p-3 text-xs leading-relaxed text-muted-foreground">
-          <p>{info.note}</p>
+          <p>{effectiveInfo.note}</p>
           <p className="mt-1.5 flex items-center gap-1">
             <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
             <a
-              href={info.keyUrl}
+              href={effectiveInfo.keyUrl}
               target="_blank"
               rel="noreferrer"
               className="underline underline-offset-2 hover:text-foreground"
             >
-              {info.label}-এর API কী নিন (এই লিংকে)
+              {effectiveInfo.label}-এর API কী নিন (এই লিংকে)
             </a>
           </p>
           {status?.hasKey && (
@@ -207,7 +210,7 @@ export function ProviderKeyDialog({
         {/* কী ইনপুট */}
         <div className="space-y-2">
           <Label htmlFor="provider-api-key" className="text-xs">
-            {info.label} API কী {info.keyHint ? `(${info.keyHint})` : ''}
+            {effectiveInfo.label} API কী {effectiveInfo.keyHint ? `(${effectiveInfo.keyHint})` : ''}
           </Label>
           <div className="relative">
             <Input

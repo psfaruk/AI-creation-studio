@@ -19,9 +19,8 @@ import { createHash } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { withRetry, type RetryWaitInfo } from './retry';
-import { findChatModel, isCustomModelId, PROVIDERS, type ChatModelOption } from './chat-models';
+import { findChatModel, PROVIDERS } from './chat-models';
 import { externalChatComplete } from './external-llm';
-import { customChatComplete } from './custom-providers';
 
 export { externalChatComplete, ExternalFatalError, ExternalRetryableError } from './external-llm';
 
@@ -150,17 +149,16 @@ export interface ChatCompleteOptions {
  */
 export interface ChatCallMeta {
   cache: 'hit' | 'miss' | 'bypass';
-  provider: 'zai' | 'external' | 'custom';
-  /** মানব-পাঠযোগ্য প্রোভাইডার-নাম (যেমন 'DeepSeek', 'Groq') */
+  provider: 'zai' | 'external';
+  /** মানব-পাঠযোগ্য প্রোভাইডার-নাম (যেমন 'Z.ai API', 'GLM · BigModel') */
   providerLabel?: string;
   model?: string;
   latencyMs: number;
 }
 
 /** অনুরোধ-আইডি থেকে রোমান্টিক (কোয়ার্স) প্রোভাইডার — ক্যাশ-হিটের আগেই জানা যায় */
-function coarseProviderOf(requestedId: string): 'zai' | 'external' | 'custom' {
+function coarseProviderOf(requestedId: string): 'zai' | 'external' {
   if (requestedId === '') return 'zai';
-  if (isCustomModelId(requestedId)) return 'custom';
   const entry = findChatModel(requestedId);
   return entry && entry.provider !== 'zai' ? 'external' : 'zai';
 }
@@ -168,9 +166,8 @@ function coarseProviderOf(requestedId: string): 'zai' | 'external' | 'custom' {
 // ------------------------------------------------------------
 // Z.ai SDK স্ট্রিম-উত্তর ভোগ — raw SSE (ReadableStream/string) থেকে
 // delta-content বের করে onDelta-তে পাঠায়, পুরো টেক্সট ফেরায়।
-// (platform/gateway.ts-এ প্রমাণিত প্যাটার্ন: stream:true → ReadableStream
-// of OpenAI-SSE-chunks; কিছু ব্যাকএন্ড পুরো-স্ট্রিং বা অবজেক্টও ফেরাতে
-// পারে — তিনটি রূপই সামলানো হয়।)
+// (stream:true → ReadableStream of OpenAI-SSE-chunks; কিছু ব্যাকএন্ড
+// পুরো-স্ট্রিং বা অবজেক্টও ফেরাতে পারে — তিনটি রূপই সামলানো হয়।)
 // ------------------------------------------------------------
 
 async function consumeZaiStream(res: unknown, onDelta?: (d: string) => void): Promise<string> {
@@ -232,11 +229,9 @@ function extractDeltaFromSseEvent(rawEvent: string, onDelta?: (d: string) => voi
 }
 
 // ------------------------------------------------------------
-// এক্সটার্নাল প্রোভাইডার-পথ (DeepSeek / Z.ai API / BigModel / Groq /
-// OpenRouter) — বাস্তবায়ন এখন external-llm.ts-এ: প্রকৃত OpenAI SDK
-// (npm `openai`) + প্রোভাইডারের আসল endpoint। DeepSeek-এর অফিসিয়াল
-// ডকস (api-docs.deepseek.com) অনুযায়ী এটিই "রিয়েল DeepSeek SDK"-পথ
-// (npm install openai + DeepSeek baseURL)।
+// এক্সটার্নাল-প্রোভাইডার পথ (Z.ai API / BigModel — উভয়ই GLM) —
+// বাস্তবায়ন external-llm.ts-এ: প্রকৃত OpenAI SDK (npm `openai`) +
+// প্রোভাইডারের আসল endpoint। এন্ডপয়েন্ট-মিশ্রণ/ক্রস-ফলব্যাক নেই।
 // ------------------------------------------------------------
 
 /**
@@ -287,18 +282,7 @@ export async function chatComplete(
     });
   };
 
-  // কাস্টম-প্ল্যাটফর্ম মডেল (custom:<providerId>:<apiModel>) —
-  // ব্যবহারকারীর নিজের Base URL + কী-তে প্রকৃত OpenAI SDK-কল
-  if (isCustomModelId(requestedId)) {
-    const t0 = Date.now();
-    const text = await customChatComplete(messages, requestedId, streamOpts);
-    if (text && text.length > 0) {
-      emitMissOrBypass('custom', 'কাস্টম প্ল্যাটফর্ম', t0);
-      await writeLlmCache(key, text);
-    }
-    return text;
-  }
-
+  // ---- এক্সটার্নাল GLM-প্রোভাইডার (zai-api / glm — নিজের কী) ----
   const entry = requestedId !== '' ? findChatModel(requestedId) : undefined;
   if (entry && entry.provider !== 'zai') {
     const t0 = Date.now();
