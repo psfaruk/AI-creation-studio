@@ -1,14 +1,17 @@
 // ============================================================
-// /api/provider-keys — এক্সটার্নাল প্রোভাইডারের API-কী ব্যবস্থাপনা।
+// /api/provider-keys — এক্সটার্নাল প্রোভাইডারের API-কী + Base URL ব্যবস্থাপনা।
 //
 //  GET    → সব এক্সটার্নাল প্রোভাইডারের কী-অবস্থা (মাস্কড — raw কী কখনোই নয়)
-//  POST   → { provider, key } — কী সংরক্ষণ (storage/provider-keys.json, 0600)
-//  DELETE → ?provider=glm — কী মুছে ফেলা
+//  POST   → { provider, key?, baseURL? } — কী ও/অথবা Base URL সংরক্ষণ
+//           (baseURL: '' বা null = ডিফল্টে ফেরানো)
+//  DELETE → ?provider=glm — এন্ট্রি মুছে ফেলা (কী + Base URL-ওভাররাইড)
 //
 // সততা ও নিরাপত্তা:
 //  - কী শুধু স্থানীয় ফাইলে থাকে (.gitignore-সুরক্ষিত, GitHub-এ যায় না)
-//  - উত্তরে কেবল মাস্কড প্রিভিউ (sk-a1…b2c)
-//  - শিথল আকৃতি-যাচাই (৮–৫০০ অক্ষর, ভেতরে সাদাস্থান নয়)
+//  - উত্তরে কেবল মাস্কড প্রিভিউ (sk-a1…b2c); Base URL গোপন নয় —
+//    স্বাভাবিকভাবে ফেরে (ইউজার নিজেই যা লিখেছেন)
+//  - শিথল আকৃতি-যাচাই: কী ৮–৫০০ অক্ষর সাদাস্থান-বিহীন;
+//    Base URL বৈধ http(s) URL
 //  - লাইট রেট-লিমিট: ২০ লেখা/ঘণ্টা (আইপি-ভিত্তিক)
 // ============================================================
 import { NextResponse } from 'next/server';
@@ -17,7 +20,9 @@ import { checkRateLimit } from '@/lib/limits';
 import {
   clearProviderKey,
   isValidApiKeyShape,
+  isValidBaseURLShape,
   providerKeyStatuses,
+  setProviderBaseURL,
   setProviderKey,
 } from '@/lib/agent/provider-keys';
 import { PROVIDERS, isExternalProvider, type ChatProviderId } from '@/lib/agent/chat-models';
@@ -36,7 +41,7 @@ function parseProvider(raw: unknown): ChatProviderId | null {
   return isExternalProvider(p) ? p : null;
 }
 
-/** GET → মাস্কড কী-অবস্থা */
+/** GET → মাস্কড কী-অবস্থা + Base URL তথ্য */
 export async function GET(req: Request) {
   const auth = await requireOwner(req);
   if (!auth.ok) return auth.response;
@@ -45,7 +50,7 @@ export async function GET(req: Request) {
   return NextResponse.json({ providers: statuses });
 }
 
-/** POST → কী সংরক্ষণ */
+/** POST → কী এবং/অথবা Base URL সংরক্ষণ */
 export async function POST(req: Request) {
   const auth = await requireOwner(req);
   if (!auth.ok) return auth.response;
@@ -69,17 +74,53 @@ export async function POST(req: Request) {
   if (!provider) {
     return NextResponse.json({ error: 'অজানা এক্সটার্নাল প্রোভাইডার' }, { status: 400 });
   }
-  if (!isValidApiKeyShape(body?.key)) {
+
+  // ---- কী (ঐচ্ছিক — শুধু Base URL বদলাতে চাইলে কী-সহ পুনঃপাঠ লাগে না) ----
+  const hasKey = typeof body?.key === 'string' && body.key.trim() !== '';
+  if (body?.key != null && !hasKey) {
+    return NextResponse.json({ error: 'কী-এর মান খালি — কী বদলাতে চাইলে পুরো কীটি দিন' }, { status: 400 });
+  }
+  if (hasKey && !isValidApiKeyShape(body.key)) {
     return NextResponse.json(
       { error: 'কী-এর আকৃতি সঠিক নয় — ৮–৫০০ অক্ষরের, ভেতরে সাদাস্থান-বিহীন মান দিন' },
       { status: 400 }
     );
   }
 
+  // ---- Base URL (ঐচ্ছিক — ''/null = ডিফল্টে ফেরানো) ----
+  const hasBaseURL = body?.baseURL !== undefined;
+  let baseURLValue: string | null = null;
+  if (hasBaseURL) {
+    if (body.baseURL === null) {
+      baseURLValue = null;
+    } else if (typeof body.baseURL === 'string') {
+      const t = body.baseURL.trim();
+      baseURLValue = t === '' ? null : t;
+      if (baseURLValue !== null && !isValidBaseURLShape(baseURLValue)) {
+        return NextResponse.json(
+          { error: 'Base URL সঠিক নয় — http:// বা https:// দিয়ে শুরু হওয়া সম্পূর্ণ URL দিন (যেমন https://api.z.ai/api/paas/v4)' },
+          { status: 400 }
+        );
+      }
+    } else {
+      return NextResponse.json({ error: 'baseURL মান সঠিক নয় (স্ট্রিং বা null হতে হবে)' }, { status: 400 });
+    }
+  }
+
+  if (!hasKey && !hasBaseURL) {
+    return NextResponse.json({ error: 'কী বা Base URL — অন্তত একটি পাঠান' }, { status: 400 });
+  }
+
   try {
-    await setProviderKey(provider, body.key as string);
+    if (hasKey) {
+      // কী-সহ সেভ — baseURL পাঠালে একসাথে বসে (না পাঠালে পুরনো ওভাররাইড অক্ষত)
+      await setProviderKey(provider, body.key as string, hasBaseURL ? baseURLValue : undefined);
+    } else if (hasBaseURL) {
+      // শুধু Base URL আপডেট — বিদ্যমান কী অক্ষত থাকে (কী না থাকলে no-op)
+      await setProviderBaseURL(provider, baseURLValue);
+    }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'কী সংরক্ষণ ব্যর্থ';
+    const msg = err instanceof Error ? err.message : 'সংরক্ষণ ব্যর্থ';
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
@@ -87,7 +128,7 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, providers: statuses });
 }
 
-/** DELETE → কী মুছে ফেলা */
+/** DELETE → এন্ট্রি মুছে ফেলা (কী + Base URL-ওভাররাইড) */
 export async function DELETE(req: Request) {
   const auth = await requireOwner(req);
   if (!auth.ok) return auth.response;
@@ -106,7 +147,7 @@ export async function DELETE(req: Request) {
   try {
     await clearProviderKey(provider);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'কী মুছে ফেলা ব্যর্থ';
+    const msg = err instanceof Error ? err.message : 'মুছে ফেলা ব্যর্থ';
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 

@@ -141,6 +141,11 @@ export interface ChatCompleteOptions {
    *   - এক্সটার্নাল → সেই প্রোভাইডারের প্রকৃত API (নিজের কী)
    */
   model?: string;
+  /**
+   * এক্সটার্নাল-পথে max_tokens সীমা (ঐচ্ছিক; /api/v1 ক্লায়েন্টের
+   * অনুরোধ থেকে আসে)। SDK-পথ এটি উপেক্ষা করে।
+   */
+  maxTokens?: number;
 }
 
 /**
@@ -265,9 +270,14 @@ export async function chatComplete(
   stats().misses++;
 
   // ---- এক্সটার্নাল-প্রোভাইডার রাউটিং ----
-  const streamOpts = opts?.onDelta
-    ? { onDelta: opts.onDelta, onAttemptBegin: opts.onAttemptBegin }
-    : undefined;
+  const externalOpts: {
+    onDelta?: (delta: string) => void;
+    onAttemptBegin?: () => void;
+    maxTokens?: number;
+  } = opts?.onDelta ? { onDelta: opts.onDelta, ...(opts.onAttemptBegin ? { onAttemptBegin: opts.onAttemptBegin } : {}) } : {};
+  if (opts?.maxTokens != null && Number.isFinite(opts.maxTokens) && opts.maxTokens > 0) {
+    externalOpts.maxTokens = Math.min(8192, Math.floor(opts.maxTokens));
+  }
   const emitMissOrBypass = (
     provider: ChatCallMeta['provider'],
     providerLabel: string | undefined,
@@ -286,7 +296,7 @@ export async function chatComplete(
   const entry = requestedId !== '' ? findChatModel(requestedId) : undefined;
   if (entry && entry.provider !== 'zai') {
     const t0 = Date.now();
-    const text = await externalChatComplete(messages, entry, streamOpts);
+    const text = await externalChatComplete(messages, entry, externalOpts);
     if (text && text.length > 0) {
       emitMissOrBypass('external', PROVIDERS[entry.provider]?.label, t0);
       await writeLlmCache(key, text);

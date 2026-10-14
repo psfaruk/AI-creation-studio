@@ -14,7 +14,7 @@
 
 import OpenAI from 'openai';
 import { PROVIDERS, type ChatModelOption, type ChatProviderId, type ModelVerificationEntry } from './chat-models';
-import { getProviderKey } from './provider-keys';
+import { getProviderBaseURL, getProviderKey } from './provider-keys';
 
 /** llm.ts-এর LLMMessage-এর সাথে গঠনগতভাবে সামঞ্জস্যপূর্ণ (সার্কুলার-ইমপোর্ট এড়াতে স্থানীয়) */
 export interface ExternalLLMMessage {
@@ -39,32 +39,44 @@ export function toExternalMessages(
 }
 
 // ------------------------------------------------------------
-// OpenAI SDK ক্লায়েন্ট-ক্যাশ — প্রোভাইডার+কী অনুযায়ী (কী বদলালে নতুন)
+// OpenAI SDK ক্লায়েন্ট-ক্যাশ — প্রোভাইডার+baseURL+কী অনুযায়ী
+// (কী বা Base URL বদলালে নতুন ক্লায়েন্ট)
 // ------------------------------------------------------------
 
 const g = globalThis as unknown as {
   __externalLlmClients?: Map<string, OpenAI>;
 };
 
-function getClient(provider: ChatProviderId, apiKey: string, defaultTimeoutMs: number): OpenAI {
+/**
+ * প্রোভাইডারের কার্যকর Base URL — ইউজারের ওভাররাইড → অফিসিয়াল ডিফল্ট।
+ * (Base URL ইনপুট: কী-ডায়ালগে — OpenAI-কম্প্যাটিবল যে-কোনো এন্ডপয়েন্ট চলে)
+ */
+async function resolveBaseURL(provider: ChatProviderId): Promise<string> {
   const info = PROVIDERS[provider];
-  if (!info?.baseURL) {
+  const override = await getProviderBaseURL(provider);
+  const base = override ?? info?.baseURL;
+  if (!base) {
     throw new ExternalFatalError(`${info?.label ?? provider}: এই প্রোভাইডারের API-কনফিগ অসম্পূর্ণ`);
   }
+  return base;
+}
+
+async function getClient(provider: ChatProviderId, apiKey: string, defaultTimeoutMs: number): Promise<OpenAI> {
+  const baseURL = await resolveBaseURL(provider);
   if (!g.__externalLlmClients) g.__externalLlmClients = new Map();
-  const cacheKey = `${provider}:${apiKey}`;
+  const cacheKey = `${provider}:${baseURL}:${apiKey}`;
   const hit = g.__externalLlmClients.get(cacheKey);
   if (hit) return hit;
 
   const client = new OpenAI({
     apiKey,
-    baseURL: info.baseURL,
+    baseURL,
     timeout: defaultTimeoutMs,
     // আমাদের নিজস্ব ২-চেষ্টা সিম্যান্টিক্স — SDK-র ভেতরের রিট্রাই নয়
     maxRetries: 0,
   });
 
-  // একই প্রোভাইডারের পুরনো-কী ক্লায়েন্ট বাদ (মেমোরি-লিক ও পুরনো কী-ব্যবহার রোধ)
+  // একই প্রোভাইডারের পুরনো-কনফিগ ক্লায়েন্ট বাদ (মেমোরি-লিক, পুরনো কী/URL-ব্যবহার রোধ)
   for (const k of Array.from(g.__externalLlmClients.keys())) {
     if (k.startsWith(`${provider}:`)) g.__externalLlmClients.delete(k);
   }
@@ -124,7 +136,7 @@ export async function externalChatComplete(
   }
 
   const timeoutMs = opts?.timeoutMs ?? 120_000;
-  const client = getClient(entry.provider, key, timeoutMs);
+  const client = await getClient(entry.provider, key, timeoutMs);
 
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -217,7 +229,7 @@ export async function verifyExternalModel(
     };
   }
   try {
-    const client = getClient(entry.provider, key, VERIFY_TIMEOUT_MS);
+    const client = await getClient(entry.provider, key, VERIFY_TIMEOUT_MS);
     const body: Record<string, unknown> = {
       model: entry.apiModel,
       messages: [{ role: 'user', content: 'Reply with exactly one word: ok' }],

@@ -379,6 +379,17 @@ export async function isSessionValidForReq(
   return hasValidSession(req, opts);
 }
 
+/**
+ * কাঁচা টোকন-স্ট্রিং যাচাই (Bearer-হিসেবে /api/v1 প্ল্যাটফর্ম-APIতে
+ * মালিক-সেশনও গ্রহণযোগ্য করতে)। টোকেনটি অবশ্যই বর্তমান secret-দ্বারা
+ * সইকৃত ও মেয়াদের ভেতরে হতে হবে।
+ */
+export async function isSessionTokenValid(token: string): Promise<boolean> {
+  const s = await loadSecurity();
+  if (!s.initialized || !s.secret) return false;
+  return verifySessionToken(token, s.secret);
+}
+
 // ------------------------------------------------------------
 // মালিক-রক্ষী — সংবেদনশীল রুটের শীর্ষে বসে
 // ------------------------------------------------------------
@@ -401,15 +412,43 @@ function unauthorized(): NextResponse {
  *   if (!auth.ok) return auth.response;
  *
  *  - সেশন নেই/অবৈধ/নিরাপত্তা আরম্ভই হয়নি → 401 auth_required
- *  - লেখা-মেথডে (POST/PATCH/DELETE…) Origin-হোস্ট ≠ Host-হেডার →
- *    403 cross-origin blocked (CSRF/Origin প্রতিরক্ষা)
+ *  - হেডার-টোকেন পথ (x-studio-token): যাচাই সফল হলেই অনুমোদিত —
+ *    ক্রস-অরিজিন JS কাস্টম-হেডার পাঠাতে পারে না (প্রি-ফ্লাইট ছাড়া,
+ *    যা আমাদের সার্ভার অনুমোদন করে না) এবং টোকেন-মান কেবল মালিকের
+ *    নিজের পাতার localStorage-এ থাকে — অর্থাৎ এই পথে CSRF অসম্ভব।
+ *    (গেটওয়ে/প্রিভিউ-প্রক্সি যে-কোনো Host-রিরাইটেও কাজ করে।)
+ *  - cookie/query-টোকেন পথ (লেখা-মেথডে): Origin-হোস্ট ∈
+ *    {Host, X-Forwarded-Host} না হলে 403 cross_origin_blocked
+ *    (CSRF/Origin প্রতিরক্ষা — ব্রাউজার X-Forwarded-Host বাননো
+ *    করতে পারে না বলে প্রক্সি-চেইনেও নিরাপদ)।
  */
 export async function requireOwner(
   req: Request,
   opts?: { allowQueryToken?: boolean },
 ): Promise<OwnerGuard> {
-  const valid = await hasValidSession(req, opts);
-  if (!valid) {
+  const s = await loadSecurity();
+  if (!s.initialized || !s.secret) {
+    return { ok: false, response: unauthorized() };
+  }
+
+  // ---- পথ ১: হেডার-টোকেন (CSRF-অসম্ভব — Origin-চেকের প্রয়োজন নেই) ----
+  const header = req.headers.get(SESSION_HEADER);
+  const headerToken = header && header.trim() !== '' ? header.trim() : null;
+  if (headerToken && verifySessionToken(headerToken, s.secret)) {
+    return { ok: true };
+  }
+
+  // ---- পথ ২: cookie / (GET-এ) query-টোকেন + Origin-প্রতিরক্ষা ----
+  let token = readCookieToken(req);
+  if (!token && opts?.allowQueryToken && isReadMethod(req.method.toUpperCase())) {
+    try {
+      const st = new URL(req.url).searchParams.get(SESSION_QUERY_PARAM);
+      if (st && st.trim()) token = st.trim();
+    } catch {
+      // req.url অদ্ভুত হলে কোয়েরি-পথ বাদ
+    }
+  }
+  if (!token || !verifySessionToken(token, s.secret)) {
     return { ok: false, response: unauthorized() };
   }
 
@@ -419,12 +458,33 @@ export async function requireOwner(
     if (origin) {
       let originHost: string | null = null;
       try {
-        originHost = new URL(origin).host;
+        originHost = new URL(origin).host.toLowerCase();
       } catch {
         originHost = null;
       }
-      const host = req.headers.get('host');
-      if (!originHost || !host || originHost !== host) {
+      // (প্রিভিউ-প্রক্সি ফিক্স) Origin-হোস্টের তুলনা শুধু Host-হেডারের সাথে
+      // নয় — প্রক্সি-চেইনের মূল হোস্টও ধরা হয়:
+      //  - Host                : সরাসরি (বা হোস্ট-সংরক্ষণকারী প্রক্সির পেছনে)
+      //  - X-Forwarded-Host    : গেটওয়ে/edge মূল হোস্ট পুনর্লিখন করলে
+      //    (কমা-বিভাজিত তালিকা হতে পারে — সবগুলোই মূল চেইনের অংশ)
+      // ব্রাউজার fetch/XHR কখনোই X-Forwarded-Host সেট করতে পারে না
+      // (forbidden header) — তাই CSRF-প্রতিরক্ষা অটুট থাকে।
+      const allowedHosts = new Set<string>();
+      const addCandidate = (raw: string | null) => {
+        if (!raw) return;
+        for (const part of raw.split(',')) {
+          const h = part.trim().toLowerCase();
+          if (!h) continue;
+          allowedHosts.add(h);
+          // ডিফল্ট পোর্ট-প্রত্যয় বাদ দিয়ে রূপটিও রাখো (:443/:80
+          // URL-পার্সিংয়ে বাদ পড়ে — অতএব উভয় রূপ মিলাই)।
+          const stripped = h.replace(/:(443|80)$/, '');
+          if (stripped !== h) allowedHosts.add(stripped);
+        }
+      };
+      addCandidate(req.headers.get('host'));
+      addCandidate(req.headers.get('x-forwarded-host'));
+      if (!originHost || allowedHosts.size === 0 || !allowedHosts.has(originHost)) {
         return {
           ok: false,
           response: NextResponse.json(

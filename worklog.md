@@ -1194,3 +1194,29 @@ Stage Summary:
 - ব্যক্তিগত GLM কী-ইনপুট ব্যবস্থা সম্পূর্ণ সচল (zai-api + glm, মাস্কড, সংযোগ-যাচাই); অ্যাপ-ইস্যু API-key প্রোডাক্ট (amai_sk_, /api/v1, /api/keys, KeysView, gateway) ও কাস্টম-প্ল্যাটফর্ম ফিচার সম্পূর্ণ অপসারিত — প্রায় ২,৮০০+ লাইন ডেড-কোড বাদ
 - ⚠ নোট: db/custom.db আমার db:push-এর আগেই অনুপস্থিত ছিল (sandbox অবস্থা) — ফাইল নতুন করে তৈরি হয়েছে, ফলে আজ-সকালের (যদি থেকে থাকে) টেস্ট-চ্যাট থাকলে সেগুলো ছিল না; security.json (পাসকোড, আজ ০৫:৫৫-এ সেট) সংরক্ষিত
 - Z.ai SDK (glm-4-plus, কীবিহীন) ব্যাকবোন হিসেবে রাখা হয়েছে — এটিও GLM-পরিবার; কী-ভিত্তিক GLM-৫.৩ (api.z.ai) ও BigModel আলাদা কোটা-পথ, এন্ডপয়েন্ট-মিশ্রণ নিষিদ্ধ
+
+---
+Task ID: 13 (chat-403 fix + Base URL + /api/v1 restore)
+Agent: main (Z.ai Code)
+Task: ব্যবহারকারীর রিপোর্ট — চ্যাটে মেসেজ যায় না (GLM কাজ করার কথা); নিজের API কী আছে কিন্তু Base URL বসানোর জায়গা নেই; প্রিভিউ-URL-এর /api/v1 + "দুটায় ব্যবস্থা"
+
+Work Log:
+- রুট-কজ নির্ণয়: dev.log-এ POST /api/chat 403 ×৬ (GET সব 200) → requireOwner-এর Origin≠Host চেক; প্রিভিউ-ডোমেইন (space-z.ai edge→caddy→:3000) চেইনে Host-রিরাইট হয় — একমাত্র এই চেক-ই POST আটকাচ্ছিল (auth/setup-এ Origin-চেক নেই বলে লগইন কাজ করেছিল)
+- security.ts requireOwner দ্বি-স্তরেণী রিফ্যাক্টর: ① হেডার-টোকেন (x-studio-token) পথ = CSRF-অসম্ভব (ক্রস-অরিজিন JS কাস্টম-হেডার+টোকেন-মান জানে না; সার্ভার CORS-অনুমোদন দেয় না) → যাচাই সফল হলেই অনুমোদিত — যে-কোনো প্রক্সি-Host-রিরাইটেও চলে; ② cookie/query-পথে Origin-চেক বহাল, এখন Host + X-Forwarded-Host (কমা-তালিকা, :80/:443-স্ট্রিপড) উভয়ের সাথে মিলে
+- curl-যাচাই (মিন্ট করা ১-ঘণ্টার টোকেন, ইউজারের পাসকোড অস্পৃষ্ট): হেডার+এয়িল-Origin → 200 ✓; কুকি+এয়িল-Origin → 403 ✓; কুকি+মিল-Host → 200 ✓; টোকেনবিহীন → 401 ✓; ভুয়া টোকেন → 401 ✓
+- provider-keys.ts নতুন স্টোরেজ-শেপ {key, baseURL?} (পুরনো string-ফরম্যাট অটো-নরমালাইজ) + getProviderBaseURL/setProviderBaseURL/isValidBaseURLShape; providerKeyStatuses-এ baseURL/defaultBaseURL
+- /api/provider-keys POST এখন {provider, key?, baseURL?} গ্রহণ করে (কী-ছাড়া শুধু-URL আপডেটও; ''/null = ডিফল্টে ফেরানো; খারাপ URL → 400)
+- external-llm.ts: getClient এখন Base URL ওভাররাইড রেজলভ করে (ক্যাশ-কী-তেও); verifyExternalModel-ও ওভাররাইড ব্যবহার করে
+- provider-key-dialog.tsx পুনর্লিখন: "API কী ও Base URL" শিরোনাম; কী-ইনপুটের নিচে Base URL ইনপুট (placeholder=ডিফল্ট, রিসেট-বাটন, "এখন চালু (কাস্টম)" স্ট্যাটাস); দ্বিতীয় অংশে "অ্যাপের নিজস্ব API" — Base URL কপি-বাটন + amai_sk_… কী তৈরি/দেখান/কপি/ঘোরানো/রিভোক
+- মিনিমাল /api/v1 পুনরুদ্ধার (ইউজারের প্রিভিউ-URL অনুরোধ, পুরনো ৭১৬-লাইনের সিস্টেম নয়): src/lib/platform/{platform-key.ts, v1-shared.ts}; GET /api/v1/models (OpenAI-তালিকা: glm-4-plus=SDK কীবিহীন, glm-5.3/5.3-flash, glm-4-flash/air, glm-plus-cn) + POST /api/v1/chat/completions (নন-স্ট্রিম+স্ট্রিম SSE, সৎ রাউটিং — অজানা মডেল 404, কী-নেই 400) + CORS/OPTIONS + রেট-লিমিট; Bearer = প্ল্যাটফর্ম-কী বা মালিক-সেশন
+- /api/platform-key (মালিক-সুরক্ষিত): GET (মাস্কড; ?reveal=1), POST (তৈরি/rotate — raw একবার), DELETE (রিভোক); storage/platform-key.json (0600, git-অগ্রাহ্য)
+- llm.ts chatComplete-এ maxTokens-পাসথ্রু (/api/v1 ক্লায়েন্টের max_tokens → এক্সটার্নাল-পথ)
+- v1 রাউটিং-বাগ ধরা ও ফিক্স: glm-4-plus খালি-নাম BigModel-apiModel-এ গিয়ে কী-ত্রুটি দিচ্ছিল → এখন SDK-ডিফল্ট ('' ক্যাটালগ-আইডি; served মডেলই glm-4-plus); BigModel-নিজ-কোটায় 'glm-plus-cn'
+- E2E (agent-browser, মিন্টেড টোকেন দিয়ে): চ্যাট পাঠানো → স্ট্রিমিং উত্তর + ফিনিশিং-অ্যাকশনবার ✓; দ্বিতীয় বার্তায় এজেন্ট ওয়েব-সার্চ-টুলসহ সম্পূর্ণ রান ✓; কী-ডায়ালগ UI-তে কী+BaseURL সেভ → স্টোরেজ-ফাইলে নিশ্চিত ✓; প্ল্যাটফর্ম-কী দেখান/কপি ✓; /api/v1 curl: models 200, নন-স্ট্রিম "চার" উত্তর, স্ট্রিম SSE চাঙ্ক, 401/404/400 সৎ-ত্রুটি ✓; মোবাইল 390px স্ক্রিনশট ✓; কনসোলে ০ ত্রুটি ✓
+- পরিচ্ছন্নকরণ: টেস্ট-কী ও ৩টি টেস্ট-কথোপকথন মুছে ফেলা; llm-chat-ক্যাশ খালি; security.json অস্পৃষ্ট; প্ল্যাটফর্ম-কী (amai_sk_…) রেখে দেওয়া হয়েছে — ইউজার ডায়ালগ থেকে দেখে/ঘুরিয়ে নিতে পারবেন
+- গুণগত গেট: bun run lint = ০ ত্রুটি; bunx tsc --noEmit = ০ ত্রুটি; dev.log নির্মল
+
+Stage Summary:
+- চ্যাট-403 স্থায়ীভাবে সমাধান: অ্যাপের নিজের fetch-wrapper সবসময় হেডার-টোকেন দেয় → যে-কোনো প্রক্সি-চেইনে POST চলে; cookie-পথের CSRF-প্রতিরক্ষা (Origin+XFH-চেক) অটুট
+- নিজের GLM কী-র পাশাপাশি Base URL বসানোর ব্যবস্থা দুই প্রোভাইডারেই (Z.ai API + BigModel) — ওভাররাইড এন্ড-টু-এন্ড (ডায়ালগ→API→স্টোরেজ→LLM-কলয়ােন্ট)
+- ইউজারের দেওয়া URL এখন সচল: /api/v1 OpenAI-কম্প্যাটিবল (models+chat/completions, স্ট্রিমিংসহ) amai_sk_ কী দিয়ে — বাইরের যে-কোনো OpenAI-ক্লায়েন্টে Base URL হিসেবে ব্যবহারযোগ্য; "দুটায় ব্যবস্থা" (নিজের কী+BaseURL এবং অ্যাপের নিজস্ব API) পূর্ণ
