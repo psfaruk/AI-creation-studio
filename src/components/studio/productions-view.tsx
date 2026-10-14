@@ -53,7 +53,7 @@ import { cn } from '@/lib/utils';
 
 const STATUS_META: Record<ProductionStatus, { label: string; className: string }> = {
   awaiting_confirmation: { label: 'নিশ্চয়তার অপেক্ষায়', className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' },
-  queued: { label: 'সারিতে', className: 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300' },
+  queued: { label: 'সারিতে', className: 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300' },
   running: { label: 'চলছে', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' },
   validating: { label: 'যাচাই হচ্ছে', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' },
   completed: { label: 'সম্পন্ন', className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400' },

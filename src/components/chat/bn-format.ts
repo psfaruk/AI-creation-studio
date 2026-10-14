@@ -70,10 +70,19 @@ export function formatTimeBn(iso: string): string {
   return `${toBnDigits(h12)}:${toBnDigits(mm)} ${ampm}`;
 }
 
-/** রান-স্ট্যাট: "৩টি ধাপ · ২টি টুল · ১২.৪ সেকেন্ড" */
+/** রান-স্ট্যাট: "৩টি ধাপ · ২টি টুল · ১২.৪ সেকেন্ড · প্রথম উত্তর ১.২ সে." */
 export function formatRunStatsBn(stats: RunStats): string {
   const seconds = (stats.durationMs / 1000).toFixed(1);
-  return `${toBnDigits(stats.steps)}টি ধাপ · ${toBnDigits(stats.toolCalls)}টি টুল · ${toBnDigits(seconds)} সেকেন্ড`;
+  const base = `${toBnDigits(stats.steps)}টি ধাপ · ${toBnDigits(stats.toolCalls)}টি টুল · ${toBnDigits(seconds)} সেকেন্ড`;
+  // (অডিট §B3) প্রথম-টোকেন লেটেন্সি — রান-শুরু থেকে উত্তর শুরু হওয়া পর্যন্ত
+  if (
+    typeof stats.firstTokenMs !== 'number' ||
+    !Number.isFinite(stats.firstTokenMs) ||
+    stats.firstTokenMs < 0
+  ) {
+    return base;
+  }
+  return `${base} · প্রথম উত্তর ${toBnDigits((stats.firstTokenMs / 1000).toFixed(1))} সে.`;
 }
 
 /** বাইট সাইজ: "২৪ KB" / "১.২ MB" (০ হলে খালি স্ট্রিং) */

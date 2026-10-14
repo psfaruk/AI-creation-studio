@@ -43,11 +43,15 @@ export function emit(runId: string, event: RunEvent): void {
       }
     }
   }
-  const buf = replayBuffers.get(runId);
-  if (buf) {
-    buf.push(event);
-    if (buf.length > REPLAY_LIMIT) buf.splice(0, buf.length - REPLAY_LIMIT);
+  // (অডিট §C) রিপ্লে-buffer প্রথম emit থেকেই থাকে — সাবস্ক্রাইবার
+  // যুক্ত হওয়ার আগে নির্গত ইভেন্টও পরে যুক্ত-শ্রোতা replay-তে পাবে।
+  let buf = replayBuffers.get(runId);
+  if (!buf) {
+    buf = [];
+    replayBuffers.set(runId, buf);
   }
+  buf.push(event);
+  if (buf.length > REPLAY_LIMIT) buf.splice(0, buf.length - REPLAY_LIMIT);
   if (event.type === 'run_finished') {
     finishedRuns.add(runId);
     // সাবস্ক্রাইবাররা drain করার সুযোগ পায়, তারপর পরিষ্কার করা হয়

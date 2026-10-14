@@ -121,6 +121,8 @@ export async function externalChatComplete(
     /** লাইভ টোকেন-স্ট্রিম (llm.ts chatComplete থেকে আসে) */
     onDelta?: (delta: string) => void;
     onAttemptBegin?: () => void;
+    /** (অডিট §B5) ৪২৯-পুনঃচেষ্টার প্রতিটি অপেক্ষার আগে ডাকা হয় (UI-অপেক্ষা-নোট) */
+    onWait?: (info: { attempt: number; totalAttempts: number; waitMs: number }) => void;
   }
 ): Promise<string> {
   const providerInfo = PROVIDERS[entry.provider];
@@ -138,8 +140,13 @@ export async function externalChatComplete(
   const timeoutMs = opts?.timeoutMs ?? 120_000;
   const client = await getClient(entry.provider, key, timeoutMs);
 
+  // (অডিট §B5) ৪২৯-পুনঃচেষ্টা — সর্বোচ্চ ২ বার, ৩ সে. → ৬ সে. (±২০% জিটার)।
+  // onWait-কলব্যাক দিলে প্রতিটি অপেক্ষার আগে জানানো হয় (UI-নোট)।
+  // নেটওয়ার্ক/৫xx-পথ আগের মতোই: একটি নীরব পুনঃচেষ্টা ১.৫ সে. পরে।
+  const RATE_LIMIT_RETRY_WAITS_MS = [3000, 6000];
+  let rateLimitRetries = 0;
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       opts?.onAttemptBegin?.();
       if (opts?.onDelta) {
@@ -181,7 +188,21 @@ export async function externalChatComplete(
         throw new ExternalFatalError(`${providerInfo.label}: অ্যাকাউন্টে ব্যালান্স শেষ (HTTP 402) — রিচার্জ করুন`);
       }
       if (status === 429) {
-        // সৎ ৪২৯ — orchestrator-এর isRateLimitErrorText যেন ধরতে পারে
+        // (অডিট §B5) সৎ ৪২৯ — এখন পুনঃচেষ্টাযোগ্য: ২ বার অপেক্ষা-সহ;
+        // নঃশেষ হলে ExternalFatalError (orchestrator-এর isRateLimitErrorText ধরে)
+        if (rateLimitRetries < RATE_LIMIT_RETRY_WAITS_MS.length) {
+          const base = RATE_LIMIT_RETRY_WAITS_MS[rateLimitRetries];
+          rateLimitRetries++;
+          // ±২০% জিটার — একসাথে বহু ক্লায়েন্ট না ঘুরে ফিরে আসে
+          const waitMs = Math.round(base * (0.8 + Math.random() * 0.4));
+          opts?.onWait?.({
+            attempt: rateLimitRetries,
+            totalAttempts: RATE_LIMIT_RETRY_WAITS_MS.length,
+            waitMs,
+          });
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
         throw new ExternalFatalError(
           `${providerInfo.label}: রেট-লিমিট (HTTP 429) — কিছুক্ষণ পরে আবার চেষ্টা করুন`
         );
@@ -189,6 +210,13 @@ export async function externalChatComplete(
       if (status === 404 || status === 400) {
         throw new ExternalFatalError(
           `${providerInfo.label}: মডেল-আইডি/অনুরোধ গৃহীত হয়নি (HTTP ${status}) — মডেল-তালিকা বদলেছে হতে পারে; "যাচাই করুন" চালান`
+        );
+      }
+      // (অডিট §B5) বাকি যে-কোনো 4xx-ও fatal — কখনোই পুনঃচেষ্টা হবে না
+      // (অবৈধ কী/অনুরোধ পুনঃপুনঃ পাঠানো অর্থহীন ও কোটা-অপচয়)
+      if (status != null && status >= 400 && status < 500) {
+        throw new ExternalFatalError(
+          `${providerInfo.label}: অনুরোধ গৃহীত হয়নি (HTTP ${status}) — পুনঃচেষ্টাযোগ্য নয়`
         );
       }
       if (status != null && status >= 500) {
@@ -200,7 +228,8 @@ export async function externalChatComplete(
         lastErr = new ExternalRetryableError(`${providerInfo.label}: ${errText.slice(0, 160)}`);
       }
     }
-    if (attempt === 2) break;
+    // নেটওয়ার্ক/৫xx-পথ: একটিই নীরব পুনঃচেষ্টা (আগের আচরণ অপরিবর্তিত)
+    if (attempt >= 2) break;
     await new Promise(r => setTimeout(r, 1500));
   }
   const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);

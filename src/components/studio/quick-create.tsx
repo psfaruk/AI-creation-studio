@@ -3,8 +3,9 @@
 // ============================================================
 // QuickCreateCard (S9) — "⚡ দ্রুত তৈরি"।
 // চ্যাট-LLM ছাড়াই সরাসরি POST /api/productions-এ
-// মিউজিক ভিডিও / শর্ট ফিল্ম / মোশন ভিডিও প্রস্তাব তৈরি —
-// রেট-লিমিটেড (৪২৯) উইন্ডোতেও স্টুডিওর কাজ চালু থাকে।
+// মিউজিক ভিডিও / শর্ট ফিল্ম / মোশন ভিডিও / ইনস্ট্রুমেন্টাল
+// মিউজিক প্রস্তাব তৈরি — রেট-লিমিটেড (৪২৯) উইন্ডোতেও
+// স্টুডিওর কাজ চালু থাকে।
 //
 // সফল হলে: সাফল্য-টোস্ট + তালিকা রিফ্রেশ — নতুন কার্ড
 // awaiting_confirmation অবস্থায় একই ভিউতে বসে এবং
@@ -38,22 +39,41 @@ import type {
   VideoEngine,
 } from '@/lib/types';
 
-type QuickType = 'music_video' | 'short_film' | 'motion_video';
+// (অডিট সম্পূর্ণকরণ) চতুর্থ দ্রুত-তৈরি পথ — অডিও/ইনস্ট্রুমেন্টাল;
+// স্পেকে type:'audio' + audioOperation:'instrumental' হয়
+type QuickType = 'music_video' | 'short_film' | 'motion_video' | 'audio_instrumental';
 
 const TYPE_OPTIONS: { value: QuickType; label: string }[] = [
   { value: 'music_video', label: 'মিউজিক ভিডিও' },
   { value: 'short_film', label: 'শর্ট ফিল্ম' },
   { value: 'motion_video', label: 'মোশন ভিডিও' },
+  { value: 'audio_instrumental', label: 'ইনস্ট্রুমেন্টাল মিউজিক' },
 ];
 
-/** ধরন-ভিত্তিক ডিফল্ট ও সীমা (§১৫ যাচাই-সীমার সাথে সঙ্গত) */
+/** ধরন-ভিত্তিক ডিফল্ট ও সীমা (§১৫ যাচাই-সীমার সাথে সঙ্গত)।
+ *  ইনস্ট্রুমেন্টালে aspect নেই (অডিও) — পাইপলাইনের নিজস্ব
+ *  ৮–১২০ সে. ক্ল্যাম্প অনুযায়ী সীমা। */
 const TYPE_META: Record<
   QuickType,
-  { durationSec: number; aspect: AspectRatio; min: number; max: number; fieldLabel: string }
+  {
+    durationSec: number;
+    aspect?: AspectRatio;
+    min: number;
+    max: number;
+    fieldLabel: string;
+    isAudioInstrumental?: boolean;
+  }
 > = {
   music_video: { durationSec: 40, aspect: '9:16', min: 15, max: 180, fieldLabel: 'আইডিয়া' },
   short_film: { durationSec: 40, aspect: '16:9', min: 30, max: 120, fieldLabel: 'গল্প' },
   motion_video: { durationSec: 12, aspect: '16:9', min: 5, max: 20, fieldLabel: 'আইডিয়া' },
+  audio_instrumental: {
+    durationSec: 30,
+    min: 8,
+    max: 120,
+    fieldLabel: 'আইডিয়া ও মুড',
+    isAudioInstrumental: true,
+  },
 };
 
 const ASPECT_OPTIONS: { value: AspectRatio; label: string }[] = [
@@ -94,7 +114,7 @@ export function QuickCreateCard({ onCreated }: { onCreated: () => void }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [durationSec, setDurationSec] = useState<number>(TYPE_META.music_video.durationSec);
-  const [aspect, setAspect] = useState<AspectRatio>(TYPE_META.music_video.aspect);
+  const [aspect, setAspect] = useState<AspectRatio>(TYPE_META.music_video.aspect ?? '16:9');
   const [quality, setQuality] = useState<QualityPreset>('standard');
   const [videoEngine, setVideoEngine] = useState<VideoEngine>('ai_diffusion');
 
@@ -107,7 +127,7 @@ export function QuickCreateCard({ onCreated }: { onCreated: () => void }) {
   const changeType = (next: QuickType) => {
     setType(next);
     setDurationSec(TYPE_META[next].durationSec);
-    setAspect(TYPE_META[next].aspect);
+    setAspect(TYPE_META[next].aspect ?? '16:9');
     setResult(null);
   };
 
@@ -120,16 +140,27 @@ export function QuickCreateCard({ onCreated }: { onCreated: () => void }) {
     if (!trimmedTitle || !trimmedBody) return; // native required-ও রক্ষা করে
 
     const clampedDuration = Math.min(meta.max, Math.max(meta.min, durationSec || meta.durationSec));
-    const spec: CreativeJobSpec = {
-      type,
-      title: trimmedTitle,
-      quality,
-      aspect,
-      durationSec: clampedDuration,
-      videoEngine,
-      // short_film-এ ফিল্ডের নাম story, বাকিদের idea
-      ...(type === 'short_film' ? { story: trimmedBody } : { idea: trimmedBody }),
-    };
+    const spec: CreativeJobSpec =
+      type === 'audio_instrumental'
+        ? {
+            type: 'audio',
+            audioOperation: 'instrumental',
+            title: trimmedTitle,
+            quality,
+            durationSec: clampedDuration,
+            // পাইপলাইন আইডিয়া/শিরোনাম থেকেই মুড শনাক্ত করে (detectMoodFromText)
+            idea: trimmedBody,
+          }
+        : {
+            type,
+            title: trimmedTitle,
+            quality,
+            aspect,
+            durationSec: clampedDuration,
+            videoEngine,
+            // short_film-এ ফিল্ডের নাম story, বাকিদের idea
+            ...(type === 'short_film' ? { story: trimmedBody } : { idea: trimmedBody }),
+          };
 
     setIsSubmitting(true);
     setResult(null);
@@ -238,7 +269,9 @@ export function QuickCreateCard({ onCreated }: { onCreated: () => void }) {
                 placeholder={
                   type === 'short_film'
                     ? 'সংক্ষিপ্ত গল্প লিখুন — দৃশ্য, চরিত্র ও সমাপ্তি…'
-                    : 'সৃজনশীল ব্রিফ লিখুন — দৃশ্য, আবেগ, ভিজ্যুয়াল স্টাইল…'
+                    : type === 'audio_instrumental'
+                      ? 'মুড ও অনুভূতি লিখুন — যেমন: বিষণ্ণ বর্ষার সন্ধ্যা, ধীর ধীর পিয়ানো…'
+                      : 'সৃজনশীল ব্রিফ লিখুন — দৃশ্য, আবেগ, ভিজ্যুয়াল স্টাইল…'
                 }
                 className="bg-background text-base md:text-sm"
                 aria-label={meta.fieldLabel}
@@ -267,22 +300,24 @@ export function QuickCreateCard({ onCreated }: { onCreated: () => void }) {
               </p>
             </div>
 
-            {/* আনুপাতিক মাধ্যম */}
-            <div className="col-span-1 space-y-1.5">
-              <Label className="text-xs text-muted-foreground">আনুপাতিক মাধ্যম</Label>
-              <Select value={aspect} onValueChange={(v) => setAspect(v as AspectRatio)}>
-                <SelectTrigger className="min-h-11 bg-background text-sm" aria-label="আনুপাতিক মাধ্যম">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ASPECT_OPTIONS.map((a) => (
-                    <SelectItem key={a.value} value={a.value}>
-                      {a.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* আনুপাতিক মাধ্যম — ভিডিও-ধর্মী প্রকারেই (অডিওতে প্রযোজ্য নয়) */}
+            {meta.aspect && (
+              <div className="col-span-1 space-y-1.5">
+                <Label className="text-xs text-muted-foreground">আনুপাতিক মাধ্যম</Label>
+                <Select value={aspect} onValueChange={(v) => setAspect(v as AspectRatio)}>
+                  <SelectTrigger className="min-h-11 bg-background text-sm" aria-label="আনুপাতিক মাধ্যম">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ASPECT_OPTIONS.map((a) => (
+                      <SelectItem key={a.value} value={a.value}>
+                        {a.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             {/* মান */}
             <div className="col-span-2 space-y-1.5 sm:col-span-1">
@@ -301,25 +336,35 @@ export function QuickCreateCard({ onCreated }: { onCreated: () => void }) {
               </Select>
             </div>
 
-            {/* ইঞ্জিন */}
-            <div className="col-span-2 space-y-1.5 sm:col-span-3">
-              <Label className="text-xs text-muted-foreground">ইঞ্জিন</Label>
-              <Select value={videoEngine} onValueChange={(v) => setVideoEngine(v as VideoEngine)}>
-                <SelectTrigger className="min-h-11 bg-background text-sm" aria-label="ইঞ্জিন">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ENGINE_OPTIONS.map((en) => (
-                    <SelectItem key={en.value} value={en.value}>
-                      {en.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                রেট-লিমিটেড সময়ে cinematic_motion দ্রুত ও লোকাল-বান্ধব
-              </p>
-            </div>
+            {/* ইঞ্জিন — ভিডিও-ধর্মী প্রকারে; ইনস্ট্রুমেন্টালে সৎ মাইক্রো-লেবেল */}
+            {meta.isAudioInstrumental ? (
+              <div className="col-span-2 space-y-1.5 sm:col-span-3">
+                <Label className="text-xs text-muted-foreground">মিউজিক-ইঞ্জিন</Label>
+                <p className="flex items-start gap-1.5 rounded-lg border border-stone-400/40 bg-stone-400/10 px-3 py-2 text-xs leading-relaxed text-stone-600 dark:text-stone-300">
+                  <span className="mt-px shrink-0" aria-hidden="true">🎹</span>
+                  প্রসিডিউরাল — নিউরাল মিউজিক-মডেল নয় (মুড-সচেতন স্থানীয় সংশ্লেষণ; গান গাওয়া কণ্ঠ নয়)
+                </p>
+              </div>
+            ) : (
+              <div className="col-span-2 space-y-1.5 sm:col-span-3">
+                <Label className="text-xs text-muted-foreground">ইঞ্জিন</Label>
+                <Select value={videoEngine} onValueChange={(v) => setVideoEngine(v as VideoEngine)}>
+                  <SelectTrigger className="min-h-11 bg-background text-sm" aria-label="ইঞ্জিন">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ENGINE_OPTIONS.map((en) => (
+                      <SelectItem key={en.value} value={en.value}>
+                        {en.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  রেট-লিমিটেড সময়ে cinematic_motion দ্রুত ও লোকাল-বান্ধব
+                </p>
+              </div>
+            )}
           </div>
 
           {/* সৎ সমন্বয়/নোট — সফল তৈরির পরে (S9) */}

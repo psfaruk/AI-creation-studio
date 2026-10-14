@@ -92,6 +92,12 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
       if (!prev) return;
 
       switch (evt.type) {
+        case 'production_queued': {
+          // (অডিট §H) নিশ্চিতকরণের সাথে সাথেই সারি-সংকেত —
+          // কার্যকর-শুরুর আগেই কার্ডকে "সারিতে" দেখায়
+          s.applyView({ ...prev, status: 'queued' });
+          return;
+        }
         case 'provider_status': {
           // §2-B: ক্লাউড ভিডিও-প্রোভাইডারের সৎ স্ট্যাটাস — "ক্লাউড ভিডিও" সারিতে দেখায়
           s.applyView({ ...prev, providerStatus: evt.provider });
@@ -178,34 +184,6 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
       pollTimer = setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
     };
 
-    const attachHandlers = (source: EventSource) => {
-      source.onmessage = e => {
-        if (finished) return;
-        try {
-          applyEvent(JSON.parse(e.data) as ProductionEvent);
-        } catch {
-          // উপেক্ষা
-        }
-      };
-      for (const name of [
-        'production_started',
-        'step_start',
-        'step_end',
-        'production_progress',
-        'production_finished',
-        'provider_status',
-      ]) {
-        source.addEventListener(name, e => {
-          if (finished) return;
-          try {
-            applyEvent(JSON.parse((e as MessageEvent).data) as ProductionEvent);
-          } catch {
-            // উপেক্ষা
-          }
-        });
-      }
-    };
-
     // --- SSE (§2-F: ছিঁড়লে পোলিং-ফলব্যাক + ব্যাকঅফে পুনঃসংযোগ) ---
     const openEs = () => {
       if (stopped || finished) return;
@@ -216,7 +194,15 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
         startPolling();
         return;
       }
-      attachHandlers(es);
+      // সার্ভার শুধু unnamed message পাঠায় — onmessage-ই সব কভার করে
+      es.onmessage = e => {
+        if (finished) return;
+        try {
+          applyEvent(JSON.parse(e.data) as ProductionEvent);
+        } catch {
+          // উপেক্ষা
+        }
+      };
       es.onopen = () => {
         // সংযোগ ফিরেছে — ব্যাকঅফ রিসেট, পোলিং বন্ধ
         retryDelayMs = 2_000;

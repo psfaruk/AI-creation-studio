@@ -5,6 +5,7 @@ import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { validateSpec } from '@/lib/agent/capabilities';
 import { startProduction } from '@/lib/agent/production/runner';
+import { emitProduction } from '@/lib/agent/production/bus';
 import { toProductionView } from '@/lib/agent/production/serialize';
 import { checkRateLimit, checkDailyProductionQuota, RATE_LIMITS } from '@/lib/limits';
 
@@ -75,6 +76,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     data: { status: 'queued', specJson: JSON.stringify(validation.validated.spec) },
     include: { steps: { orderBy: { seq: 'asc' } }, artifacts: { orderBy: { createdAt: 'asc' } } },
   });
+
+  // (অডিট §H) queued-অবস্থা সাথে সাথেই সারি-সংকেত হিসেবে যায় — দ্বিতীয়
+  // ট্যাব/লাইভ SSE-শ্রোতা production_started-এর আগেই এটি দেখে নেয়
+  // (startProduction কার্যকর-শুরুর আগেই নির্গত, রেস-মুক্ত)।
+  emitProduction(id, { type: 'production_queued', productionId: id });
 
   startProduction(id);
   return NextResponse.json(toProductionView(updated, updated.steps, updated.artifacts));

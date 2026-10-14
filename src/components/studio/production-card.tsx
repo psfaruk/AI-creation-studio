@@ -16,6 +16,7 @@ import {
   BadgeCheck,
   Ban,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   Clapperboard,
   Cloud,
@@ -26,12 +27,19 @@ import {
   Music,
   PencilRuler,
   RefreshCcw,
+  Settings2,
   TriangleAlert,
   XCircle,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import {
@@ -66,7 +74,7 @@ import { cn } from '@/lib/utils';
 
 const STATUS_META: Record<ProductionStatus, { label: string; className: string }> = {
   awaiting_confirmation: { label: 'নিশ্চয়তার অপেক্ষায়', className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' },
-  queued: { label: 'সারিতে', className: 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300' },
+  queued: { label: 'সারিতে', className: 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300' },
   running: { label: 'চলছে', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' },
   validating: { label: 'যাচাই হচ্ছে', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' },
   completed: { label: 'সম্পন্ন', className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400' },
@@ -361,6 +369,21 @@ const VOICE_OPTIONS: { id: VoicePreset; label: string; group: string }[] = [
 
 const MOOD_OPTIONS: MusicMood[] = ['sad', 'romantic', 'joyful', 'suspense', 'action', 'peaceful'];
 
+/** (অডিট §D) টেম্পো-অপশন — §১৫ সীমা (৬০–১৭০ BPM) মাথামথিতে কয়েকটি বোধগম্য মান */
+const TEMPO_OPTIONS: number[] = [70, 80, 90, 100, 110, 120, 130, 140, 150];
+
+/** (অডিট §D) ভিজ্যুয়াল-স্টাইল প্রিসেট — কাঁচা মান ব্যাকএন্ড-প্রম্পটে যায়;
+ *  প্রিসেট-বহির্ভূত মান (যেমন LLM-সেট) "কাস্টম" টেক্সট-ইনপুটে সম্ভব */
+const STYLE_PRESETS: { value: string; label: string }[] = [
+  { value: 'cinematic', label: 'সিনেম্যাটিক' },
+  { value: 'natural', label: 'ন্যাচারাল' },
+  { value: 'anime', label: 'অ্যানিমে' },
+  { value: 'fantasy', label: 'ফ্যান্টাসি' },
+  { value: 'retro', label: 'রেট্রো' },
+  { value: 'documentary', label: 'ডকুমেন্টারি' },
+  { value: 'neon-cyberpunk', label: 'নিয়ন-সাইবারপাংক' },
+];
+
 // ------------------------------------------------------------
 // সেটিংস সারাংশ (নিশ্চিতকরণের আগে দেখানো)
 // ------------------------------------------------------------
@@ -389,7 +412,24 @@ function specSummaryText(spec: CreativeJobSpec): string[] {
   }
   if (spec.subtitles) bits.push('সাবটাইটেল: হ্যাঁ');
   if (spec.format) bits.push(`ফরম্যাট: ${IMAGE_FORMAT_LABELS[spec.format]}`);
+  if (spec.resolution) bits.push(`রেজোলিউশন: ${spec.resolution}`);
+  if (spec.genre) bits.push(`জনরা: ${spec.genre}`);
+  if (spec.style) bits.push(`স্টাইল: ${spec.style}`);
   return bits;
+}
+
+/**
+ * (অডিট §A3) ব্যর্থ প্রোডাকশনের অতিবাহিত-সময় —
+ * startedAt ও finishedAt দুটোই থাকলেই দেখানো যায় ("৩ মি. ২০ সে.")
+ */
+function elapsedTextBn(startedAt?: string, finishedAt?: string): string {
+  if (!startedAt || !finishedAt) return '';
+  const startMs = new Date(startedAt).getTime();
+  const endMs = new Date(finishedAt).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return '';
+  const totalSec = Math.round((endMs - startMs) / 1000);
+  if (totalSec < 60) return `${toBnDigits(totalSec)} সে.`;
+  return `${toBnDigits(Math.floor(totalSec / 60))} মি. ${toBnDigits(totalSec % 60)} সে.`;
 }
 
 // ------------------------------------------------------------
@@ -403,6 +443,12 @@ function SpecEditor({
   spec: CreativeJobSpec;
   onChange: (next: CreativeJobSpec) => void;
 }) {
+  // (অডিট §D) "উন্নত সেটিংস" কোলাপ্সিবল — কম-ব্যবহৃত ফিল্ডগুলো ভাঁজ-করা;
+  // মূল ফর্মে থাকে: মান/ভাষা/ইঞ্জিন/ফিল্ম-মোড/মুড/অনুপাত/দৈর্ঘ্য/কণ্ঠ
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  /** স্টাইল-ড্রপডাউনে "কাস্টম" নির্বাচিত — খোলা টেক্সট-ইনপুট দেখায় */
+  const [customStyleMode, setCustomStyleMode] = useState(false);
+
   const isVideo = isVideoType(spec.type);
   const patch = (p: Partial<CreativeJobSpec>) => onChange({ ...spec, ...p });
 
@@ -413,12 +459,44 @@ function SpecEditor({
     spec.type === 'music_video' ||
     (spec.type === 'audio' && spec.audioOperation === 'instrumental');
 
+  // --- কম-ব্যবহৃত ফিল্ডের দৃশ্যমানতা (উন্নত সেকশনে) ---
+  const showsResolution = isVideo;
+  const showsTempo =
+    spec.type === 'music_video' ||
+    (spec.type === 'audio' && spec.audioOperation === 'instrumental');
+  const showsGenre = spec.type === 'music_video' || spec.type === 'audio';
+  const showsStyle = isVideo || spec.type === 'image';
+
   // দৈর্ঘ্যের অপশন — বর্তমান মান তালিকায় না থাকলেও দেখাও (রিসেট/পুরোনো স্পেকের জন্য)
   const durationBase = DURATION_OPTIONS[spec.type] ?? [];
   const durationOptions =
     spec.durationSec !== undefined && !durationBase.includes(spec.durationSec)
       ? [...durationBase, spec.durationSec].sort((a, b) => a - b)
       : durationBase;
+
+  // টেম্পো-অপশন — একইভাবে পুরোনো/অ-তালিকা মানও দেখাও
+  const tempoOptions =
+    spec.tempoBpm !== undefined && !TEMPO_OPTIONS.includes(spec.tempoBpm)
+      ? [...TEMPO_OPTIONS, spec.tempoBpm].sort((a, b) => a - b)
+      : TEMPO_OPTIONS;
+
+  // স্টাইল — প্রিসেট-বহির্ভূত বর্তমান মান (যেমন LLM-সেট) ড্রপডাউনেই দেখাও
+  const currentStyle = (spec.style ?? '').trim();
+  const styleIsPreset = STYLE_PRESETS.some(p => p.value === currentStyle);
+  const showStyleInput = customStyleMode || (currentStyle !== '' && !styleIsPreset);
+
+  // ভাঁজ-করা সেকশনে কয়টি ফিল্ড অ-ডিফল্ট মানে নির্ধারিত —
+  // ট্রিগারে ব্যাজ, যাতে লুকানো সেটিংস অনাবিষ্কৃত না থাকে
+  const advancedSetCount = [
+    isVideo && spec.fps != null,
+    showsResolution && spec.resolution != null,
+    showsTempo && spec.tempoBpm != null,
+    showsGenre && (spec.genre ?? '').trim() !== '',
+    showsStyle && currentStyle !== '',
+    spec.type === 'image' && spec.format != null,
+    spec.type === 'image' && (spec.overlayText ?? '').trim() !== '',
+    spec.type === 'short_film' && spec.subtitles === false,
+  ].filter(Boolean).length;
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -496,7 +574,7 @@ function SpecEditor({
         <div className="col-span-1 space-y-1.5">
           <Label className="text-xs text-muted-foreground">মুড</Label>
           <Select
-            value={spec.mood && MOOD_LABELS[spec.mood as MusicMood] ? (spec.mood as MusicMood) : undefined}
+            value={spec.mood && MOOD_LABELS[spec.mood as MusicMood] ? (spec.mood as MusicMood) : ''}
             onValueChange={v => patch({ mood: v as MusicMood })}
           >
             <SelectTrigger className="h-9 bg-background text-sm" aria-label="মুড">
@@ -524,38 +602,6 @@ function SpecEditor({
               <SelectItem value="1:1">১:১ — স্কয়ার</SelectItem>
               <SelectItem value="4:5">৪:৫ — পোর্ট্রেট</SelectItem>
               <SelectItem value="3:2">৩:২</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-
-      {spec.type === 'image' && spec.format !== undefined && (
-        <div className="col-span-1 space-y-1.5">
-          <Label className="text-xs text-muted-foreground">ফরম্যাট</Label>
-          <Select value={spec.format} onValueChange={v => patch({ format: v as CreativeJobSpec['format'] })}>
-            <SelectTrigger className="h-9 bg-background text-sm" aria-label="ফরম্যাট">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="png">PNG</SelectItem>
-              <SelectItem value="jpeg">JPEG</SelectItem>
-              <SelectItem value="webp">WebP</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-
-      {isVideo && (
-        <div className="col-span-1 space-y-1.5">
-          <Label className="text-xs text-muted-foreground">ফ্রেম-রেট</Label>
-          <Select value={String(spec.fps ?? 30)} onValueChange={v => patch({ fps: Number(v) as 24 | 25 | 30 })}>
-            <SelectTrigger className="h-9 bg-background text-sm" aria-label="ফ্রেম-রেট">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="24">২৪ — সিনেম্যাটিক</SelectItem>
-              <SelectItem value="25">২৫</SelectItem>
-              <SelectItem value="30">৩০ — সোশ্যাল</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -606,32 +652,204 @@ function SpecEditor({
         </div>
       )}
 
-      {spec.type === 'short_film' && (
-        <div className="col-span-2 flex min-h-14 items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 sm:col-span-1">
-          <Label htmlFor="spec-subtitles" className="text-xs leading-snug text-muted-foreground">
-            সাবটাইটেল বার্ন-ইন
-          </Label>
-          <Switch
-            id="spec-subtitles"
-            checked={spec.subtitles ?? true}
-            onCheckedChange={checked => patch({ subtitles: checked })}
-            className="data-[state=checked]:bg-emerald-600"
+      {/* (অডিট §D) ⚙ উন্নত সেটিংস — কম-ব্যবহৃত নিয়ন্ত্রণ ভাঁজ-করা; ভিতরে
+          কোনো ফিল্ড নির্ধারিত থাকলে ট্রিগারে ব্যাজে সংখ্যা দেখায় */}
+      <Collapsible
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        className="col-span-2 sm:col-span-3"
+      >
+        <CollapsibleTrigger
+          className={cn(
+            'flex w-full items-center gap-2 rounded-lg border bg-background px-3 py-2.5 text-xs font-medium text-muted-foreground transition-colors',
+            'hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600/40',
+          )}
+          aria-label={`উন্নত সেটিংস ${advancedOpen ? 'লুকান' : 'দেখান'}`}
+        >
+          <Settings2 className="size-3.5 shrink-0" aria-hidden="true" />
+          উন্নত সেটিংস
+          {advancedSetCount > 0 && (
+            <Badge
+              variant="secondary"
+              className="h-auto border-emerald-600/30 bg-emerald-600/10 px-1.5 py-0 text-[10px] leading-snug text-emerald-700 dark:text-emerald-400"
+            >
+              {toBnDigits(advancedSetCount)}টি নির্ধারিত
+            </Badge>
+          )}
+          <ChevronDown
+            className={cn(
+              'ml-auto size-3.5 shrink-0 transition-transform duration-200',
+              advancedOpen && 'rotate-180',
+            )}
+            aria-hidden="true"
           />
-        </div>
-      )}
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="grid grid-cols-2 gap-3 pt-3 sm:grid-cols-3">
+            {isVideo && (
+              <div className="col-span-1 space-y-1.5">
+                <Label className="text-xs text-muted-foreground">ফ্রেম-রেট</Label>
+                <Select value={String(spec.fps ?? 30)} onValueChange={v => patch({ fps: Number(v) as 24 | 25 | 30 })}>
+                  <SelectTrigger className="h-9 bg-background text-sm" aria-label="ফ্রেম-রেট">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="24">২৪ — সিনেম্যাটিক</SelectItem>
+                    <SelectItem value="25">২৫</SelectItem>
+                    <SelectItem value="30">৩০ — সোশ্যাল</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-      {spec.type === 'image' && spec.overlayText !== undefined && (
-        <div className="col-span-2 space-y-1.5 sm:col-span-3">
-          <Label className="text-xs text-muted-foreground">লেখা (টাইপোগ্রাফি)</Label>
-          <Textarea
-            value={spec.overlayText ?? ''}
-            onChange={e => patch({ overlayText: e.target.value })}
-            rows={2}
-            className="bg-background text-sm"
-            aria-label="লেখা"
-          />
-        </div>
-      )}
+            {showsResolution && (
+              <div className="col-span-1 space-y-1.5">
+                <Label className="text-xs text-muted-foreground">রেজোলিউশন</Label>
+                <Select
+                  value={spec.resolution ?? ''}
+                  onValueChange={v => patch({ resolution: v as CreativeJobSpec['resolution'] })}
+                >
+                  <SelectTrigger className="h-9 bg-background text-sm" aria-label="রেজোলিউশন">
+                    <SelectValue placeholder="স্বয়ংক্রিয়" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="720p">720p (দ্রুত)</SelectItem>
+                    <SelectItem value="1080p">1080p (উচ্চ মান)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  না বাছলে মান অনুযায়ী স্বয়ংক্রিয় (draft→720p, নইলে 1080p)
+                </p>
+              </div>
+            )}
+
+            {showsTempo && (
+              <div className="col-span-1 space-y-1.5">
+                <Label className="text-xs text-muted-foreground">টেম্পো (BPM)</Label>
+                <Select
+                  value={spec.tempoBpm !== undefined ? String(spec.tempoBpm) : ''}
+                  onValueChange={v => patch({ tempoBpm: Number(v) })}
+                >
+                  <SelectTrigger className="h-9 bg-background text-sm" aria-label="টেম্পো (BPM)">
+                    <SelectValue placeholder="মুড অনুযায়ী" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tempoOptions.map(bpm => (
+                      <SelectItem key={bpm} value={String(bpm)}>
+                        {toBnDigits(bpm)} BPM
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  মিনিটে বিট (BPM) — না বাছলে মুড অনুযায়ী
+                </p>
+              </div>
+            )}
+
+            {showsGenre && (
+              <div className="col-span-1 space-y-1.5">
+                <Label htmlFor="spec-genre" className="text-xs text-muted-foreground">
+                  জনরা (ধরন)
+                </Label>
+                <Input
+                  id="spec-genre"
+                  value={spec.genre ?? ''}
+                  onChange={e => patch({ genre: e.target.value })}
+                  maxLength={60}
+                  placeholder="যেমন: modern, folk, cinematic"
+                  className="h-9 bg-background text-sm"
+                />
+              </div>
+            )}
+
+            {showsStyle && (
+              <div className="col-span-2 space-y-1.5 sm:col-span-1">
+                <Label className="text-xs text-muted-foreground">স্টাইল</Label>
+                <Select
+                  value={currentStyle !== '' ? currentStyle : customStyleMode ? '__custom__' : ''}
+                  onValueChange={v => {
+                    if (v === '__custom__') {
+                      setCustomStyleMode(true);
+                      return;
+                    }
+                    setCustomStyleMode(false);
+                    patch({ style: v });
+                  }}
+                >
+                  <SelectTrigger className="h-9 bg-background text-sm" aria-label="স্টাইল">
+                    <SelectValue placeholder="স্বয়ংক্রিয়" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STYLE_PRESETS.map(p => (
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                    ))}
+                    {currentStyle !== '' && !styleIsPreset && (
+                      <SelectItem value={currentStyle}>{currentStyle}</SelectItem>
+                    )}
+                    <SelectItem value="__custom__">কাস্টম</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showStyleInput && (
+                  <Input
+                    value={spec.style ?? ''}
+                    onChange={e =>
+                      patch({ style: e.target.value.trim() === '' ? undefined : e.target.value })
+                    }
+                    maxLength={60}
+                    placeholder="নিজের স্টাইল লিখুন"
+                    className="h-9 bg-background text-sm"
+                    aria-label="স্টাইল (কাস্টম)"
+                  />
+                )}
+              </div>
+            )}
+
+            {spec.type === 'image' && spec.format !== undefined && (
+              <div className="col-span-1 space-y-1.5">
+                <Label className="text-xs text-muted-foreground">ফরম্যাট</Label>
+                <Select value={spec.format} onValueChange={v => patch({ format: v as CreativeJobSpec['format'] })}>
+                  <SelectTrigger className="h-9 bg-background text-sm" aria-label="ফরম্যাট">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="png">PNG</SelectItem>
+                    <SelectItem value="jpeg">JPEG</SelectItem>
+                    <SelectItem value="webp">WebP</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {spec.type === 'short_film' && (
+              <div className="col-span-2 flex min-h-14 items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 sm:col-span-1">
+                <Label htmlFor="spec-subtitles" className="text-xs leading-snug text-muted-foreground">
+                  সাবটাইটেল বার্ন-ইন
+                </Label>
+                <Switch
+                  id="spec-subtitles"
+                  checked={spec.subtitles ?? true}
+                  onCheckedChange={checked => patch({ subtitles: checked })}
+                  className="data-[state=checked]:bg-emerald-600"
+                />
+              </div>
+            )}
+
+            {spec.type === 'image' && spec.overlayText !== undefined && (
+              <div className="col-span-2 space-y-1.5 sm:col-span-3">
+                <Label className="text-xs text-muted-foreground">লেখা (টাইপোগ্রাফি)</Label>
+                <Textarea
+                  value={spec.overlayText ?? ''}
+                  onChange={e => patch({ overlayText: e.target.value })}
+                  rows={2}
+                  className="bg-background text-sm"
+                  aria-label="লেখা"
+                />
+              </div>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }
@@ -667,8 +885,13 @@ function StepList({ view }: { view: ProductionView }) {
             {step.detail && <span className="block text-xs text-muted-foreground">{step.detail}</span>}
             {step.error && <span className="block text-xs text-red-500">{step.error}</span>}
           </span>
-          {step.status === 'done' && step.durationMs != null && step.durationMs > 0 && (
-            <span className="mt-0.5 shrink-0 text-[11px] tabular-nums text-muted-foreground/80">
+          {(step.status === 'done' || step.status === 'failed') && step.durationMs != null && step.durationMs > 0 && (
+            <span
+              className={cn(
+                'mt-0.5 shrink-0 text-[11px] tabular-nums text-muted-foreground/80',
+                step.status === 'failed' && 'text-red-600/80 dark:text-red-400/80',
+              )}
+            >
               {toBnDigits((step.durationMs / 1000).toFixed(1))} সেকেন্ড
             </span>
           )}
@@ -730,6 +953,9 @@ export function ProductionCard({ productionId }: { productionId: string }) {
   }
 
   const spec = editedSpec ?? view.spec;
+  // (অডিট §A3) ব্যর্থ হলে কত সময় লেগেছিল — startedAt+finishedAt দুটোই থাকলে
+  const failedElapsedText =
+    view.status === 'failed' ? elapsedTextBn(view.startedAt, view.finishedAt) : '';
 
   const handleConfirm = async () => {
     setIsConfirming(true);
@@ -889,11 +1115,21 @@ export function ProductionCard({ productionId }: { productionId: string }) {
                 বাতিল করা হয়েছে — কোনো চূড়ান্ত ফাইল তৈরির নিশ্চয়তা নেই। চাইলে নিচের “🔁 আবার চালান” দিয়ে নতুন প্রস্তাব তৈরি করুন।
               </p>
             )}
-            {view.status === 'failed' && view.error && (
-              <p className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                {view.error}
-              </p>
+            {view.status === 'failed' && (view.error || failedElapsedText) && (
+              <div className="space-y-1 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                {view.error && (
+                  <p className="flex items-start gap-2">
+                    <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                    {view.error}
+                  </p>
+                )}
+                {failedElapsedText && (
+                  <p className="flex items-start gap-2">
+                    <span className="mt-px shrink-0 leading-none" aria-hidden="true">⏱</span>
+                    সময় লেগেছে: {failedElapsedText}
+                  </p>
+                )}
+              </div>
             )}
             {/* §2-C: আউটপুটের সৎ ইঞ্জিন-ব্যাজ (AI ভিডিও / স্টোরিবোর্ড-ফলব্যাক /
                 লোকাল প্রসিডিউরাল) — কী দিয়ে তৈরি হলো সেটাই বলে */}

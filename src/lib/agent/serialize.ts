@@ -70,6 +70,8 @@ export function toRunStats(run: AgentRun): RunStats {
     steps: run.stepCount,
     toolCalls: run.toolCallCount,
     durationMs: run.durationMs ?? 0,
+    // (অডিট §B3) প্রথম-টোকেন লেটেন্সি — শুধু রেকর্ড হলে যায় (স্ট্রিম না হলে বাদ)
+    ...(run.firstTokenMs != null ? { firstTokenMs: run.firstTokenMs } : {}),
   };
 }
 

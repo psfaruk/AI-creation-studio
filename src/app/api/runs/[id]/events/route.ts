@@ -161,6 +161,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
                 title: cat?.title ?? tc.tool,
                 icon: cat?.icon ?? 'Wrench',
                 input: tc.inputSummary,
+                // (অডিট §C) DB-রিপ্লেতেও শুরুর সময় — লাইভ ও রিপ্লে পথ একই চুক্তি
+                startedAt: tc.createdAt.toISOString(),
               });
             }
             if (!sentToolEnd.has(tc.id) && tc.status !== 'running') {

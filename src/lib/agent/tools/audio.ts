@@ -9,7 +9,7 @@
 // ============================================================
 
 import path from 'path';
-import { readFile } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import type { ToolSpec } from '../registry-helpers';
@@ -563,14 +563,55 @@ const generateInstrumentalSpec: ToolSpec<{
         honestLabel: result.meta.honestLabel,
       },
     });
+
+    // (অডিট-গ্রহণযোগ্যতা-পরীক্ষা ১) শুধু WAV নয় — MP3 সংস্করণও নিবন্ধন।
+    // প্রোডাকশন-পাইপলাইনের মতোই ১৯২k libmp3lame; ব্যর্থ হলে WAV অক্ষত থাকে
+    // (সৎ নোটসহ) — মিউজিক তৈরি ব্যর্থ নয়।
+    const artifacts = [meta];
+    let mp3Note = '';
+    const workDir = await makeTempDir('instrumental-');
+    try {
+      const wavPath = path.join(workDir, 'src.wav');
+      const mp3Path = path.join(workDir, 'out.mp3');
+      await writeFile(wavPath, result.buffer);
+      await runFfmpeg(['-i', wavPath, '-c:a', 'libmp3lame', '-b:a', '192k', mp3Path], {
+        label: 'MP3 এনকোড',
+        timeoutMs: 120_000,
+      });
+      const mp3Buffer = await readFile(mp3Path);
+      const { storagePath: mp3Storage } = await saveArtifactFile(mp3Buffer, 'mp3');
+      const mp3Meta = await createToolArtifact({
+        conversationId: ctx.conversationId,
+        runId: ctx.runId,
+        kind: 'audio',
+        mimeType: 'audio/mpeg',
+        fileName: `instrumental-${input.mood}-${result.meta.tempoBpm}bpm.mp3`,
+        size: mp3Buffer.length,
+        storagePath: mp3Storage,
+        metaJson: {
+          ...result.meta,
+          encodedFrom: 'wav',
+          bitrate: '192k',
+          honestLabel: result.meta.honestLabel,
+        },
+      });
+      artifacts.push(mp3Meta);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      mp3Note = `; MP3 সংস্করণ তৈরি হয়নি (${why.slice(0, 120)}) — WAV অক্ষত`;
+    } finally {
+      await cleanupWorkingDir(workDir).catch(() => undefined);
+    }
+
     return {
-      summary: `${moodLabel(input.mood)} মুডের ইনস্ট্রুমেন্টাল তৈরি (${toBn(result.meta.durationSec)} সে., ${toBn(result.meta.tempoBpm)} BPM, ${result.meta.keyLabel}) — ${result.meta.honestLabel}${validation.ok ? '' : `; যাচাই-সতর্কতা: ${validation.issues.join(', ')}`}`,
+      summary: `${moodLabel(input.mood)} মুডের ইনস্ট্রুমেন্টাল তৈরি (${toBn(result.meta.durationSec)} সে., ${toBn(result.meta.tempoBpm)} BPM, ${result.meta.keyLabel}; WAV${artifacts.length > 1 ? ' + MP3' : ''}) — ${result.meta.honestLabel}${validation.ok ? '' : `; যাচাই-সতর্কতা: ${validation.issues.join(', ')}`}${mp3Note}`,
       resultJson: JSON.stringify({
         artifactId: meta.id,
+        ...(artifacts.length > 1 ? { mp3ArtifactId: artifacts[1].id } : {}),
         ...result.meta,
         validation,
       }).slice(0, 4000),
-      artifacts: [meta],
+      artifacts,
     };
   },
 };

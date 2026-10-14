@@ -27,6 +27,9 @@ import type { CreativeJobSpec } from '@/lib/types';
 const MAX_STEPS = 12;
 const HISTORY_LIMIT = 20;
 const STALE_RUN_MS = 10 * 60 * 1000; // ১০ মিনিট
+/** (অডিট §E) এজেন্ট-লুপের সর্বোচ্চ সময়সীমা — এর পরে বাধ্যতামূলক সৎ মোড়ক
+ *  (stale-sweep-এর ১০ মিনিটের সাথেই সামঞ্জস্যপূর্ণ, যাতে রান স্রীয় সত্য থাকে) */
+const MAX_RUN_ELAPSED_MS = 10 * 60_000;
 
 function logStep(runId: string, step: number, tool: string, status: string, ms: number): void {
   console.log(`[agent] run=${runId.slice(-6)} step=${step} tool=${tool} status=${status} ms=${ms}`);
@@ -44,6 +47,63 @@ function safeJson(value: unknown): string {
 function bnNum(n: number | string): string {
   const digits = '০১২৩৪৫৬৭৮৯';
   return String(n).replace(/\d/g, d => digits[Number(d)]);
+}
+
+/** [০-৯] বাংলা-সংখ্যা → ASCII সংখ্যা (অডিট §B4 — দৈর্ঘ্য-পার্সারের সহায়ক) */
+function toEnglishDigits(s: string): string {
+  return s.replace(/[০-৯]/g, d => String('০১২৩৪৫৬৭৮৯'.indexOf(d)));
+}
+
+/**
+ * (অডিট §B4) বার্তা থেকে সেকেন্ড-দৈর্ঘ্য — বাংলা ও ASCII সংখ্যা দুটোই
+ * (যেমন "৩০ সেকেন্ড" / "30 sec")। অডিও-সীমায় (৫–৩০০) বাঁধা।
+ */
+function parseSecsFromMessage(message: string): number | undefined {
+  const m = /([0-9০-৯]+)\s*(?:সেকেন্ড|সে\.?|sec|seconds?)/i.exec(message);
+  if (!m) return undefined;
+  const n = Number(toEnglishDigits(m[1]));
+  if (!Number.isFinite(n)) return undefined;
+  return Math.max(5, Math.min(300, Math.round(n)));
+}
+
+/**
+ * (অডিট §E) কী-সাজানো স্থিতিশীল stringify — বস্তু-কাঠামো যে-ক্রমে সাজানো
+ * থাকুক, একই স্বাক্ষর দেয় (টুল-কল পুনরাবৃত্তি-শনাক্তকরণের ভিত্তি)।
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`);
+    return `{${entries.join(',')}}`;
+  }
+  try {
+    return JSON.stringify(value) ?? 'null';
+  } catch {
+    // বৃত্তীয়-রেফারেন্স — প্রায়-অসম্ভব প্রান্ত; স্থির চিহ্নই যথেষ্ট
+    return '"<unserializable>"';
+  }
+}
+
+/**
+ * (অডিট §B) প্রথম-টোকেন লেটেন্সি-রেকর্ডার — রান-স্কোপড, সর্বোচ্চ একবার:
+ * প্রথম দৃশ্যমান LLM-আউটপুট (টেক্সট-ডেল্টা) বা প্রথম সফল LLM-উত্তরের
+ * মুহূর্তে Date.now() − run.startedAt হিসে করে AgentRun.firstTokenMs লেখে।
+ * পরের ধাপগুলোতে আর নয় — শুধু রানের প্রথম আউটপুট।
+ */
+function makeFirstTokenRecorder(runId: string, startedAt: Date): () => void {
+  let recorded = false;
+  return () => {
+    if (recorded) return;
+    recorded = true;
+    const firstTokenMs = Math.round(Date.now() - startedAt.getTime());
+    if (!Number.isFinite(firstTokenMs) || firstTokenMs < 0) return;
+    db.agentRun
+      .update({ where: { id: runId }, data: { firstTokenMs } })
+      .catch(() => undefined);
+  };
 }
 
 // ------------------------------------------------------------
@@ -162,6 +222,15 @@ function looksLikeFencedToolCall(text: string): boolean {
   return /"tool"\s*:/.test(head) || /"arguments"\s*:/.test(head);
 }
 
+/**
+ * (অডিট §E) প্রোটোকল-প্রতিধ্বনি — মডেল মাঝে মাঝে [TOOL_RESULT]-
+ * ফরম্যাটের বার্তা নিজে লিখে ফেলে (সরঞ্জাম-ফলাফলের নকল/বানানো)।
+ * সেটি ব্যবহারকারীর উত্তর নয় — চূড়ান্ত উত্তর হিসেবে গ্রহণযোগ্য নয়।
+ */
+function isToolResultEcho(text: string): boolean {
+  return /^\s*\[TOOL_RESULT\]/i.test(text);
+}
+
 // ------------------------------------------------------------
 // লাইভ টোকেন-স্ট্রিমার — স্মুথ স্ট্রিমিংয়ের হৃদয়।
 //
@@ -187,7 +256,11 @@ const DELTA_FLUSH_MS = 40;
 /** সিদ্ধান্ত-জানালা — এর বেশি অক্ষর/নতুন-লাইন পেরিলে টেক্সট-মোডে যাও */
 const DECIDE_MAX_CHARS = 240;
 
-function createDeltaStreamer(runId: string): DeltaStreamer {
+/**
+ * @param onFirstVisibleOutput (অডিট §B) প্রথম দৃশ্যমান টেক্সট-ডেল্টা নির্গত
+ * হওয়ার মুহূর্তে একবার ডাকা হয় — firstTokenMs-র সূক্ষ্মতম মাপ।
+ */
+function createDeltaStreamer(runId: string, onFirstVisibleOutput?: () => void): DeltaStreamer {
   let mode: 'deciding' | 'text' | 'suppressed' = 'deciding';
   let pending = '';
   let emitted = false;
@@ -207,6 +280,8 @@ function createDeltaStreamer(runId: string): DeltaStreamer {
     pending = '';
     emitted = true;
     emit(runId, { type: 'text_delta', runId, delta: out });
+    // (অডিট §B) প্রথম দৃশ্যমান LLM-আউটপুটের মুহূর্ত — firstTokenMs-র ভিত্তি
+    onFirstVisibleOutput?.();
   };
 
   const evaluate = () => {
@@ -214,6 +289,13 @@ function createDeltaStreamer(runId: string): DeltaStreamer {
     if (lead.length === 0) return; // এখনো শুধু হোয়াইটস্পেস
     const head = lead[0];
     if (head !== '{' && head !== '`') {
+      // (অডিট §E) [TOOL_RESULT]-প্রতিধ্বনি — প্রোটোকল-টেক্সট কখনো স্ট্রিম হয় না
+      if (isToolResultEcho(lead)) {
+        mode = 'suppressed';
+        pending = '';
+        clearTimer();
+        return;
+      }
       mode = 'text';
       return;
     }
@@ -318,6 +400,18 @@ async function chatCompleteWithNotes(
     ...(callOpts.streamer
       ? { onDelta: callOpts.streamer.onDelta, onAttemptBegin: callOpts.streamer.onAttemptBegin }
       : {}),
+    // (অডিট §B5) এক্সটার্নাল-প্রোভাইডারের ৪২৯-পুনঃচেষ্টার দৃশ্যমান অপেক্ষা-নোট
+    onExternalWait: info => {
+      const sec = Math.max(1, Math.round(info.waitMs / 1000));
+      emit(runId, {
+        type: 'run_note',
+        runId,
+        level: 'waiting',
+        note:
+          `প্রোভাইডার রেট-লিমিটেড (৪২৯) — ${bnNum(sec)} সেকেন্ড পরে আবার চেষ্টা করা হচ্ছে ` +
+          `(চেষ্টা ${bnNum(info.attempt)}/${bnNum(info.totalAttempts)})…`,
+      });
+    },
     onRateLimitWait: info => {
       const sec = Math.max(1, Math.round(info.delayMs / 1000));
       emit(runId, {
@@ -350,13 +444,15 @@ async function chatCompleteWithNotes(
   return { text, meta };
 }
 
-/** ইন্টেন্ট-ফলব্যাকের চেনা কাজের ধরন */
-type FallbackIntentType = 'music_video' | 'short_film' | 'motion_video';
+/** ইন্টেন্ট-ফলব্যাকের চেনা কাজের ধরন (অডিট §B4+§A: অডিও ও ছবিও চেনা যায়) */
+type FallbackIntentType = 'music_video' | 'short_film' | 'motion_video' | 'audio' | 'image';
 
 interface FallbackIntent {
   type: FallbackIntentType;
   title: string;
   spec: CreativeJobSpec;
+  /** অডিও-ইন্টেন্টে: গাওয়া-গানের অনুরোধ কি না — সৎ-প্রকাশনার ভিত্তি (অডিট §A) */
+  sungSong?: boolean;
 }
 
 /** ব্যবহারকারীর বার্তা থেকে শিরোনাম-সদৃশ ছোট অংশ */
@@ -398,6 +494,67 @@ export function detectProductionIntent(message: string): FallbackIntent | null {
         quality: 'standard',
         videoEngine: engine,
         musicSource: 'procedural',
+      } as CreativeJobSpec,
+    };
+  }
+  // (অডিট §B4) ছবি — পোস্টার/ইলাস্ট্রেশন/লোগো/আঁকা। লক্ষ্য: "ছবি বানাও"
+  // এখানে নয় (এটি নিচে শর্ট-ফিল্মের চেনা প্যাটার্ন), শুধু আঁকা/পোস্টার-জাতীয়।
+  if (
+    /পোস্টার|poster|ইলাস্ট্রেশন|illustration|লোগো|logo|ছবি\s*আঁকো|draw|image\s*(make|create|generate|banao)/i.test(
+      msg
+    )
+  ) {
+    return {
+      type: 'image',
+      title: titleFromMessage(msg, 'ছবি'),
+      spec: {
+        type: 'image',
+        title: titleFromMessage(msg, 'ছবি'),
+        instructions: msg.slice(0, 2000),
+        quality: 'standard',
+      } as CreativeJobSpec,
+    };
+  }
+  // (অডিট §B4) ইন্সট্রুমেন্টাল অডিও — সুর/বিট/ব্যাকগ্রাউন্ড-মিউজিক/lo-fi
+  // (গাওয়ার উল্লেখ নেই — সেটি পরের শাখায় সৎ-প্রকাশনাসহ)
+  if (
+    /ইনস্ট্রু?মেন্টাল|instrumental|শুধু?\s*সুর|সুর\s*(বানাও|তৈরি)|বিট\s*বানাও|beat\s*(make|create)|ব্যাকগ্রাউন্ড\s*মিউজিক|background\s*music|lo-?fi/i.test(
+      msg
+    )
+  ) {
+    const durationSec = parseSecsFromMessage(msg) ?? 30;
+    return {
+      type: 'audio',
+      sungSong: false,
+      title: titleFromMessage(msg, 'ইন্সট্রুমেন্টাল অডিও'),
+      spec: {
+        type: 'audio',
+        audioOperation: 'instrumental',
+        title: titleFromMessage(msg, 'ইন্সট্রুমেন্টাল অডিও'),
+        text: msg.slice(0, 2000),
+        durationSec,
+        quality: 'standard',
+      } as CreativeJobSpec,
+    };
+  }
+  // (অডিট §A) গাওয়া-গানের অনুরোধ — সৎ পথ: গাওয়ার মডেল নেই, ভুয়া গান নয়;
+  // সৎভাবে-লেবেল-করা ইন্সট্রুমেন্টাল প্রস্তাব + স্পষ্ট প্রকাশনা (tryIntentFallback)
+  if (
+    /গাওয়া|ভোকাল|গলায়|singing|vocal|sung/i.test(msg) ||
+    /গান\s*(বানাও|বানিয়ে|করে?\s*দাও|চাই|তৈরি)|song\s*(make|create|write)/i.test(msg)
+  ) {
+    const durationSec = parseSecsFromMessage(msg) ?? 30;
+    return {
+      type: 'audio',
+      sungSong: true,
+      title: titleFromMessage(msg, 'ইন্সট্রুমেন্টাল সুর — গাওয়া গান নয়'),
+      spec: {
+        type: 'audio',
+        audioOperation: 'instrumental',
+        title: titleFromMessage(msg, 'ইন্সট্রুমেন্টাল সুর — গাওয়া গান নয়'),
+        text: msg.slice(0, 2000),
+        durationSec,
+        quality: 'standard',
       } as CreativeJobSpec,
     };
   }
@@ -473,19 +630,64 @@ async function tryIntentFallback(
     music_video: 'মিউজিক ভিডিও',
     short_film: 'শর্ট ফিল্ম',
     motion_video: 'মোশন ভিডিও',
+    audio: 'অডিও (ইন্সট্রুমেন্টাল)',
+    image: 'ছবি',
   };
-  const finalText =
+  const header =
     `⚠️ ক্লাউড LLM এখন রেট-লিমিটেড (৪২৯ — সাময়িক অবস্থা, লাইসেন্স-সমস্যা নয়)। ` +
-    `তাই এই প্রস্তাবটি **নিয়ম-ভিত্তিক পরিকল্পনাকারী** দিয়ে তৈরি — AI-সহায়ক সেটিংস-বাছাই নয়।\n\n` +
-    `🎬 **${typeLabel[intent.type]}**: ${caps.spec.title}\n` +
-    `- মোট দৈর্ঘ্য: ${caps.spec.durationSec ?? '?'} সেকেন্ড\n` +
-    `- আনুপাতিক মাধ্যম: ${caps.spec.aspect ?? '16:9'}\n` +
-    `- ইঞ্জিন: ${caps.spec.videoEngine === 'cinematic_motion' ? 'স্টোরিবোর্ড+ক্যামেরা-মোশন (ক্লাউড ব্লকড থাকায় লোকাল-বান্ধব)' : 'AI ডিফিউশন'}\n` +
-    (caps.notes.length > 0 ? `- নোট: ${caps.notes.slice(0, 3).join(' | ')}\n` : '') +
-    `\n` +
-    `নিচের কার্ডে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
-    `গান আপলোড করে থাকলে সেটি স্বয়ংক্রিয়ভাবে যুক্ত হয়েছে। ` +
-    `ক্লাউড প্রাপ্যতা ফিরলে পরে আরও উন্নত AI-সংস্করণ চাইলে আবার বলুন।`;
+    `তাই এই প্রস্তাবটি **নিয়ম-ভিত্তিক পরিকল্পনাকারী** দিয়ে তৈরি — AI-সহায়ক সেটিংস-বাছাই নয়।\n\n`;
+  const notesLine = caps.notes.length > 0 ? `- নোট: ${caps.notes.slice(0, 3).join(' | ')}\n` : '';
+
+  // (অডিট §B4+§A) প্রকারভেদে সৎ চূড়ান্ত-বার্তা — অডিও/ছবি নতুন;
+  // ৩টি ভিডিও-ধরনের পাঠ আগের মতোই অপরিবর্তিত।
+  let finalText: string;
+  if (intent.type === 'audio') {
+    const audioSpecBits =
+      `🎵 **${typeLabel.audio}**: ${caps.spec.title}\n` +
+      `- ইঞ্জিন: প্রসিডিউরাল সংশ্লেষণ — **পরীক্ষামূলক** (নিউরাল মিউজিক-মডেল নয়, গাওয়া গান নয়)\n` +
+      `- দৈর্ঘ্য: ${bnNum(caps.spec.durationSec ?? 30)} সেকেন্ড\n` +
+      `- আউটপুট: WAV + MP3 আর্টিফ্যাক্ট হবে\n` +
+      notesLine;
+    if (intent.sungSong) {
+      // অডিট-গ্রহণযোগ্যতা-পরীক্ষা ২: গাওয়া-গান চাওয়া হলে সৎ প্রকাশনাই চূড়ান্ত উত্তর —
+      // ভুয়া গান কখনোই নয়; সৎ-লেবেল-করা ইন্সট্রুমেন্টাল প্রস্তাব থাকে সত্যিকারের বিকল্প হিসেবে।
+      finalText =
+        header +
+        `🎤 **সৎ কথা: গান গাওয়ার (singing) মডেল এখন চালু নেই** — ভুয়া বা নকল গান বানানো হবে না।\n\n` +
+        `বিকল্প:\n` +
+        `① **ইন্সট্রুমেন্টাল সুর** — প্রসিডিউরাল সংশ্লেষণ, পরীক্ষামূলক (এটি গাওয়া গান **নয়**) — নিচের কার্ডে নিশ্চিত করলেই তৈরি হবে।\n` +
+        `② চ্যাট স্বাভাবিক হলে গানের কথা/লিরিক্স লিখে দেওয়া যাবে।\n` +
+        `③ নিজের গান আপলোড করলে সেটি দিয়ে মিউজিক ভিডিও বানানো যায়।\n\n` +
+        audioSpecBits +
+        `\nকার্ডে **নিশ্চিত করুন** চাপলেই ইন্সট্রুমেন্টাল সুরটি তৈরি শুরু হবে।`;
+    } else {
+      finalText =
+        header +
+        audioSpecBits +
+        `\nনিচের কার্ডে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
+        `ক্লাউড প্রাপ্যতা ফিরলে পরে আরও উন্নত সংস্করণ চাইলে আবার বলুন।`;
+    }
+  } else if (intent.type === 'image') {
+    finalText =
+      header +
+      `🖼️ **${typeLabel.image}**: ${caps.spec.title}\n` +
+      `- ইঞ্জিন: SDK ছবি-জেনারেশন (প্রকৃত AI ইমেজ-মডেল)\n` +
+      notesLine +
+      `\nনিচের কার্ডে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
+      `ক্লাউড প্রাপ্যতা ফিরলে পরে আরও উন্নত AI-সংস্করণ চাইলে আবার বলুন।`;
+  } else {
+    finalText =
+      header +
+      `🎬 **${typeLabel[intent.type]}**: ${caps.spec.title}\n` +
+      `- মোট দৈর্ঘ্য: ${caps.spec.durationSec ?? '?'} সেকেন্ড\n` +
+      `- আনুপাতিক মাধ্যম: ${caps.spec.aspect ?? '16:9'}\n` +
+      `- ইঞ্জিন: ${caps.spec.videoEngine === 'cinematic_motion' ? 'স্টোরিবোর্ড+ক্যামেরা-মোশন (ক্লাউড ব্লকড থাকায় লোকাল-বান্ধব)' : 'AI ডিফিউশন'}\n` +
+      notesLine +
+      `\n` +
+      `নিচের কার্ডে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
+      `গান আপলোড করে থাকলে সেটি স্বয়ংক্রিয়ভাবে যুক্ত হয়েছে। ` +
+      `ক্লাউড প্রাপ্যতা ফিরলে পরে আরও উন্নত AI-সংস্করণ চাইলে আবার বলুন।`;
+  }
 
   // প্রস্তাব-কার্ড যুক্ত চূড়ান্ত উত্তর
   await finalizeRun(
@@ -555,6 +757,8 @@ async function executeToolCall(
     title: catalog?.title ?? toolName,
     icon: catalog?.icon ?? 'Wrench',
     input: inputSummary,
+    // (অডিট §C) শুরুর সময় (ISO) — ক্লায়েন্ট চলমান ধাপের লাইভ অতিবাহিত-সময় দেখায়
+    startedAt: new Date().toISOString(),
   });
 
   const t0 = Date.now();
@@ -648,6 +852,8 @@ async function runAgentLoop(runId: string): Promise<void> {
   let seq = 0;
   const nextSeq = () => ++seq;
   const stats: RunStatsAccumulator = { toolCalls: 0 };
+  // (অডিট §B) প্রথম-টোকেন লেটেন্সি — রান-স্কোপড রেকর্ডার, সর্বোচ্চ একবার
+  const recordFirstToken = makeFirstTokenRecorder(runId, run.startedAt);
 
   emit(runId, { type: 'run_started', runId, conversationId: run.conversationId });
 
@@ -715,7 +921,7 @@ async function runAgentLoop(runId: string): Promise<void> {
     }
 
     const t0 = Date.now();
-    const streamer = createDeltaStreamer(runId);
+    const streamer = createDeltaStreamer(runId, recordFirstToken);
     let chatOnlyText = '';
     let chatOnlyMeta: ChatCallMeta | null = null;
     try {
@@ -726,6 +932,8 @@ async function runAgentLoop(runId: string): Promise<void> {
       });
       chatOnlyText = r.text;
       chatOnlyMeta = r.meta;
+      // (অডিট §B) নন-স্ট্রিমিং-ফলব্যাক হলে প্রথম সফল উত্তরেই firstTokenMs
+      recordFirstToken();
     } catch (err) {
       streamer.finish();
       throw err; // failRun সৎ শ্রেণিসহ (rate_limited ইত্যাদি) ধরবে
@@ -784,17 +992,49 @@ async function runAgentLoop(runId: string): Promise<void> {
   let forced = false;
   /** S9: রেট-লিমিট-নিঃশেষে লুপ ভাঙা হয়েছে কি না */
   let rateLimitExhausted = false;
+  /** (অডিট §E) সময়-প্রহরী লুপ ভেঙেছে কি না — মোড়ক-কারণ 'timeout' সৎভাবে */
+  let timeGuardTripped = false;
+  /** (অডিট §E) টুল-কল স্বাক্ষর → গণনা (একই টুল+আর্গুমেন্ট পুনরাবৃত্তি-প্রহরী) */
+  const toolCallSignatures = new Map<string, number>();
+  /** (অডিট §E) বাধ্যতামূলক-মোড়কের সৎ কারণ — সময়-সীমা হলে 'timeout', নইলে 'max_steps' */
+  let wrapReason: RunEndReason = 'max_steps';
 
   loop: for (let step = 1; step <= MAX_STEPS; step++) {
+    // (অডিট §E) সময়-প্রহরী: ১০ মিনিট পেরোলে আর নতুন ধাপ নয় — finalText null
+    // রেখে লুপ ভাঙা; নিচের বাধ্যতামূলক-মোড়ক পথ সৎ সারাংশ দেবে।
+    if (Date.now() - run.startedAt.getTime() > MAX_RUN_ELAPSED_MS) {
+      timeGuardTripped = true;
+      const elapsedMs = Date.now() - run.startedAt.getTime();
+      const guardSeq = nextSeq();
+      await db.agentStep.create({
+        data: {
+          runId,
+          seq: guardSeq,
+          kind: 'max_elapsed',
+          name: 'time_guard',
+          payloadJson: safeJson({ elapsedMs, limitMs: MAX_RUN_ELAPSED_MS }),
+        },
+      });
+      logStep(runId, guardSeq, 'time_guard', 'max-elapsed', elapsedMs);
+      emit(runId, {
+        type: 'run_note',
+        runId,
+        level: 'warn',
+        note: 'রান সর্বোচ্চ সময়সীমা (১০ মিনিট) ছুঁয়েছে — এখন পর্যন্ত অগ্রগতি দিয়ে সৎ মোড়ক-উত্তর দেওয়া হচ্ছে…',
+      });
+      break loop;
+    }
     const t0 = Date.now();
     let text: string;
     let stepMeta: ChatCallMeta | null = null;
-    const streamer = createDeltaStreamer(runId);
+    const streamer = createDeltaStreamer(runId, recordFirstToken);
     try {
       const r = await chatCompleteWithNotes(runId, context, { model: usedModel, streamer, diagnostic });
       text = r.text;
       stepMeta = r.meta;
       streamer.finish();
+      // (অডিট §B) নন-স্ট্রিমিং হলে প্রথম সফল LLM-উত্তরেই firstTokenMs
+      recordFirstToken();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // কী-সমস্যায় (কী নেই/অবৈধ/ব্যালান্স শেষ) স্বয়ংক্রিয় GLM-ফলব্যাক নয় —
@@ -835,7 +1075,7 @@ async function runAgentLoop(runId: string): Promise<void> {
           note: `নির্বাচিত মডেল "${describeChatModel(requestedModel)}" এই মুহূর্তে ব্যবহার করা যায়নি (${msg.slice(0, 120)})। ডিফল্ট মডেলে চালিয়ে যাওয়া হচ্ছে — সৎ-ফলব্যাক।`,
         });
         try {
-          const retryStreamer = createDeltaStreamer(runId);
+          const retryStreamer = createDeltaStreamer(runId, recordFirstToken);
           const r2 = await chatCompleteWithNotes(runId, context, {
             model: '',
             streamer: retryStreamer,
@@ -844,6 +1084,7 @@ async function runAgentLoop(runId: string): Promise<void> {
           text = r2.text;
           stepMeta = r2.meta;
           retryStreamer.finish();
+          recordFirstToken();
         } catch (err2) {
           const msg2 = err2 instanceof Error ? err2.message : String(err2);
           if (err2 instanceof TemporarilyUnavailableError || isRateLimitErrorText(msg2)) {
@@ -895,6 +1136,17 @@ async function runAgentLoop(runId: string): Promise<void> {
         });
         continue;
       }
+      // (অডিট §E) [TOOL_RESULT]-প্রতিধ্বনি — মডেল সরঞ্জাম-ফলাফলের নকল লিখেছে;
+      // এটি চূড়ান্ত উত্তর নয়, সংশোধন-অনুরোধ হিসেবে ফেরত দাও
+      if (isToolResultEcho(text)) {
+        logStep(runId, decisionSeq, 'llm', 'tool-result-echo', Date.now() - t0);
+        context.push({
+          role: 'user',
+          content:
+            'তোমার শেষ বার্তাটি [TOOL_RESULT]-ফরম্যাটের নকল — সরঞ্জাম-ফলাফল সিস্টেমই দেয়, তুমি নিজে লিখবে না। ওই তথ্য ব্যবহার করে এখন সরাসরি ব্যবহারকারীকে স্বাভাবিক বাংলায় উত্তর দাও।',
+        });
+        continue;
+      }
       // টুল-কলের মতো দেখাচ্ছে কিন্তু পার্স হয়নি (প্রায়ই আউটপুট-টোকেনে কাটা) →
       // চূড়ান্ত উত্তর হিসেবে নয়, সংশোধন-অনুরোধ হিসেবে ফেরত দাও
       if (looksLikeToolCall(text)) {
@@ -922,6 +1174,41 @@ async function runAgentLoop(runId: string): Promise<void> {
       context.push({
         role: 'user',
         content: `[TOOL_RESULT] name: ${parsed.tool}\nstatus: error\n${safeJson({ error: validation.error, hint: validation.hint })}`,
+      });
+      continue;
+    }
+
+    // (অডিট §E) লুপ-প্রহরী — একই টুল + একই আর্গুমেন্টের হুবহু পুনরাবৃত্তি:
+    // প্রথম কল চলে, পরেরগুলো আটকে যায় (ফলাফল একই হতো; অসীম লুপের ঝুঁকি)।
+    const callSignature = `${validation.tool.name}|${stableStringify(validation.input)}`;
+    const seenBefore = toolCallSignatures.get(callSignature) ?? 0;
+    toolCallSignatures.set(callSignature, seenBefore + 1);
+    if (seenBefore >= 1) {
+      const repeatSeq = nextSeq();
+      await db.agentStep.create({
+        data: {
+          runId,
+          seq: repeatSeq,
+          kind: 'repeat-blocked',
+          name: validation.tool.name,
+          payloadJson: safeJson({ signature: callSignature, count: seenBefore + 1, blocked: true }),
+        },
+      });
+      logStep(runId, repeatSeq, validation.tool.name, 'repeat-blocked', 0);
+      emit(runId, {
+        type: 'run_note',
+        runId,
+        level: 'warn',
+        note: 'একই টুল-কল পুনরাবৃত্তি আটকানো হয়েছে — এজেন্টকে ভিন্ন পথে যেতে বলা হচ্ছে…',
+      });
+      context.push({
+        role: 'user',
+        content:
+          `[TOOL_RESULT] name: ${validation.tool.name}\nstatus: error\n` +
+          safeJson({
+            error:
+              'একই টুল একই আর্গুমেন্টে আবার ডাকা হয়েছে — ফলাফল একই হবে। ভিন্ন প্যারামিটার ব্যবহার করো বা এখনই চূড়ান্ত উত্তর দাও।',
+          }),
       });
       continue;
     }
@@ -971,15 +1258,20 @@ async function runAgentLoop(runId: string): Promise<void> {
   }
 
   // ---- ৫. MAX_STEPS ছাড়িয়ে গেলে বাধ্যতামূলক মোড়ক-উত্তর (অডিট §১-B: সৎ) ----
-  // সততা: ধাপ-সীমা শেষ হলে endReason সবসময় 'max_steps'। মোড়ক-কল থেকে
-  // সত্যিকারের উত্তর এলে status 'completed' + সৎ ফুটনোট; নইলে/মোড়ক-কল
-  // ব্যর্থ হলে status 'failed' + errorCategory ('max_steps' বা প্রকৃত কারণ) +
-  // আংশিক অগ্রগতির বাংলা সারাংশ।
+  // সততা: ধাপ-সীমা শেষ হলে endReason 'max_steps'; সময়-সীমা (অডিট §E)
+  // হলে সৎভাবে 'timeout'। মোড়ক-কল থেকে সত্যিকারের উত্তর এলে status
+  // 'completed' + সৎ ফুটনোট; নইলে/মোড়ক-কল ব্যর্থ হলে status 'failed' +
+  // errorCategory ('max_steps'/'timeout' বা প্রকৃত কারণ) + আংশিক অগ্রগতির সারাংশ।
   if (finalText === null) {
     forced = true;
+    // (অডিট §E) মোড়ক-কারণ সৎ: সময়-প্রহরী ভেঙেছে কি না তার উপর নির্ভর করে
+    wrapReason = timeGuardTripped ? 'timeout' : 'max_steps';
+    const wrapReasonBn = timeGuardTripped
+      ? 'সর্বোচ্চ সময়সীমা (১০ মিনিট)'
+      : `অনুমোদিত ধাপ-সীমা (${bnNum(MAX_STEPS)})`;
     context.push({ role: 'user', content: 'আর কোনো টুল ছাড়া এখনই চূড়ান্ত উত্তর দাও।' });
     const t0 = Date.now();
-    const forcedStreamer = createDeltaStreamer(runId);
+    const forcedStreamer = createDeltaStreamer(runId, recordFirstToken);
     let forcedText = '';
     let forcedMeta: ChatCallMeta | null = null;
     try {
@@ -1000,12 +1292,14 @@ async function runAgentLoop(runId: string): Promise<void> {
         .catch(() => undefined);
       await failRun(
         runId,
-        `ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হওয়ার পর চূড়ান্ত-উত্তরের কলও ব্যর্থ: ${msg}`,
-        { errorCategory, endReason: 'max_steps' }
+        `${wrapReasonBn} শেষ হওয়ার পর চূড়ান্ত-উত্তরের কলও ব্যর্থ: ${msg}`,
+        { errorCategory, endReason: wrapReason }
       );
       return;
     }
     forcedStreamer.finish();
+    // (অডিট §B) এখন পর্যন্ত কোনো সফল LLM-উত্তর না থাকলে মোড়ক-কলটিই প্রথম
+    recordFirstToken();
     const forcedSeq = nextSeq();
     await db.agentStep.create({
       data: {
@@ -1030,11 +1324,11 @@ async function runAgentLoop(runId: string): Promise<void> {
     });
     logStep(runId, forcedSeq, 'llm', 'forced-final', Date.now() - t0);
     const stillToolCall = parseToolCall(forcedText);
-    if (forcedText.trim() && !stillToolCall) {
+    if (forcedText.trim() && !stillToolCall && !isToolResultEcho(forcedText)) {
       // সৎ মোড়ক: উত্তর আসল, কিন্তু কেন থামল তা ব্যবহারকারী জানবেন
       finalText =
         forcedText.trimEnd() +
-        `\n\n---\n*নোট: অনুমোদিত ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হওয়ায় টুল-চালানো এখানে থামিয়ে এই সারাংশটি দেওয়া হলো — আংশিক অগ্রগতির সৎ মোড়ক।*`;
+        `\n\n---\n*নোট: ${wrapReasonBn} শেষ হওয়ায় টুল-চালানো এখানে থামিয়ে এই সারাংশটি দেওয়া হলো — আংশিক অগ্রগতির সৎ মোড়ক।*`;
     } else {
       // মোড়ক-কলও ব্যবহারযোগ্য উত্তর দেয়নি — সৎ ব্যর্থতা + আংশিক-অগ্রগতির সারাংশ
       await db.agentRun
@@ -1042,15 +1336,15 @@ async function runAgentLoop(runId: string): Promise<void> {
         .catch(() => undefined);
       await failRun(
         runId,
-        `ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হয়েছে — এই মুহূর্তে ব্যবহারযোগ্য চূড়ান্ত উত্তর তৈরি করা যায়নি।`,
+        `${wrapReasonBn} শেষ হয়েছে — এই মুহূর্তে ব্যবহারযোগ্য চূড়ান্ত উত্তর তৈরি করা যায়নি।`,
         {
-          errorCategory: 'max_steps',
-          endReason: 'max_steps',
+          errorCategory: timeGuardTripped ? 'timeout' : 'max_steps',
+          endReason: wrapReason,
           content:
-            `দুঃখিত, কাজটি সম্পূর্ণ করা যায়নি — **অনুমোদিত ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হয়ে গেছে**।\n\n` +
+            `দুঃখিত, কাজটি সম্পূর্ণ করা যায়নি — **${wrapReasonBn} শেষ হয়ে গেছে**।\n\n` +
             `এ পর্যন্ত যা হয়েছে: ${bnNum(llmSteps)}টি সিদ্ধান্ত-ধাপ, ${bnNum(stats.toolCalls)}টি টুল-কল ` +
             `(${bnNum(Math.round((Date.now() - startedAt) / 1000))} সেকেন্ড ধরে কাজ চেয়েছে)।\n\n` +
-            `কাজটি ছোট ছোট অংশে ভাগ করে আবার পাঠালে প্রতিটি অংশ ধাপ-সীমার মধ্যে সম্পূর্ণ হওয়ার সম্ভাবনা বেশি।`,
+            `কাজটি ছোট ছোট অংশে ভাগ করে আবার পাঠালে প্রতিটি অংশ সীমার মধ্যে সম্পূর্ণ হওয়ার সম্ভাবনা বেশি।`,
         }
       );
       return;
@@ -1076,8 +1370,9 @@ async function runAgentLoop(runId: string): Promise<void> {
       seq: nextSeq(),
     },
     proposedProductionId,
-    // সৎ সমাপ্তির কারণ: ধাপ-সীমায় থামা মোড়ক হলে 'max_steps', নইলে চূড়ান্ত উত্তর
-    { endReason: forced ? 'max_steps' : 'final_answer' }
+    // সৎ সমাপ্তির কারণ: বাধ্যতামূলক-মোড়ক হলে wrapReason (max_steps/timeout),
+    // নইলে চূড়ান্ত উত্তর
+    { endReason: forced ? wrapReason : 'final_answer' }
   );
 }
 

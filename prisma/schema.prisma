@@ -61,6 +61,8 @@ model AgentRun {
   stepCount      Int          @default(0)
   toolCallCount  Int          @default(0)
   durationMs     Int?
+  // (অডিট §B) প্রথম-টোকেন/প্রথম-LLM-উত্তরের সময় (ms) — লেটেন্সি-যাচাই
+  firstTokenMs   Int?
   startedAt      DateTime     @default(now())
   finishedAt     DateTime?
   model          String? // ব্যবহারকারীর অনুরোধকৃত চ্যাট-মডেল (null = SDK ডিফল্ট)

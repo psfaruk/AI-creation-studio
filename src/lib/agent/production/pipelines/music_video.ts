@@ -95,7 +95,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
   const aspect = spec.aspect ?? '9:16';
   const fps = spec.fps ?? 30;
   const engine = spec.videoEngine === 'cinematic_motion' ? 'cinematic_motion' : 'ai_diffusion';
-  const resolution = spec.quality === 'draft' ? '720p' : '1080p';
+  // (অডিট §D) spec-এ স্পষ্ট রেজোলিউশন থাকলে সেটিই; নইলে quality-ভিত্তিক ডিফল্ট
+  const resolution = spec.resolution ?? (spec.quality === 'draft' ? '720p' : '1080p');
   const dims = outputDims(aspect, resolution);
   const wd = ctx.workingDir;
   const genSize = ASPECT_TO_GEN_SIZE[aspect];

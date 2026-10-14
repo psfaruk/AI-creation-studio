@@ -4,7 +4,11 @@
 // এজেন্ট-রান লাইফসাইকেল:
 // 1. POST /api/chat → optimistic user msg + pending assistant turn
 // 2. EventSource /api/runs/{runId}/events → লাইভ টুল-অ্যাক্টিভিটি
-// 3. SSE ছিঁড়লে GET /api/conversations/{id} দিয়ে 2s পোলিং (180s টাইমআউট)
+//    (সার্ভার শুধু unnamed message পাঠায় — onmessage-ই যথেষ্ট)
+// 3. SSE ছিঁড়লে ব্যাকঅফে পুনঃসংযোগ: ২ → ৪ → ৮ → ১৬ → ৩০ সে.
+//    (সর্বোচ্চ ৫ চেষ্টা; সার্ভার রিকানেক্টে ডিবি-রিপ্লে পাঠায়, ক্লায়েন্ট
+//    activityId/message দিয়ে ডুপ্লিকেট আটকায়)
+// 4. ৫ চেষ্টায় ব্যর্থ হলে GET /api/conversations/{id} দিয়ে 2s পোলিং (180s টাইমআউট)
 // ============================================================
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -23,16 +27,8 @@ import type {
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 180_000;
 
-/** SSE ইভেন্টের সম্ভাব্য নাম — নামযুক্ত ইভেন্ট ও unnamed message দুটোই শোনা হয় */
-const SSE_EVENT_NAMES = [
-  'run_started',
-  'tool_start',
-  'tool_end',
-  'message',
-  'text_delta',
-  'run_note',
-  'run_finished',
-] as const;
+/** (অডিট §C5) পুনঃসংযোগ-ব্যাকঅফ — প্রতি সফল সংযোগে গণনা রিসেট হয় */
+const RECONNECT_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 30_000] as const;
 
 // ------------------------------------------------------------
 // টাইপরাইটার-ড্রেন — স্মুথ স্ট্রিমিংয়ের হৃদয়।
@@ -58,6 +54,7 @@ export function useAgentRun() {
 
   const esRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finishedRef = useRef(false);
   const drainTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const drainRef = useRef<DrainState | null>(null);
@@ -73,6 +70,10 @@ export function useAgentRun() {
   const stopRunWatchers = useCallback(() => {
     esRef.current?.close();
     esRef.current = null;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
@@ -137,13 +138,14 @@ export function useAgentRun() {
 
   const openStream = useCallback(
     (runId: string, conversationId: string, userMessageId: string, pendingId: string) => {
-      const es = new EventSource(withStudioToken(`/api/runs/${runId}/events`));
-      esRef.current = es;
       finishedRef.current = false;
-      let finalMessageSeen = false;
+      // পুনঃসংযোগ জুড়ে বাঁচা অবস্থা — dispatch-ক্লোজার একই থাকে, তাই
+      // finalMessageSeen / settledAssistantId / ড্রেন-বাফার রিকানেক্টে হারায় না
       /** 'message' ইভেন্টে বসে যাওয়া প্রকৃত assistant-বার্তার id —
        *  run_finished-এ সমাপ্তি-তথ্য (runEnd) ওখানে বসাতে হয় (অডিট §১-E) */
+      let finalMessageSeen = false;
       let settledAssistantId: string | null = null;
+      let reconnectAttempt = 0;
 
       /** ড্রেন-লুপ চালু রাখো — বাফার ফাঁকা হলে নিজেই থামে */
       const ensureDrain = () => {
@@ -201,6 +203,8 @@ export function useAgentRun() {
                     icon: evt.icon,
                     status: 'running' as const,
                     input: evt.input,
+                    // (অডিট §C2) শুরুর সময় — কার্ডে লাইভ অতিবাহিত-সময় দেখাতে
+                    startedAt: evt.startedAt,
                   },
                 ],
               };
@@ -214,7 +218,7 @@ export function useAgentRun() {
               activities: (m.activities ?? []).map((a) =>
                 a.id === evt.activityId
                   ? {
-                      ...a,
+                      ...a, // startedAt সহ আগের ফিল্ডগুলো অক্ষত থাকে
                       status: evt.status,
                       output: evt.output,
                       error: evt.error,
@@ -302,21 +306,46 @@ export function useAgentRun() {
         }
       };
 
-      es.onmessage = (e) => dispatch(e.data);
-      // সার্ভার যদি নামযুক্ত SSE ইভেন্ট (event: tool_start) পাঠায়
-      for (const name of SSE_EVENT_NAMES) {
-        es.addEventListener(name, (e) => dispatch((e as MessageEvent).data));
-      }
+      // (অডিট §C5) EventSource ব্যাকঅফে পুনরায় খোলে — একই dispatch/
+      // ড্রেন-অবস্থা ধরে থাকে; সার্ভার রিকানেক্টে ডিবি-রিপ্লে পাঠায়,
+      // ক্লায়েন্ট আগেই activityId/message-ডুপ্লিকেট আটকায় (উপরের লজিক)
+      const connect = () => {
+        esRef.current?.close();
+        const es = new EventSource(withStudioToken(`/api/runs/${runId}/events`));
+        esRef.current = es;
 
-      es.onerror = () => {
-        if (finishedRef.current) {
-          stopRunWatchers();
-          return;
-        }
-        // রান চলাকালীন সংযোগ ছিঁড়েছে → পোলিং-ফলব্যাক
-        stopRunWatchers();
-        startPolling(conversationId, userMessageId, pendingId);
+        es.onopen = () => {
+          // সংযোগ ফিরেছে — ব্যাকঅফ-গণনা রিসেট
+          reconnectAttempt = 0;
+        };
+        // সার্ভার শুধু unnamed message পাঠায় — onmessage-ই সব কভার করে
+        es.onmessage = (e) => dispatch(e.data);
+
+        es.onerror = () => {
+          if (finishedRef.current) {
+            stopRunWatchers();
+            return;
+          }
+          // রান চলাকালীন সংযোগ ছিঁড়েছে → ব্যাকঅফে পুনঃসংযোগ
+          // (ব্রাউজারের স্বয়ংক্রিয় রিকানেক্ট বন্ধ করে হাতে নিয়ন্ত্রণ)
+          es.close();
+          if (esRef.current === es) esRef.current = null;
+          const delay = RECONNECT_DELAYS_MS[reconnectAttempt];
+          if (delay === undefined) {
+            // ৫ বার ব্যর্থ → পুরোনো পোলিং-ফলব্যাক (180s সার্বিক-গার্ডসহ)
+            startPolling(conversationId, userMessageId, pendingId);
+            return;
+          }
+          reconnectAttempt += 1;
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            if (finishedRef.current) return;
+            connect();
+          }, delay);
+        };
       };
+
+      connect();
     },
     [startPolling, stopDrain, stopRunWatchers],
   );
@@ -382,8 +411,11 @@ export function useAgentRun() {
       const st = useChatStore.getState();
       // নতুন কথোপকথন হলে active হিসেবে সেট করো
       if (!st.activeId) st.setActiveId(data.conversationId);
-      const viewOk =
-        st.activeId === conversationIdAtSend || st.activeId === data.conversationId;
+      // (অডিট §B1) viewOk সবসময় সদ্য-সেট হওয়া সত্যকারের activeId দিয়ে বোঝাও —
+      // নতুন কথোপকথনের প্রথম বার্তায় সাময়িক-স্ন্যাপশট (st) এখনো null দেখায়,
+      // ফলে pending-বাবল আসত না এবং ব্যবহারকারী দীর্ঘ নীরবতা দেখতেন।
+      const activeNow = useChatStore.getState().activeId;
+      const viewOk = activeNow === conversationIdAtSend || activeNow === data.conversationId;
       if (viewOk) {
         st.replaceMessage(optimisticId, data.userMessage);
         const pendingId = `pending-${data.runId}`;

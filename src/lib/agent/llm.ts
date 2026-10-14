@@ -119,6 +119,12 @@ async function writeLlmCache(key: string, text: string): Promise<void> {
 export interface ChatCompleteOptions {
   /** রেট-লিমিট-অপেক্ষার নোট (UI-স্ট্যাটাসের জন্য) — Z.ai SDK-পথের জন্য */
   onRateLimitWait?: (info: RetryWaitInfo) => void;
+  /**
+   * (অডিট §B5) এক্সটার্নাল-প্রোভাইডারের ৪২৯-পুনঃচেষ্টার অপেক্ষা-নোট —
+   * প্রতিটি অপেক্ষার আগে একবার (SDK-পথের onRateLimitWait-এর প্রতিরূপ;
+   * external-llm.ts-এর onWait-এ thread হয়)।
+   */
+  onExternalWait?: (info: { attempt: number; totalAttempts: number; waitMs: number }) => void;
   /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু)। ডায়াগনস্টিক-মোড এটি ব্যবহার করে। */
   skipCache?: boolean;
   /**
@@ -273,8 +279,15 @@ export async function chatComplete(
   const externalOpts: {
     onDelta?: (delta: string) => void;
     onAttemptBegin?: () => void;
+    onWait?: (info: { attempt: number; totalAttempts: number; waitMs: number }) => void;
     maxTokens?: number;
-  } = opts?.onDelta ? { onDelta: opts.onDelta, ...(opts.onAttemptBegin ? { onAttemptBegin: opts.onAttemptBegin } : {}) } : {};
+  } = {
+    ...(opts?.onDelta
+      ? { onDelta: opts.onDelta, ...(opts.onAttemptBegin ? { onAttemptBegin: opts.onAttemptBegin } : {}) }
+      : {}),
+    // (অডিট §B5) ৪২৯-অপেক্ষা-নোটের পাসথ্রু — orchestrator-এর run_note-এর উৎস
+    ...(opts?.onExternalWait ? { onWait: opts.onExternalWait } : {}),
+  };
   if (opts?.maxTokens != null && Number.isFinite(opts.maxTokens) && opts.maxTokens > 0) {
     externalOpts.maxTokens = Math.min(8192, Math.floor(opts.maxTokens));
   }

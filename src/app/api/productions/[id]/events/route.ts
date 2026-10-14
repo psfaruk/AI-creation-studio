@@ -45,17 +45,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
           closed = true;
         }
       };
-      const sendNamed = (event: ProductionEvent) => {
-        if (closed) return;
-        try {
-          controller.enqueue(
-            encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
-          );
-          lastEventAt = Date.now();
-        } catch {
-          closed = true;
-        }
-      };
 
       // ---- ১. DB থেকে রিপ্লে (আজ পর্যন্ত ঘটে যাওয়া ইভেন্ট) ----
       const replayFromDb = async () => {
@@ -112,9 +101,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       }
 
       // ---- ২. লাইভ bus ----
+      // (অডিট §C) প্রতিটি লাইভ ইভেন্ট শুধু একবার (নামবিহীন data:-ফর্মে)
+      // লেখা হয় — আগে নাম-সহ-সহ দু'বার যেতো, ক্লায়েন্টে ডাবল-ডিসপ্যাচ হতো।
       const unsubscribe = subscribeProduction(id, event => {
         send(event);
-        sendNamed(event);
         if (event.type === 'production_finished') {
           closed = true;
           setTimeout(() => {

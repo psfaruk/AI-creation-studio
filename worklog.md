@@ -1220,3 +1220,56 @@ Stage Summary:
 - চ্যাট-403 স্থায়ীভাবে সমাধান: অ্যাপের নিজের fetch-wrapper সবসময় হেডার-টোকেন দেয় → যে-কোনো প্রক্সি-চেইনে POST চলে; cookie-পথের CSRF-প্রতিরক্ষা (Origin+XFH-চেক) অটুট
 - নিজের GLM কী-র পাশাপাশি Base URL বসানোর ব্যবস্থা দুই প্রোভাইডারেই (Z.ai API + BigModel) — ওভাররাইড এন্ড-টু-এন্ড (ডায়ালগ→API→স্টোরেজ→LLM-কলয়ােন্ট)
 - ইউজারের দেওয়া URL এখন সচল: /api/v1 OpenAI-কম্প্যাটিবল (models+chat/completions, স্ট্রিমিংসহ) amai_sk_ কী দিয়ে — বাইরের যে-কোনো OpenAI-ক্লায়েন্টে Base URL হিসেবে ব্যবহারযোগ্য; "দুটায় ব্যবস্থা" (নিজের কী+BaseURL এবং অ্যাপের নিজস্ব API) পূর্ণ
+
+---
+Task ID: 14-a
+Agent: backend (Z.ai Code subagent)
+Task: ডিপ-অডিট ফিক্স-রাউন্ড ১৪-এ (backend) — ইভেন্ট-বাস রিপ্লে-buffer, SSE ডাবল-সেন্ড, production_queued সংকেত, অর্কেস্ট্রেটর-আপগ্রেড (startedAt/firstTokenMs/লুপ-প্রহরী/ইন্টেন্ট-রাউটিং), এক্সটার্নাল-৪২৯ পুনঃচেষ্টা, spec.resolution স্থায়িত্ব, RunStats-সিরিয়ালাইজ
+
+Work Log:
+- টাস্ক-১ (অডিট §C): events.ts + production/bus.ts — emit()-এ রিপ্লে-buffer এখন lazily তৈরি হয় (প্রথম emit থেকেই); আগে সাবস্ক্রাইবার যুক্ত হওয়ার আগের ইভেন্ট হারাতো; REPLAY_LIMIT-ট্রিমিং অপরিবর্তিত
+- টাস্ক-২ (§C): productions/[id]/events — sendNamed সম্পূর্ণ অপসারিত; লাইভ ইভেন্ট এখন শুধু একবার (নামবিহীন data:-ফর্মে) যায় — ডাবল-ডিসপ্যাচ বাদ
+- টাস্ক-৩ (§H): confirm রুটে DB queued-আপডেটের পরে ও startProduction-এর আগে emitProduction(production_queued) — দ্বিতীয় ট্যাব/লাইভ-শ্রোতা সারি-অবস্থা production_started-এর আগেই দেখে (রেস-মুক্ত)
+- টাস্ক-৪a (§C): orchestrator executeToolCall-এর tool_start-এ startedAt (ISO); runs/[id]/events-এর DB-রিপ্লে-পথেও tc.createdAt.toISOString() — লাইভ ও রিপ্লে পথ একই চুক্তি
+- টাস্ক-৪b (§B): makeFirstTokenRecorder — রান-স্কোপড once-only; প্রথম দৃশ্যমান টেক্সট-ডেল্টায় (streamer-flush কলব্যাক) বা নন-স্ট্রিমিং পথে প্রথম সফল LLM-উত্তরে Date.now()−run.startedAt → AgentRun.firstTokenMs (chat_only/মডেল-ফলব্যাক/বাধ্য-মোড়ক সব পথ ঢাকা)
+- টাস্ক-৪c (§E): লুপ-প্রহরী — stableStringify (কী-সাজানো) ভিত্তিক টুল+আর্গুমেন্ট স্বাক্ষর-ম্যাপ; হুবহু পুনরাবৃত্তি আটকে যায় (প্রথম কল চলে) — AgentStep kind 'repeat-blocked' + run_note (warn) + বাংলা TOOL_RESULT-এ ভিন্ন প্যারামিটার/চূড়ান্ত উত্তরের নির্দেশনা
+- টাস্ক-৪d (§E): প্রতি লুপ-ইটারেশনের শুরুতে ১০-মিনিট সময়-প্রহরী (STALE_RUN_MS-এর সাথে সামঞ্জস্য) — AgentStep 'max_elapsed' + run_note (warn) + break → বিদ্যমান বাধ্য-মোড়ক পথ; মোড়ক-কারণ এখন সৎভাবে 'timeout' বনাম 'max_steps' (endReason, ফুটনোট ও ব্যর্থতা-বার্তা সবখানে)
+- টাস্ক-৪e (§B4+§A): detectProductionIntent সম্প্রসারণ — ক্রম: music_video → ছবি (পোস্টার/ইলাস্ট্রেশন/লোগো/আঁকা; "ছবি বানাও" শর্ট-ফিল্মেই থাকে) → ইন্সট্রুমেন্টাল অডিও (সুর/বিট/ব্যাকগ্রাউন্ড-মিউজিক/lo-fi) → গাওয়া-গান (সৎ-প্রকাশনা-পথ) → short_film → motion_video; parseSecsFromMessage — বাংলা [০-৯]+ASCII সংখ্যা, ৫–৩০০ ক্ল্যাম্প; tryIntentFallback-এ প্রকারভেদে সৎ চূড়ান্ত-বার্তা: ইন্সট্রুমেন্টাল = প্রসিডিউরাল/পরীক্ষামূলক-লেবেল+WAV+MP3; গাওয়া-গান = 🎤 "গাওয়ার মডেল নেই, ভুয়া গান হবে না" + ①ইন্সট্রুমেন্টাল ②লিরিক্স ③নিজের গানে মিউজিক-ভিডিও — সৎ-লেবেল-করা প্রস্তাব থাকে; ছবি = SDK ইমেজ-জেনারেশন; ৩ ভিডিও-ধরনের পাঠ অপরিবর্তিত
+- টাস্ক-৫ (§B5): external-llm.ts — ৪২৯ এখন পুনঃচেষ্টাযোগ্য: ৩ সে. → ৬ সে. (±২০% জিটার), সর্বোচ্চ ২ বার, প্রতিটি অপেক্ষার আগে onWait-কলব্যাক; নঃশেষে ExternalFatalError (সৎ ৪২৯-টেক্সট); ৪০০/৪০১/৪০২/৪০৩/৪০৪ fatal অপরিবর্তিত + বাকি সব 4xx-ও এখন fatal; নেটওয়ার্ক/৫xx-পথ আগের মতোই একটি নীরব পুনঃচেষ্টা; llm.ts-এ onExternalWait→onWait পাসথ্রু; orchestrator-এ run_note (level 'waiting', bnNum-সংখ্যা): "প্রোভাইডার রেট-লিমিটেড (৪২৯) — N সেকেন্ড পরে আবার চেষ্টা করা হচ্ছে (চেষ্টা i/২)…"
+- টাস্ক-৬ (§D): capabilities.ts validateSpec — পার্স-করা resolution এখন spec-এ স্থায়িত্ব পায় (input অনুপস্থিত → undefined; 4K → '1080p' অ্যাডজাস্টমেন্টসহ); summarizeSpec-এ "রেজোলিউশন: X"; motion_video/music_video/short_film পাইপলাইনে resolution = spec.resolution ?? (draft→720p else 1080p) — spec অনুপস্থিত হলে আচরণ হুবহু আগের মতো
+- টাস্ক-৭ (§B3/§A3): serialize.ts toRunStats-এ firstTokenMs (!= null হলে); production/runner.ts যাচাই — ProductionStep-সারিতে durationMs-কলাম নেই, তবে ব্যর্থ ধাপেও startedAt+finishedAt লেখা হতো (toStepView তা থেকে duration বের করে — DB-পাশ ঠিক ছিল); ফাঁক ছিল লাইভ step_end-ইভেন্টে — StepTimeoutError-পথ, সাধারণ-ব্যর্থতা-পথ ও skipped-পথে এখন durationMs যায় (সফল-পথের মতোই)
+- গুণগত গেট: ১৪টি পরিবর্তিত backend-ফাইলে bunx eslint = ০ ত্রুটি; bunx tsc --noEmit = ০ ত্রুটি (প্রজেক্ট-ব্যাপী, ফ্রন্টএন্ড-শব্দও নেই); dev.log নির্মল — সব 200, কম্পাইল-ত্রুটি নেই (SSE-র render: 44s/109s = লাইভ-স্ট্রিম খোলা থাকা, স্বাভাবিক)
+
+Stage Summary:
+- অবজারভেবিলিটি-চুক্তি সম্পূর্ণ: প্রথম-emit-থেকে রিপ্লে-buffer + ডাবল-সেন্ড বাদ + production_queued সংকেত + tool_start-এ startedAt (লাইভ=রিপ্লে) + firstTokenMs (DB→RunStats) + ব্যর্থ ধাপেও সময়
+- অর্কেস্ট্রেটর-প্রহরী দ্বৈত: হুবহু টুল-কল পুনরাবৃত্তি প্রথমবারের পরেই আটকে (LLM-কে ভিন্ন পথে বাধ্য) + ১০-মিনিট সময়সীমা ছাড়লে সৎ 'timeout' মোড়ক — অসীম লুপ/ঝুলে-থাকা রান দুটোই বন্ধ
+- রেট-লিমিট-অভিজ্ঞতা: এক্সটার্নাল GLM-প্রোভাইডারেও এখন ৪২৯ = দৃশ্যমান-অপেক্ষাসহ ২-পুনঃচেষ্টা (SDK-পথের মতোই), কী-সমস্যা কখনোই পুনঃচেষ্টা হয় না
+- সততা-পথ প্রশস্ত: LLM-নিঃশেষেও ছবি ও অডিও-অনুরোধ চেনা যায়; গাওয়া-গানের অনুরোধে চূড়ান্ত উত্তর = স্পষ্ট "গাওয়ার মডেল নেই" প্রকাশনা + সৎ-লেবেল-করা ইন্সট্রুমেন্টাল প্রস্তাব (ভুয়া গান কখনোই নয় — অডিট-গ্রহণযোগ্যতা-পরীক্ষা ২ পূরণ)
+- spec.resolution এখন এন্ড-টু-এন্ড: যাচাই→specJson→পাইপলাইন-ডাইমস— নীরব quality-ফলব্যাক শুধু অনুপস্থিতিতেই
+
+---
+Task ID: 14-b
+Agent: frontend (Z.ai Code subagent)
+Task: ডিপ-অডিট ফিক্স-রাউন্ড ১৪-এ (frontend) — রান-স্ট্রিম SSE পুনঃসংযোগ-ব্যাকঅফ, activity-জীবনচক্র + লাইভ সময়, firstTokenMs-প্রদর্শন, SpecEditor উন্নত-সেটিংস (resolution/tempo/genre/style), ব্যর্থ-প্যানেলে সময়, ইন্সট্রুমেন্টাল দ্রুত-তৈরি
+
+Work Log:
+- use-agent-run.ts (§C5): SSE onerror এখন আর সরাসরি পোলিং-এ পড়ে না — es.close() করে হাতে-নিয়ন্ত্রিত পুনঃসংযোগ ২→৪→৮→১৬→৩০ সে. ব্যাকঅফ (RECONNECT_DELAYS_MS, সর্বোচ্চ ৫ চেষ্টা); es.onopen-এ গণনা রিসেট; connect() ক্লোজার একই dispatch/ড্রেন-অবস্থা ধরে রাখে (finalMessageSeen/settledAssistantId/ড্রেন-বাফার রিকানেক্টে হারায় না); ৫ চেষ্টা ব্যর্থ হলে পুরোনো startPolling (180s গার্ডসহ); stopRunWatchers এখন reconnectTimer-ও পরিষ্কার করে; SSE_EVENT_NAMES addEventListener-লুপ সরানো (সার্ভার শুধু unnamed message পাঠায়) — es.onmessage-ই dispatch
+- use-productions.ts (§H): addEventListener-ব্লক অপসারণ (শুধু onmessage); applyEvent-এ 'production_queued' কেস — prev-গার্ডসহ s.applyView({...prev, status:'queued'}), নিশ্চিতকরণের সাথে সাথেই কার্ড "সারিতে"
+- activity-card.tsx (§C2): STATUS_META-তে নতুন অবস্থা — queued 'সারিতে' (stone, Clock), waiting 'অপেক্ষমাণ' (amber, Hourglass, animate-pulse), retrying 'পুনঃচেষ্টা' (amber, RefreshCcw), cancelled 'বাতিল' (stone, XCircle); STATUS_META[status] ?? running ডিফেন্সিভ ফলব্যাক (অজানা স্ট্যাটাসে ক্র্যাশ নয়); LiveElapsed কম্পোনেন্ট — status==='running' && startedAt হলে প্রতি সেকেন্ডে টিক করা "১২ সে." (toBnDigits, setInterval-cleanup, ব্যাজের পাশে); শেষ-হলে durationMs-প্রদর্শন অপরিবর্তিত
+- use-agent-run.ts dispatch: tool_start-এ নতুন ActivityView-তে startedAt: evt.startedAt; tool_end ম্যাপে ...a দিয়ে startedAt সংরক্ষিত
+- bn-format.ts (§B3): formatRunStatsBn — stats.firstTokenMs বৈধ সংখ্যা হলে base-এর শেষে " · প্রথম উত্তর X.X সে." (toBnDigits); message-bubble-এর রান-স্ট্যাট লাইনেই দেখা যায়
+- production-card.tsx (§A3): ব্যর্থ-প্যানেলে elapsedTextBn — startedAt+finishedAt দুটোই থাকলে "⏱ সময় লেগেছে: ১৫ মি. ২ সে." (<১ মিনিট হলে শুধু সেকেন্ড); (§D) StepList-এ durationMs এখন failed ধাপেও (লাল-আভাসসহ)
+- production-card.tsx SpecEditor (§D1/D2): নতুন এডিটযোগ্য ফিল্ড — resolution Select (720p (দ্রুত)/1080p (উচ্চ মান), হিন্টসহ, শুধু ভিডিও-ধরনে), tempoBpm Select (৭০–১৫০, হিন্ট 'মিনিটে বিট (BPM) — না বাছলে মুড অনুযায়ী'; audio+instrumental ও music_video-তে), genre টেক্সট-ইনপুট (max ৬০, placeholder 'যেমন: modern, folk, cinematic'; audio+music_video), style Select (৭ প্রিসেট + কাস্টম-টেক্সট পথ; প্রিসেট-বহির্ভূত বর্তমান মান ড্রপডাউনেই; কাঁচা স্ট্রিং স্টোর; music_video/short_film/motion_video/image)
+- production-card.tsx: কম-ব্যবহৃত নিয়ন্ত্রণ (fps, resolution, tempoBpm, genre, style, format, overlayText, subtitles) এখন "⚙ উন্নত সেটিংস" Collapsible-এ (ডিফল্ট বন্ধ) — মূল ফর্ম: মান/ভাষা/ইঞ্জিন/ফিল্ম-মোড/মুড/অনুপাত/দৈর্ঘ্য/কণ্ঠ; ভাঁজের ভেতরে অ-ডিফল্ট ফিল্ড থাকলে ট্রিগারে "Xটি নির্ধারিত" ব্যাজ; সব নতুন ফিল্ড একই patch()→editedSpec→confirmProduction(id, specOverrides) পথে স্থায়ী হয় (৫d); specSummaryText-এ resolution/genre/style/tempo ব্যাজ
+- quick-create.tsx: চতুর্থ দ্রুত-তৈরি পথ "ইন্সট্রুমেন্টাল মিউজিক" — type Select-এ অপশন; সিলেক্ট করলে spec = {type:'audio', audioOperation:'instrumental', idea, quality, durationSec(৮–১২০ ক্ল্যাম্প-সীমা, পাইপলাইনের সাথে সঙ্গত)}, aspect/ইঞ্জিন-সিলেক্ট লুকায়, সৎ মাইক্রো-লেবেল "প্রসিডিউরাল — নিউরাল মিউজিক-মডেল নয় (মুড-সচেতন স্থানীয় সংশ্লেষণ; গান গাওয়া কণ্ঠ নয়)"; একই POST /api/productions পথ
+- productions-view.tsx: queued-ব্যাজ sky(নীল)→stone — production-card-এর STATUS_META-র সাথে সঙ্গত + নীল-নিষেধ নিয়ম
+- অতিরিক্ত হার্ডেনিং: SpecEditor-এর ঐচ্ছিক Select-গুলোতে (মুড/রেজোলিউশন/টেম্পো/স্টাইল) value=undefined→'' সেন্টিনেল (দৈর্ঘ্য-সিলেক্টের বিদ্যমান প্যাটার্ন) — ব্রাউজারে নিশ্চিত: "Select is changing from uncontrolled to controlled" React-সতর্কতা সম্পূর্ণ গেছে, প্লেসহোল্ডার-প্রদর্শন অক্ষত
+- E2E (agent-browser, মিন্ট করা মালিক-সেশন টোকেন — ইউজারের পাসকোড/security.json অস্পৃষ্ট): ৩৯০px ও ১২৮০px উভয়ে — দ্রুত-তৈরির ৪র্থ অপশন + সৎ লেবেল ✓, প্রস্তাব-কার্ডে উন্নত-সেটিংস ভাঁজ/খোলা + ব্যাজ-গণনা (১→২→৪) ✓, রেজোলিউশন/টেম্পো/স্টাইল নির্বাচন → সারাংশ-ব্যাজে বহন ✓, চ্যাটে ব্যর্থ কার্ডে "⏱ সময় লেগেছে: ১৫ মি. ২ সে." ✓, রান-স্ট্যাটে "· প্রথম উত্তর ৩.৮ সে." (firstTokenMs এন্ড-টু-এন্ড) ✓, কনসোলে ০ এরর/সতর্কতা ✓
+- পরিচ্ছন্নতা: টেস্ট-ডেটা (৩টি এজেন্ট-টেস্ট কথোপকথন cascade-wipe → conv/msg/production/run সব ০), storage/{artifacts,productions,llm-chat} খালি; security.json অস্পৃষ্ট
+- গুণগত গেট: ৭টি পরিবর্তিত ফ্রন্টএন্ড-ফাইলে bunx eslint = ০ ত্রুটি; bunx tsc --noEmit = ০ ত্রুটি; dev.log নির্মল (সব 200, কম্পাইল-ত্রুটি নেই); studio-home/security-gate-এর মোড-অনলি ডিফ রিভার্ট
+
+Stage Summary:
+- §C5 সমাধান: SSE-ছেঁড়া এখন পোলিং-এ নেমে টুল-অ্যাক্টিভিটি/টেক্সট-স্ট্রিম জমায় না — ৫-চেষ্টার ব্যাকঅফ-রিকানেক্টে ডিবি-রিপ্লে + ক্লায়েন্ট-ডুপ্লিকেট-প্রতিরোধ (activityId/message) মিলে লাইভ ভিউ ধারাবাহিক থাকে; টাইমার-লিক নেই
+- §C2/§B3/§A3 পর্যবেক্ষণযোগ্যতা: টুল-কার্ডের পূর্ণ জীবনচক্র (queued/waiting/retrying/cancelled + ডিফেন্সিভ ফলব্যাক) ও চলমান-সময়ের লাইভ টিক; রান-স্ট্যাটে প্রথম-উত্তরের সত্য লেটেন্সি; ব্যর্থ প্রোডাকশনে কত সময় গেছে তা সৎভাবে দৃশ্যমান
+- §D ফর্ম-স্থাপত্য: মূল ফর্ম হালকা রেখে সব কম-ব্যবহৃত নিয়ন্ত্রণ "⚙ উন্নত সেটিংস"-এ; resolution/tempoBpm/genre/style এখন ব্যবহারকারী-নিয়ন্ত্রণে এবং একই overrides-পথে ব্যাকএন্ড-স্পেকে যায় (pipelines মান ব্যবহার করে — 14-a-এর কাজের সাথে এন্ড-টু-এন্ড)
+- সততা-পথ: রেট-লিমিটেড/চ্যাটবিহীন সময়েও ইন্সট্রুমেন্টাল সরাসরি তৈরির পথ — প্রসিডিউরাল-লেবেলসহ

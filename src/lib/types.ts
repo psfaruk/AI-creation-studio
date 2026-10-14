@@ -338,7 +338,19 @@ export function getToolInfo(name: string): ToolInfo | undefined {
 // ------------------------------------------------------------
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'interrupted';
-export type ActivityStatus = 'running' | 'done' | 'failed';
+/**
+ * (অডিট §C) টুল-অ্যাক্টিভিটির জীবনচক্র-অবস্থা। running/done/failed মূল তিনটি;
+ * queued/waiting/retrying/cancelled — রিকানেক্ট-রিপ্লে ও ভবিষ্যৎ-সংযোগের জন্য
+ * সম্প্রসারিত (পুরনো ক্লায়েন্ট অজানা মান পেলে চুপচাপ running ধরে)।
+ */
+export type ActivityStatus =
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'queued'
+  | 'waiting'
+  | 'retrying'
+  | 'cancelled';
 
 export interface ArtifactMeta {
   id: string;
@@ -362,6 +374,9 @@ export interface RunStats {
   steps: number;
   toolCalls: number;
   durationMs: number;
+  /** (অডিট §B) প্রথম-টোকেন/প্রথম-LLM-উত্তরের সময় (ms) — রান-শুরু থেকে।
+   *  লেটেন্সি-যাচাই: "উত্তর কতক্ষণে আসতে শুরু করেছিল" প্রশ্নের সৎ উত্তর। */
+  firstTokenMs?: number;
 }
 
 export interface ActivityView {
@@ -375,6 +390,8 @@ export interface ActivityView {
   error?: string;
   artifacts?: ArtifactMeta[];
   durationMs?: number;
+  /** (অডিট §C) শুরুর সময় (ISO) — চলমান অ্যাক্টিভিটিতে লাইভ সময়-গণনার জন্য */
+  startedAt?: string;
 }
 
 export interface ChatMessage {
@@ -447,6 +464,8 @@ export type RunEvent =
       title: string;
       icon: string;
       input: string;
+      /** (অডিট §C) শুরুর সময় (ISO) — ক্লায়েন্ট লাইভ অতিবাহিত-সময় দেখায় */
+      startedAt: string;
     }
   | {
       type: 'tool_end';
@@ -550,6 +569,9 @@ export interface CreativeJobSpec {
   story?: string; // শর্টফিল্মের গল্প
   durationSec?: number;
   fps?: 24 | 25 | 30;
+  /** (অডিট §D) চূড়ান্ত আউটপুট-রেজোলিউশন — না দিলে quality থেকে নির্ধারিত
+   *  (draft→720p, standard/high→1080p)। শুধু সমর্থিত 720p/1080p। */
+  resolution?: OutputResolution;
   sound?: VideoSound;
   subtitles?: boolean;
   songArtifactId?: string; // মিউজিক ভিডিওর আপলোড করা গান
@@ -665,6 +687,8 @@ export interface VideoProviderStatusView {
 
 export type ProductionEvent =
   | { type: 'production_started'; productionId: string }
+  /** (অডিট §H) নিশ্চিতকরণের সাথে সাথেই সারি-সংকেত — কার্যকর-শুরুর আগেই */
+  | { type: 'production_queued'; productionId: string }
   | {
       type: 'step_start';
       productionId: string;

@@ -41,11 +41,15 @@ export function emitProduction(productionId: string, event: ProductionEvent): vo
       }
     }
   }
-  const buf = replayBuffers.get(productionId);
-  if (buf) {
-    buf.push(event);
-    if (buf.length > REPLAY_LIMIT) buf.splice(0, buf.length - REPLAY_LIMIT);
+  // (অডিট §C) রিপ্লে-buffer প্রথম emit থেকেই থাকে — সাবস্ক্রাইবার
+  // যুক্ত হওয়ার আগে নির্গত ইভেন্টও পরে যুক্ত-শ্রোতা replay-তে পাবে।
+  let buf = replayBuffers.get(productionId);
+  if (!buf) {
+    buf = [];
+    replayBuffers.set(productionId, buf);
   }
+  buf.push(event);
+  if (buf.length > REPLAY_LIMIT) buf.splice(0, buf.length - REPLAY_LIMIT);
   if (event.type === 'production_finished') {
     finished.add(productionId);
     setTimeout(() => maybeCleanup(productionId), GRACE_MS);

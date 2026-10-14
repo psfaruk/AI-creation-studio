@@ -316,6 +316,8 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
             stepId: step.id,
             key,
             status: 'skipped',
+            // (অডিট §A3) বাতিল-ধাপেও সময় — সারি-সেলাই হওয়া ধাপগুলোর খরচ দৃশ্যমান
+            durationMs: step.startedAt ? Date.now() - step.startedAt.getTime() : undefined,
           });
           throw err;
         }
@@ -336,6 +338,8 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
             key,
             status: 'failed',
             error: message.slice(0, 400),
+            // (অডিট §A3) ব্যর্থ ধাপেও অতিবাহিত-সময় — সময়সীমায় আটকেছে কিনা স্পষ্ট
+            durationMs: step.startedAt ? Date.now() - step.startedAt.getTime() : undefined,
           });
           return undefined as unknown as T;
         }
@@ -351,6 +355,8 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
           key,
           status: 'failed',
           error: message.slice(0, 400),
+          // (অডিট §A3) ব্যর্থ ধাপেও অতিবাহিত-সময় — কতক্ষণ চেষ্টা করে ব্যর্থ হয়েছে
+          durationMs: step.startedAt ? Date.now() - step.startedAt.getTime() : undefined,
         });
         throw err;
       }

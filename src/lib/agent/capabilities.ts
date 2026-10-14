@@ -373,6 +373,10 @@ export function validateSpec(raw: unknown): SpecValidationResult {
       adjustments.push({ field: 'resolution', from: res, to: '720p', reason: 'অজানা মান — ডিফল্ট' });
     }
   }
+  // (অডিট §D) পার্স-করা রেজোলিউশন এখন spec-এ স্থায়িত্ব পায় — আগে পার্স
+  // হয়েও হারিয়ে যেতো, পাইপলাইন নীরবে quality-ভিত্তিক ডিফল্টে ফিরে যেত।
+  // input অনুপস্থিত হলে undefined-ই থাকে (quality-ভিত্তিক ফলব্যাক)।
+  if (input.resolution != null) spec.resolution = resolution;
 
   // --- duration ---
   const limits = DURATION_LIMITS[type];
@@ -472,6 +476,8 @@ export function summarizeSpec(spec: CreativeJobSpec): string {
   const bits: string[] = [TYPE_LABELS[spec.type]];
   bits.push(`মান: ${spec.quality}`);
   if (spec.aspect) bits.push(`অনুপাত: ${spec.aspect}`);
+  // (অডিট §D) স্পষ্ট রেজোলিউশন থাকলে কার্ডে দেখাও
+  if (spec.resolution) bits.push(`রেজোলিউশন: ${spec.resolution}`);
   if (spec.durationSec) bits.push(`দৈর্ঘ্য: ${spec.durationSec}s`);
   if (spec.fps) bits.push(`FPS: ${spec.fps}`);
   if (spec.sound && spec.sound !== 'none') {

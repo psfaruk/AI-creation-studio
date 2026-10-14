@@ -1,7 +1,16 @@
 'use client';
 
-import { useState } from 'react';
-import { CheckCircle2, ChevronDown, Loader2, XCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import {
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  Hourglass,
+  Loader2,
+  RefreshCcw,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
 
 import {
   Collapsible,
@@ -15,31 +24,64 @@ import { ArtifactList } from '@/components/chat/artifact-view';
 import { ToolIcon } from '@/components/chat/tool-icon';
 import { cn } from '@/lib/utils';
 
-const STATUS_META: Record<
-  ActivityStatus,
-  { label: string; badgeClass: string; iconClass: string }
-> = {
+interface StatusMeta {
+  label: string;
+  badgeClass: string;
+  iconClass: string;
+  icon: LucideIcon;
+}
+
+// (অডিট §C2) টুল-অ্যাক্টিভিটির পূর্ণ জীবনচক্র — queued/waiting/retrying/
+// cancelled নতুন অবস্থাগুলো রিকানেক্ট-রিপ্লে ও ভবিষ্যৎ-সংযোগে আসে
+const STATUS_META: Record<ActivityStatus, StatusMeta> = {
   running: {
     label: 'চলছে',
     badgeClass: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
     iconClass: 'animate-spin',
+    icon: Loader2,
   },
   done: {
     label: 'সম্পন্ন',
     badgeClass: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
     iconClass: '',
+    icon: CheckCircle2,
   },
   failed: {
     label: 'ব্যর্থ',
     badgeClass: 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400',
     iconClass: '',
+    icon: XCircle,
+  },
+  queued: {
+    label: 'সারিতে',
+    badgeClass: 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300',
+    iconClass: '',
+    icon: Clock,
+  },
+  waiting: {
+    label: 'অপেক্ষমাণ',
+    badgeClass: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    iconClass: 'animate-pulse',
+    icon: Hourglass,
+  },
+  retrying: {
+    label: 'পুনঃচেষ্টা',
+    badgeClass: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    iconClass: 'animate-spin',
+    icon: RefreshCcw,
+  },
+  cancelled: {
+    label: 'বাতিল',
+    badgeClass: 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300',
+    iconClass: '',
+    icon: XCircle,
   },
 };
 
 function StatusBadge({ status }: { status: ActivityStatus }) {
-  const meta = STATUS_META[status];
-  const Icon =
-    status === 'running' ? Loader2 : status === 'done' ? CheckCircle2 : XCircle;
+  // অজানা/ভবিষ্যৎ স্ট্যাটাসে ডিফেন্সিভ ফলব্যাক — running-ধাঁচে দেখায়, ক্র্যাশ নয়
+  const meta = STATUS_META[status] ?? STATUS_META.running;
+  const Icon = meta.icon;
   return (
     <span
       className={cn(
@@ -49,6 +91,29 @@ function StatusBadge({ status }: { status: ActivityStatus }) {
     >
       <Icon className={cn('size-3', meta.iconClass)} aria-hidden="true" />
       {meta.label}
+    </span>
+  );
+}
+
+/**
+ * (অডিট §C2) চলমান টুলের লাইভ অতিবাহিত-সময় — প্রতি সেকেন্ডে টিক করে
+ * ("১২ সে.")। শুধু status==='running' হলে মাউন্ট হয়, তাই স্ট্যাটাস
+ * বদলালে/আনমাউন্টে ইন্টারভাল পরিষ্কার হয়ে যায়।
+ */
+function LiveElapsed({ startedAt }: { startedAt: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const startMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(startMs)) return null;
+  const sec = Math.max(0, Math.floor((nowMs - startMs) / 1_000));
+  return (
+    <span className="inline-flex shrink-0 items-center text-[11px] tabular-nums text-amber-600 dark:text-amber-400">
+      {toBnDigits(sec)} সে.
     </span>
   );
 }
@@ -72,8 +137,11 @@ export function ActivityCard({ activity }: { activity: ActivityView }) {
           </span>
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-2">
-              <span className="truncate text-sm font-medium">{activity.title}</span>
+              <span className="min-w-0 truncate text-sm font-medium">{activity.title}</span>
               <StatusBadge status={activity.status} />
+              {activity.status === 'running' && activity.startedAt && (
+                <LiveElapsed startedAt={activity.startedAt} />
+              )}
             </span>
             {activity.input && (
               <span className="mt-0.5 block truncate text-xs text-muted-foreground">
