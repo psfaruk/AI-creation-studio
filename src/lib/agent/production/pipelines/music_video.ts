@@ -42,7 +42,7 @@ import {
   prewarmVideoClip,
   videoGenerationEtaNote,
 } from '../../video/ai_video';
-import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec } from './motion_video';
+import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec, type ShotEngineRecord } from './motion_video';
 import {
   synthesizeInstrumental,
   analyzeAudioEnergy,
@@ -319,6 +319,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
           onStatus: note => {
             step.setDetail(`শট ১ ব্যাকগ্রাউন্ডে: ${note}`).catch(() => undefined);
           },
+          // §3-D: প্রি-ওয়ার্ম-পোলও বাতিল মানবে
+          isCancelled: () => ctx.isCancelled(),
         }
       );
       ctx.partialNotes.push('স্পিড-আপ: প্রথম AI-শট ভিজ্যুয়াল-পরিকল্পনার পরেই চালু (ওভারল্যাপ)।');
@@ -427,6 +429,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
 
   // ------------------------------------------------------- generate_shots
   const shotEngineLabels: string[] = [];
+  const shotEngines: ShotEngineRecord[] = [];
   let aiShots = 0;
   await ctx.runStep(
     'generate_shots',
@@ -462,6 +465,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               fallbackReferenceUrl: artist?.portraitDataUrl,
               fallbackMove: shot.cameraMove,
               onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
+              // §3-D: প্রোভাইডার-পোলের ভেতরেও বাতিল-চেক
+              isCancelled: () => ctx.isCancelled(),
             });
             if (res.usedAi) {
               aiShots++;
@@ -483,6 +488,13 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               });
             }
             shotEngineLabels.push(res.engineLabel);
+            shotEngines.push({
+              index: i + 1,
+              engine: res.engine,
+              label: res.engineLabel,
+              ...(res.aiModel ? { model: res.aiModel } : {}),
+              ...(res.fallbackError ? { error: res.fallbackError.slice(0, 200) } : {}),
+            });
             valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
           } catch (err) {
             ctx.partialNotes.push(
@@ -592,6 +604,12 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
                 })`
               : `শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`
           );
+          shotEngines.push({
+            index: i + 1,
+            engine: frameIsLocal ? 'local_procedural' : 'storyboard',
+            label: shotEngineLabels[shotEngineLabels.length - 1],
+            ...(frameIsLocal ? { error: frameFailReason.slice(0, 200) } : {}),
+          });
           valid.push({ ...shot, framePath, clipPath });
         }
       }
@@ -782,6 +800,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
         },
         cutPoints: shots.map(s => s.startSec),
         shotEngineLabels,
+        shotEngines,
         subtitles: !!srtContent,
         avSyncOk,
         honestLabel,
@@ -799,8 +818,12 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     result.shots = shots.length;
     result.engine = engine;
     result.shotEngineLabels = shotEngineLabels;
+    result.shotEngines = shotEngines;
+    result.aiShots = aiShots;
     result.songBpm = songBpm || null;
     result.musicSource = musicSourceLabel;
+    result.musicEngine =
+      spec.songArtifactId || spec.musicSource === 'none' ? null : 'procedural_instrumental';
     result.avSyncOk = avSyncOk;
     result.aspect = aspect;
     result.hasAudio = info.hasAudio;

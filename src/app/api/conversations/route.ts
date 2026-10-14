@@ -1,12 +1,16 @@
 // GET /api/conversations → ConversationSummary[] (updatedAt desc)
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { sweepStaleRuns } from '@/lib/agent/orchestrator';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   await sweepStaleRuns();
   const convs = await db.conversation.findMany({
     orderBy: { updatedAt: 'desc' },

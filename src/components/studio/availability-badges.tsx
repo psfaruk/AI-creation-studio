@@ -52,12 +52,12 @@ export const OVERALL_META: Record<MatrixOverall, AvailMeta> = {
     className: AMBER,
   },
   unavailable_here: {
-    label: 'এই পরিবেশে অনুপলব্ধ',
-    title: 'সামগ্রিক: এই পরিবেশে অনুপলব্ধ (কারণ: হার্ডওয়্যার/API/ইন্টিগ্রেশন — লাইসেন্স নয়)',
+    label: '⛔ এই পরিবেশে অবরুদ্ধ',
+    title: 'সামগ্রিক: ⛔ এই পরিবেশে অবরুদ্ধ (কারণ: হার্ডওয়্যার/API/ইন্টিগ্রেশন — লাইসেন্স নয়)',
     className: STONE,
   },
   future: {
-    label: 'ভবিষ্যৎ',
+    label: 'ভবিষ্যৎ পরিবেশে সম্ভব (এখানে নয়)',
     title: 'সামগ্রিক: ভবিষ্যৎ পরিবেশে সম্ভব',
     className: STONE_DASHED,
   },
@@ -97,8 +97,8 @@ export const PROVIDER_META: Record<ProviderStatus, AvailMeta> = {
     className: EMERALD,
   },
   not_exposed_by_sdk: {
-    label: 'SDK-তে নেই',
-    title: 'প্রোভাইডার: SDK-তে API প্রকাশিত নয়',
+    label: '⛔ SDK-তে নেই',
+    title: 'প্রোভাইডার: SDK-তে API প্রকাশিত নয় — এই পরিবেশে ব্যবহারযোগ্য নয়',
     className: STONE,
   },
   local_engine: {
@@ -116,7 +116,7 @@ export const INTEGRATION_META: Record<IntegrationStatus, AvailMeta> = {
     className: EMERALD,
   },
   partial: { label: 'আংশিক', title: 'ইন্টিগ্রেশন: আংশিক', className: AMBER },
-  not_integrated: { label: 'সংযুক্ত নয়', title: 'ইন্টিগ্রেশন: সংযুক্ত নয়', className: STONE },
+  not_integrated: { label: '⛔ সংযুক্ত নয়', title: 'ইন্টিগ্রেশন: সংযুক্ত নয় — চালু নয়', className: STONE },
 };
 
 export const RUNTIME_META: Record<RuntimeStatus, AvailMeta> = {
@@ -136,8 +136,8 @@ export const RUNTIME_META: Record<RuntimeStatus, AvailMeta> = {
     className: AMBER,
   },
   unavailable_hardware: {
-    label: 'হার্ডওয়্যার-বাধা',
-    title: 'রানটাইম: এই হার্ডওয়্যারে অসম্ভব (GPU/RAM)',
+    label: '⛔ হার্ডওয়্যার-বাধা',
+    title: 'রানটাইম: এই হার্ডওয়্যারে অসম্ভব (GPU/RAM) — অবরুদ্ধ',
     className: STONE,
   },
   not_applicable: { label: 'প্রযোজ্য নয়', title: 'রানটাইম: প্রযোজ্য নয়', className: STONE },

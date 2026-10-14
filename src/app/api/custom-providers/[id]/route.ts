@@ -6,6 +6,7 @@
 // apiKey খালি-স্ট্রিং হলে কী অপরিবর্তিত থাকে।
 // ============================================================
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { removeCustomProvider, updateCustomProvider } from '@/lib/agent/custom-providers';
 
 export const dynamic = 'force-dynamic';
@@ -14,6 +15,9 @@ export const runtime = 'nodejs';
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function PATCH(req: Request, ctx: Ctx) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await ctx.params;
   let body: unknown;
   try {
@@ -34,7 +38,10 @@ export async function PATCH(req: Request, ctx: Ctx) {
   return NextResponse.json({ provider: result.provider });
 }
 
-export async function DELETE(_req: Request, ctx: Ctx) {
+export async function DELETE(req: Request, ctx: Ctx) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await ctx.params;
   const removed = await removeCustomProvider(id);
   if (!removed) {

@@ -1,6 +1,7 @@
 // POST /api/productions/[id]/revise — পূর্বের ফলাফলের সংশোধন-প্রস্তাব
 // (মাস্টার প্ল্যান §১৬ Preview & Revision — revision চেইন)
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { validateSpec } from '@/lib/agent/capabilities';
 import { toProductionView } from '@/lib/agent/production/serialize';
@@ -9,6 +10,9 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   let body: any = {};
   try {

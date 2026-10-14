@@ -9,6 +9,7 @@ import type {
   ArtifactMeta,
   AttachmentView,
   ChatMessage,
+  RunEndInfo,
   RunStats,
   RunStatus,
 } from '@/lib/types';
@@ -127,6 +128,17 @@ export async function buildMessageView(msg: Message): Promise<ChatMessage> {
       } else if (run.model) {
         base.model = run.model;
       }
+      // (অডিট §১-E) রানের সমাপ্তি-তথ্য — সফল/ব্যর্থ উভয় ক্ষেত্রেই;
+      // UI এটি দিয়ে ব্যর্থতা-চিপ (শ্রেণি-লেবেল + "আবার চেষ্টা") দেখায়।
+      // রান এখনো চলমান হলে স্ট্যাটাস-সহ সামান্য তথ্যই যায়।
+      const runEnd: RunEndInfo = { status: toRunStatus(run.status) };
+      if (run.endReason) runEnd.endReason = run.endReason as RunEndInfo['endReason'];
+      if (run.errorCategory) runEnd.errorCategory = run.errorCategory as RunEndInfo['errorCategory'];
+      if (run.cacheStatus) runEnd.cacheStatus = run.cacheStatus as RunEndInfo['cacheStatus'];
+      if (run.requestedMode) runEnd.requestedMode = run.requestedMode as RunEndInfo['requestedMode'];
+      if (run.usedModel) runEnd.usedModel = run.usedModel;
+      if (run.error) runEnd.error = run.error.slice(0, 300);
+      base.runEnd = runEnd;
     }
   }
   return base;

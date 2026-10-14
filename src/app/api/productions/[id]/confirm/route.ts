@@ -1,6 +1,7 @@
 // POST /api/productions/[id]/confirm — ব্যবহারকারীর নিশ্চিতকরণ
 // (ঐচ্ছিক spec-ওভাররাইড মার্জ করে পুনঃযাচাই → queued → চালু)
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { validateSpec } from '@/lib/agent/capabilities';
 import { startProduction } from '@/lib/agent/production/runner';
@@ -16,6 +17,9 @@ function clientKey(req: Request): string {
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   // --- রেট-লিমিট + দৈনিক কোটা (§১১ নিরাপত্তা) ---
   const rl = checkRateLimit(`confirm:${clientKey(req)}`, RATE_LIMITS.confirm.limit, RATE_LIMITS.confirm.windowMs);
   if (!rl.allowed) {

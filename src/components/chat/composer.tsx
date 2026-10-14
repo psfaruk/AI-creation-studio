@@ -2,22 +2,41 @@
 
 import { useCallback, useEffect, useRef, type ChangeEvent, type KeyboardEvent } from 'react';
 import { motion } from 'framer-motion';
-import { FileAudio, FileImage, FileVideo, Paperclip, SendHorizontal, X } from 'lucide-react';
+import {
+  Check,
+  FileAudio,
+  FileImage,
+  FileVideo,
+  MessageCircle,
+  Paperclip,
+  SendHorizontal,
+  Sparkles,
+  Stethoscope,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 import { PulsingDots } from '@/components/chat/pulsing-dots';
 import { ModelSelector } from '@/components/chat/model-selector';
 import { useAgentRun } from '@/hooks/use-agent-run';
 import { useChatStore, type PendingAttachment } from '@/hooks/use-chat-store';
 import { toast } from '@/hooks/use-toast';
+import type { ChatMode } from '@/lib/types';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // ৫MB
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // ১০MB
@@ -47,6 +66,114 @@ function IndeterminateBar() {
         transition={{ repeat: Infinity, duration: 1.3, ease: 'easeInOut' }}
       />
     </div>
+  );
+}
+
+// ------------------------------------------------------------
+// রান-মোড সিলেক্টর (অডিট §১-A) — মডেল-সিলেক্টরের পাশে কমপ্যাক্ট।
+// ------------------------------------------------------------
+
+const MODE_OPTIONS: Array<{
+  value: ChatMode;
+  label: string;
+  hint: string;
+  icon: LucideIcon;
+}> = [
+  {
+    value: 'normal',
+    label: 'স্বাভাবিক',
+    hint: 'টুল-চালিত এজেন্ট — প্রয়োজনে ওয়েব-সার্চ, ছবি, প্রোডাকশন-প্রস্তাব',
+    icon: Sparkles,
+  },
+  {
+    value: 'chat_only',
+    label: 'শুধু আলাপ',
+    hint: 'কোনো টুল কল হয় না — এক কলেই সরাসরি লিখিত উত্তর',
+    icon: MessageCircle,
+  },
+  {
+    value: 'diagnostic',
+    label: 'ডায়াগনস্টিক',
+    hint: 'ক্যাশ বাইপাস + প্রোভাইডার/সময়/ক্যাশ-স্ট্যাটাসসহ বিস্তারিত নোট',
+    icon: Stethoscope,
+  },
+];
+
+function ModeSelector({ disabled }: { disabled?: boolean }) {
+  const chatMode = useChatStore((s) => s.chatMode);
+  const setChatMode = useChatStore((s) => s.setChatMode);
+  const active = MODE_OPTIONS.find((o) => o.value === chatMode) ?? MODE_OPTIONS[0];
+  const ActiveIcon = active.icon;
+  const isSpecial = active.value !== 'normal';
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              className={
+                'h-11 shrink-0 gap-1.5 rounded-xl px-2.5 text-muted-foreground transition-colors hover:text-foreground ' +
+                (isSpecial
+                  ? 'text-amber-700 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300'
+                  : '')
+              }
+              aria-label={`রান-মোড: ${active.label} — পরিবর্তন করতে খুলুন`}
+              aria-haspopup="menu"
+              disabled={disabled}
+            >
+              <ActiveIcon className="size-5" aria-hidden="true" />
+              <span className="sr-only">রান-মোড</span>
+              {isSpecial && (
+                <span className="hidden text-xs font-medium md:inline" aria-hidden="true">
+                  {active.label}
+                </span>
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top">মোড: {active.label} — {active.hint}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" side="top" className="w-72">
+        <DropdownMenuLabel>রান-মোড</DropdownMenuLabel>
+        {MODE_OPTIONS.map((o) => {
+          const Icon = o.icon;
+          const isActive = o.value === chatMode;
+          return (
+            <DropdownMenuItem
+              key={o.value}
+              onClick={() => setChatMode(o.value)}
+              aria-checked={isActive}
+              className="flex items-start gap-2.5 py-2"
+            >
+              <Icon
+                className={
+                  'mt-0.5 size-4 shrink-0 ' +
+                  (isActive
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-muted-foreground')
+                }
+                aria-hidden="true"
+              />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex items-center gap-1.5 text-sm font-medium">
+                  {o.label}
+                  {isActive && (
+                    <Check
+                      className="size-3.5 text-emerald-700 dark:text-emerald-400"
+                      aria-label="বর্তমানে নির্বাচিত"
+                    />
+                  )}
+                </span>
+                <span className="text-xs leading-relaxed text-muted-foreground">{o.hint}</span>
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -168,6 +295,7 @@ export function Composer() {
 
         <div className="flex items-end gap-1 rounded-2xl border bg-card p-1 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-emerald-600/25">
           <ModelSelector disabled={isRunActive} />
+          <ModeSelector disabled={isRunActive} />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

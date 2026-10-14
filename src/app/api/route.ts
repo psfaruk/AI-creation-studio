@@ -1,5 +1,14 @@
-import { NextResponse } from "next/server";
+// GET /api — রুট হেলথ-চেক (মালিক-সেশনের পেছনে — P0 নিরাপত্তা)
 
-export async function GET() {
-  return NextResponse.json({ message: "Hello, world!" });
+import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
+  return NextResponse.json({ message: 'Hello, world!' });
 }

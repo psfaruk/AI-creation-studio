@@ -47,6 +47,17 @@ model AgentRun {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   status         String       @default("running") // running | completed | failed | interrupted
   error          String?
+  // অডিট-রিপোর্ট §১-B: স্পষ্ট এরর-শ্রেণি (rate_limited | provider_error |
+  // invalid_key | missing_key | invalid_model | timeout | malformed_tool_json |
+  // unknown_tool | tool_error | ffmpeg_error | storage_error | max_steps | aborted | unknown)
+  errorCategory  String?
+  // রান কেন শেষ হলো (final_answer | max_steps | provider_error | rate_limit |
+  // invalid_tool_call | timeout | cancelled)
+  endReason      String?
+  // শেষ LLM-কলের ডিস্ক-ক্যাশ অবস্থা (hit | miss | bypass)
+  cacheStatus    String?
+  // ব্যবহারকারীর অনুরোধকৃত মোড (normal | chat_only | diagnostic)
+  requestedMode  String?
   stepCount      Int          @default(0)
   toolCallCount  Int          @default(0)
   durationMs     Int?

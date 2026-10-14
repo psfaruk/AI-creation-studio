@@ -2,13 +2,13 @@
 
 // ============================================================
 // ProductionCard — চ্যাটে দেখানো প্রোডাকশন কার্ড (মাস্টার প্ল্যান পার্ট E)।
-// - awaiting_confirmation → সম্পাদনাযোগ্য সেটিংস + নিশ্চিত/বাতিল
-// - running/queued → ধাপ-তালিকা + অগ্রগতি + বাতিল
-// - completed/partial/failed/cancelled → ফলাফল + সংশোধন
-// [Task 2-a, Creative Studio upgrade] পলিশ: দৈর্ঘ্য/ফরম্যাট Select,
-// সততার অ্যাম্বার নোট, ধাপ-পালস + বাংলা সময়, গ্যালারি-লিংক।
-// [Task 9] SpecEditor-এ নতুন ফিল্ড (§২/§৪/§১০): ভাষা, ভিডিও-ইঞ্জিন,
-// filmMode, mood, সাবটাইটেল-সুইচ + ৭ কণ্ঠ + ইঞ্জিন-সচেতন সততা-নোট।
+// - awaiting_confirmation → বিশিষ্ট অ্যাম্বার ব্যানার + বড় "চালু করুন"/
+//   "বাতিল" বাটন + কী-তৈরি-হবে সারাংশ (audit §2-A: অনুমোদন মিস করা
+//   অসম্ভব, আর "চলছে"-র মতো দেখায় না)
+// - running/queued → ধাপ-তালিকা + অগ্রগতি + "ক্লাউড ভিডিও" প্রোভাইডার-
+//   স্ট্যাটাস সারি (§2-B) + বাতিল
+// - completed/partial/failed/cancelled → সৎ ইঞ্জিন-ব্যাজ (§2-C) +
+//   ফলাফল + সংশোধন/আবার-চালানো
 // ============================================================
 
 import { useEffect, useState } from 'react';
@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   CircleDashed,
   Clapperboard,
+  Cloud,
   Film,
   Image as ImageIcon,
   Images,
@@ -87,6 +88,185 @@ const VIDEO_TYPES = ['motion_video', 'music_video', 'short_film'] as const;
 
 const isVideoType = (type: CreativeJobSpec['type']) =>
   (VIDEO_TYPES as readonly string[]).includes(type);
+
+// ------------------------------------------------------------
+// §2-A: কী তৈরি হবে + সৎ সময়-অনুমান (নিশ্চিতকরণের আগে)
+// ------------------------------------------------------------
+
+/** প্রকারভেদে "কী তৈরি হবে"-র এক লাইনের বিবরণ */
+function whatWillBeMade(spec: CreativeJobSpec): string {
+  const aspect = spec.aspect ?? '16:9';
+  const dur = spec.durationSec ? `${toBnDigits(spec.durationSec)} সেকেন্ডের ` : '';
+  switch (spec.type) {
+    case 'image':
+      return `১টি চূড়ান্ত ছবি (${spec.format ? spec.format.toUpperCase() : 'PNG'}, ${aspect})`;
+    case 'audio':
+      return spec.audioOperation === 'instrumental'
+        ? 'ইনস্ট্রুমেন্টাল সংগীত (WAV + MP3, বিট-মার্কার-সহ)'
+        : 'কথা/ভয়েসওভার অডিও (পছন্দের কণ্ঠে)';
+    case 'motion_video':
+      return `${dur}মোশন ভিডিও (${aspect}, ${toBnDigits(spec.fps ?? 30)}fps) — ${
+        spec.videoEngine === 'cinematic_motion' ? 'স্টোরিবোর্ড+ক্যামেরা-মোশন শট' : 'প্রতিটি শট ক্লাউড AI (CogVideoX-3) ডিফিউশনে'
+      }`;
+    case 'music_video':
+      return `${dur}মিউজিক ভিডিও (${aspect}) — ${
+        spec.songArtifactId ? 'আপনার আপলোড করা গানের সাথে সমলয়' : 'প্রসিডিউরাল ইন্সট্রুমেন্টাল স্কোরের সাথে'
+      }`;
+    case 'short_film':
+      return `${dur}শর্টফিল্ম (${aspect}) — দৃশ্য, সংলাপ-কণ্ঠ ও সাবটাইটেল-সহ`;
+    default:
+      return 'স্রষ্টা-কাজের ফলাফল';
+  }
+}
+
+/** প্রকার/ইঞ্জিনভেদে সৎ সময়-অনুমান (মোটামুটি রেঞ্জ — প্রম্পট বলে না) */
+function honestEtaText(spec: CreativeJobSpec): string {
+  const ai = spec.videoEngine !== 'cinematic_motion';
+  switch (spec.type) {
+    case 'image':
+      return 'আনুমানিক ৩০–৯০ সেকেন্ড';
+    case 'audio':
+      return spec.audioOperation === 'instrumental' ? 'আনুমানিক ১–২ মিনিট' : 'আনুমানিক ১–৩ মিনিট';
+    case 'motion_video':
+      return ai ? 'আনুমানিক ৩–১০ মিনিট (প্রতি AI-শটে ২–৪ মিনিট)' : 'আনুমানিক ২–৪ মিনিট';
+    case 'music_video':
+      return ai ? 'আনুমানিক ৮–২০ মিনিট (AI-শটগুলো একে একে)' : 'আনুমানিক ৩–৬ মিনিট';
+    case 'short_film':
+      return ai ? 'আনুমানিক ১০–৩০ মিনিট (AI-শট + কণ্ঠ + সাউন্ড)' : 'আনুমানিক ৫–১০ মিনিট';
+    default:
+      return 'কয়েক মিনিট';
+  }
+}
+
+// ------------------------------------------------------------
+// §2-C: ফলাফলের সৎ ইঞ্জিন-ব্যাজ
+// ------------------------------------------------------------
+
+interface ParsedResult {
+  quality?: string;
+  partialNotes?: string[];
+  engine?: string;
+  aiShots?: number;
+  shots?: number;
+  shotEngines?: { index: number; engine: string; label: string; model?: string; error?: string }[];
+  honestLabel?: string;
+  musicEngine?: string | null;
+  musicSource?: string;
+}
+
+/** ফলাফল-বিভাগে দেখানোর সৎ ইঞ্জিন-ব্যাজগুলো */
+function EngineBadges({ view, result }: { view: ProductionView; result: ParsedResult | null }) {
+  if (!result) return null;
+  const badges: { key: string; label: string; className: string; title?: string }[] = [];
+
+  if (isVideoType(view.spec.type)) {
+    const records = result.shotEngines ?? [];
+    const aiCount = records.length
+      ? records.filter(r => r.engine === 'ai_video').length
+      : (result.aiShots ?? 0);
+    const total = records.length || result.shots || 0;
+    const fallbackCount = records.filter(r => r.engine === 'storyboard_fallback').length;
+    const localCount = records.filter(r => r.engine === 'local_procedural').length;
+    const storyboardCount = records.filter(r => r.engine === 'storyboard').length;
+
+    if (result.engine === 'ai_diffusion' && aiCount > 0) {
+      badges.push({
+        key: 'ai',
+        label: `🎬 AI ভিডিও (CogVideoX-3)${total ? ` — ${toBnDigits(aiCount)}/${toBnDigits(total)} শট` : ''}`,
+        className: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+        title: 'প্রকৃত ক্লাউড ডিফিউশন ভিডিও — CogVideoX-3',
+      });
+    }
+    if (result.engine === 'cinematic_motion') {
+      badges.push({
+        key: 'sb',
+        label: '🖼 স্টোরিবোর্ড+ক্যামেরা-মোশন (AI ডিফিউশন নয়)',
+        className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+        title: 'ব্যবহারকারী-নির্বাচিত cinematic_motion ইঞ্জিন',
+      });
+    } else if (fallbackCount > 0) {
+      badges.push({
+        key: 'fb',
+        label: `🖼 স্টোরিবোর্ড-ফলব্যাক (ক্যামেরা-মোশন)${total ? ` — ${toBnDigits(fallbackCount)} শট` : ''}`,
+        className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+        title: 'AI ভিডিও-জেনারেশন ব্যর্থ হওয়া শটে সৎ-ফলব্যাক',
+      });
+    }
+    if (storyboardCount > 0 && result.engine !== 'cinematic_motion') {
+      badges.push({
+        key: 'sb2',
+        label: `🖼 স্টোরিবোর্ড-শট — ${toBnDigits(storyboardCount)} টি`,
+        className: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+      });
+    }
+    if (localCount > 0) {
+      badges.push({
+        key: 'lp',
+        label: `🎨 লোকাল প্রসিডিউরাল ফ্রেম — ${toBnDigits(localCount)} শট (নিউরাল নয়)`,
+        className: 'border-stone-400/50 bg-stone-400/10 text-stone-600 dark:text-stone-300',
+      });
+    }
+  }
+  if (result.musicEngine === 'procedural_instrumental') {
+    badges.push({
+      key: 'music',
+      label: '🎹 লোকাল ইন্সট্রুমেন্টাল (প্রসিডিউরাল)',
+      className: 'border-stone-400/50 bg-stone-400/10 text-stone-600 dark:text-stone-300',
+      title: 'স্থানীয় প্রসিডিউরাল মিউজিক-ইঞ্জিন — নিউরাল মিউজিক-মডেল নয়',
+    });
+  }
+  if (badges.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5" aria-label="আউটপুটের ইঞ্জিন-সততা">
+      {badges.map(b => (
+        <Badge key={b.key} variant="outline" title={b.title ?? b.label} className={cn('h-auto px-2 py-0.5 text-[11px] leading-snug', b.className)}>
+          {b.label}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// §2-B: "ক্লাউড ভিডিও" প্রোভাইডার-স্ট্যাটাস সারি (চলমান প্যানেলে)
+// — productions-view-ও পুনঃব্যবহার করে
+// ------------------------------------------------------------
+
+export function ProviderStatusRow({ provider }: { provider: NonNullable<ProductionView['providerStatus']> }) {
+  const busy = provider.busy;
+  const cooldownSec = Math.ceil(provider.cooldownRemainingMs / 1000);
+  const state = busy
+    ? `প্রোভাইডার ব্যস্ত — একটি কাজ একসাথে চলে${provider.inFlightSec ? ` (${toBnDigits(provider.inFlightSec)} সে. ধরে)` : ''}`
+    : cooldownSec > 1
+      ? `কুলডাউন চলছে (~${toBnDigits(cooldownSec)} সে.)`
+      : 'মুক্ত';
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-xs"
+      title={provider.lastError ? `সর্বশেষ সমস্যা: ${provider.lastError}` : 'CogVideoX-3 ক্লাউড প্রোভাইডারের বর্তমান অবস্থা'}
+    >
+      <span className="flex min-w-0 items-center gap-1.5 font-medium">
+        <Cloud className="size-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+        ক্লাউড ভিডিও (CogVideoX-3)
+      </span>
+      <span
+        className={cn(
+          'min-w-0 truncate',
+          busy
+            ? 'text-amber-700 dark:text-amber-400'
+            : cooldownSec > 1
+              ? 'text-amber-700/90 dark:text-amber-400/90'
+              : 'text-emerald-700 dark:text-emerald-400',
+        )}
+      >
+        {state}
+        {provider.inFlightTaskId && busy ? (
+          <span className="ml-1 font-mono text-[10px] text-muted-foreground">#{provider.inFlightTaskId.slice(0, 8)}…</span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
 
 /** দৈর্ঘ্যের নির্বাচনযোগ্য অপশন (§১৫ সীমার ভেতরে কয়েকটি বোধগম্য মান) */
 const DURATION_OPTIONS: Record<string, number[]> = {
@@ -539,11 +719,11 @@ export function ProductionCard({ productionId }: { productionId: string }) {
   const isActive = ['queued', 'running', 'validating', 'cancelling'].includes(view.status);
   const isDone = ['completed', 'partial'].includes(view.status);
 
-  // resultJson-এর সারাংশ (quality report)
-  let resultSummary: { quality?: string; partialNotes?: string[] } | null = null;
+  // resultJson-এর সারাংশ (quality report + §2-C ইঞ্জিন-তথ্য)
+  let resultSummary: ParsedResult | null = null;
   if (view.resultJson) {
     try {
-      resultSummary = JSON.parse(view.resultJson);
+      resultSummary = JSON.parse(view.resultJson) as ParsedResult;
     } catch {
       resultSummary = null;
     }
@@ -558,13 +738,13 @@ export function ProductionCard({ productionId }: { productionId: string }) {
     if (ok) toast({ title: 'প্রোডাকশন শুরু হয়েছে', description: view.title });
   };
 
-  const handleRevise = async () => {
+  const handleRevise = async (label = 'সংশোধন-প্রস্তাব তৈরি হয়েছে') => {
     setIsRevising(true);
     const revision = await reviseProduction(productionId, (editedSpec ?? view.spec) as unknown as Record<string, unknown>);
     setIsRevising(false);
     if (revision) {
       setRevisionId(revision.id);
-      toast({ title: 'সংশোধন-প্রস্তাব তৈরি হয়েছে', description: 'নিচের নতুন কার্ডে নিশ্চিত করুন' });
+      toast({ title: label, description: 'নিচের নতুন কার্ডে নিশ্চিত করুন' });
     }
   };
 
@@ -605,9 +785,48 @@ export function ProductionCard({ productionId }: { productionId: string }) {
       </div>
 
       <div className="space-y-4 px-4 py-3.5">
-        {/* নিশ্চিতকরণ অবস্থা */}
+        {/* §2-A: নিশ্চিতকরণের অপেক্ষা — বিশিষ্ট অ্যাম্বার ব্যানার (এটা কখনো
+            অগ্রগতি/"চলছে"-র মতো দেখায় না; প্রজন্ম এখনো শুরুই হয়নি) */}
         {isAwaiting && (
           <div className="space-y-3.5">
+            <div
+              role="status"
+              className="rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-3.5"
+              aria-live="polite"
+            >
+              <p className="flex items-start gap-2.5 text-sm font-semibold leading-relaxed text-amber-800 dark:text-amber-300">
+                <span className="mt-0.5 shrink-0 text-lg leading-none" aria-hidden="true">⏸</span>
+                আপনার অনুমোদনের অপেক্ষায় — নিচের বাটনে শুরু করুন
+              </p>
+              <div className="mt-2.5 space-y-1 border-l-2 border-amber-500/40 pl-3 text-xs leading-relaxed text-amber-900/85 dark:text-amber-200/85">
+                <p>
+                  <span className="font-medium">কী তৈরি হবে:</span> {whatWillBeMade(spec)}
+                </p>
+                <p>
+                  <span className="font-medium">সময়:</span> {honestEtaText(spec)}
+                </p>
+              </div>
+              <div className="mt-3.5 flex flex-wrap gap-2">
+                <Button
+                  size="lg"
+                  onClick={() => void handleConfirm()}
+                  disabled={isConfirming}
+                  className="min-h-11 bg-emerald-600 px-5 text-base font-semibold text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+                >
+                  {isConfirming ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <BadgeCheck className="size-5" aria-hidden="true" />}
+                  ✓ চালু করুন
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => void cancelProduction(productionId)}
+                  className="min-h-11 border-red-500/30 px-4 text-base text-red-600 hover:bg-red-500/10 dark:text-red-400"
+                >
+                  <Ban className="size-5" aria-hidden="true" />
+                  ✕ বাতিল
+                </Button>
+              </div>
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {specSummaryText(spec).map(bit => (
                 <Badge key={bit} variant="secondary" className="text-[11px] font-normal">
@@ -628,27 +847,8 @@ export function ProductionCard({ productionId }: { productionId: string }) {
               )}
             <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
               <PencilRuler className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-              সেটিংস বদলে নিশ্চিত করতে পারেন — নিশ্চিত করার পরেই প্রকৃত জেনারেশন শুরু হবে।
+              সেটিংস বদলে নিশ্চিত করতে পারেন — “✓ চালু করুন” চাপার আগে প্রকৃত জেনারেশন শুরু হয় না।
             </p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                onClick={() => void handleConfirm()}
-                disabled={isConfirming}
-                className="bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700"
-              >
-                {isConfirming ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <BadgeCheck className="size-4" aria-hidden="true" />}
-                নিশ্চিত করুন
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void cancelProduction(productionId)}
-              >
-                <Ban className="size-4" aria-hidden="true" />
-                বাতিল
-              </Button>
-            </div>
           </div>
         )}
 
@@ -662,15 +862,20 @@ export function ProductionCard({ productionId }: { productionId: string }) {
               </div>
               <Progress value={view.progress} className="h-1.5" aria-label="অগ্রগতি" />
             </div>
+            {/* §2-B: ক্লাউড ভিডিও-প্রোভাইডারের সৎ স্ট্যাটাস (ব্যস্ত/কুলডাউন/মুক্ত) */}
+            {isVideoType(view.spec.type) && view.providerStatus && (
+              <ProviderStatusRow provider={view.providerStatus} />
+            )}
             <StepList view={view} />
             <Button
               size="sm"
               variant="outline"
               onClick={() => void cancelProduction(productionId)}
               disabled={view.status === 'cancelling'}
+              className="border-red-500/30 text-red-600 hover:bg-red-500/10 dark:text-red-400"
             >
               <Ban className="size-4" aria-hidden="true" />
-              {view.status === 'cancelling' ? 'বাতিল হচ্ছে…' : 'বাতিল করুন'}
+              {view.status === 'cancelling' ? '✕ বাতিল হচ্ছে…' : '✕ বাতিল করুন'}
             </Button>
           </div>
         )}
@@ -678,15 +883,26 @@ export function ProductionCard({ productionId }: { productionId: string }) {
         {/* ফলাফল */}
         {(isDone || view.status === 'failed' || view.status === 'cancelled') && (
           <div className="space-y-3">
+            {view.status === 'cancelled' && (
+              <p className="flex items-start gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                <Ban className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                বাতিল করা হয়েছে — কোনো চূড়ান্ত ফাইল তৈরির নিশ্চয়তা নেই। চাইলে নিচের “🔁 আবার চালান” দিয়ে নতুন প্রস্তাব তৈরি করুন।
+              </p>
+            )}
             {view.status === 'failed' && view.error && (
               <p className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
                 <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 {view.error}
               </p>
             )}
+            {/* §2-C: আউটপুটের সৎ ইঞ্জিন-ব্যাজ (AI ভিডিও / স্টোরিবোর্ড-ফলব্যাক /
+                লোকাল প্রসিডিউরাল) — কী দিয়ে তৈরি হলো সেটাই বলে */}
+            {(isDone || view.status === 'partial') && (
+              <EngineBadges view={view} result={resultSummary} />
+            )}
             {resultSummary?.partialNotes && resultSummary.partialNotes.length > 0 && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                <p className="mb-1 font-medium">আংশিক সফলতার নোট:</p>
+                <p className="mb-1 font-medium">আংশিক — কী ব্যর্থ হয়েছে:</p>
                 <ul className="list-inside list-disc space-y-0.5">
                   {resultSummary.partialNotes.slice(0, 4).map((n, i) => (
                     <li key={i}>{n}</li>
@@ -698,7 +914,7 @@ export function ProductionCard({ productionId }: { productionId: string }) {
               <p className="text-xs text-muted-foreground">{resultSummary.quality}</p>
             )}
             {view.artifacts.length > 0 && <ArtifactList artifacts={view.artifacts} />}
-            {isDone && (
+            {(isDone || view.status === 'failed' || view.status === 'cancelled') && (
               <div className="flex flex-wrap gap-2">
                 {view.status === 'completed' && view.artifacts.length > 0 && (
                   <Button
@@ -714,6 +930,21 @@ export function ProductionCard({ productionId }: { productionId: string }) {
                   <Button size="sm" variant="outline" onClick={() => void handleRevise()} disabled={isRevising}>
                     {isRevising ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <RefreshCcw className="size-4" aria-hidden="true" />}
                     সংশোধন করুন
+                  </Button>
+                )}
+                {/* §2-E: ব্যর্থ/বাতিল হলে নিরাপদ পুনঃচালানোর পথ — বিদ্যমান
+                    revise এন্ডপয়েন্টই (নতুন awaiting_confirmation প্রস্তাব তৈরি
+                    করে; সরাসরি চালু করে না) */}
+                {(view.status === 'failed' || view.status === 'cancelled') && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleRevise('আবার চালানোর প্রস্তাব তৈরি হয়েছে')}
+                    disabled={isRevising}
+                    className="border-emerald-600/40 text-emerald-700 hover:bg-emerald-600/10 dark:text-emerald-400"
+                  >
+                    {isRevising ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <RefreshCcw className="size-4" aria-hidden="true" />}
+                    🔁 আবার চালান
                   </Button>
                 )}
               </div>

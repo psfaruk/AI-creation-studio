@@ -21,6 +21,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import type { ArtifactMeta } from '@/lib/types';
 
 import { formatSizeBn, withDownloadParam } from '@/components/chat/bn-format';
+import { withStudioToken } from '@/components/auth/security-gate';
 import { cn } from '@/lib/utils';
 
 // ------------------------------------------------------------
@@ -318,7 +319,7 @@ function VideoEngineMetaCard({ meta }: { meta: Record<string, unknown> }) {
 function DownloadLink({ url, className }: { url: string; className?: string }) {
   return (
     <a
-      href={withDownloadParam(url)}
+      href={withDownloadParam(withStudioToken(url))}
       download
       className={
         className ??
@@ -346,7 +347,7 @@ function ImageGrid({ artifacts }: { artifacts: ArtifactMeta[] }) {
             aria-label={`${artifact.fileName} প্রিভিউ করুন`}
           >
             <img
-              src={artifact.url}
+              src={withStudioToken(artifact.url)}
               alt={artifact.fileName}
               loading="lazy"
               className="h-24 w-full object-cover transition-transform duration-300 group-hover:scale-105 sm:h-28"
@@ -364,7 +365,7 @@ function ImageGrid({ artifacts }: { artifacts: ArtifactMeta[] }) {
           {preview && (
             <div className="space-y-4">
               <img
-                src={preview.url}
+                src={withStudioToken(preview.url)}
                 alt={preview.fileName}
                 className="mx-auto max-h-[62vh] w-auto rounded-lg border"
               />
@@ -373,7 +374,7 @@ function ImageGrid({ artifacts }: { artifacts: ArtifactMeta[] }) {
                   asChild
                   className="bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700"
                 >
-                  <a href={withDownloadParam(preview.url)} download>
+                  <a href={withDownloadParam(withStudioToken(preview.url))} download>
                     <Download className="size-4" aria-hidden="true" />
                     ডাউনলোড
                   </a>
@@ -400,7 +401,7 @@ function AudioArtifact({ artifact }: { artifact: ArtifactMeta }) {
         {formatSizeBn(artifact.size) && <span className="shrink-0">{formatSizeBn(artifact.size)}</span>}
         <DownloadLink url={artifact.url} className="inline-flex shrink-0 items-center gap-1 text-emerald-700 hover:underline dark:text-emerald-400" />
       </div>
-      <audio controls src={artifact.url} className="h-10 w-full" aria-label={artifact.fileName} />
+      <audio controls src={withStudioToken(artifact.url)} className="h-10 w-full" aria-label={artifact.fileName} />
       {/* §২.৩: যাচাই-প্রিভিউ — কোনো meta না থাকলে আগের মতোই */}
       {verification && <VerificationCard verification={verification} meta={meta ?? {}} />}
       {instrumental && <InstrumentalMetaCard meta={meta ?? {}} />}
@@ -423,7 +424,7 @@ function VideoArtifact({ artifact }: { artifact: ArtifactMeta }) {
         <DownloadLink url={artifact.url} className="inline-flex shrink-0 items-center gap-1 text-emerald-700 hover:underline dark:text-emerald-400" />
       </div>
       <div className="p-2.5 pt-2">
-        <video controls preload="metadata" src={artifact.url} className="max-h-[60vh] w-full rounded-md bg-black" aria-label={artifact.fileName} />
+        <video controls preload="metadata" src={withStudioToken(artifact.url)} className="max-h-[60vh] w-full rounded-md bg-black" aria-label={artifact.fileName} />
       </div>
       {/* শট-ইঞ্জিন লেবেল + সৎ-লেবেল (§১১-B) — meta না থাকলে আগের মতোই */}
       {hasEngineMeta && <div className="px-2.5 pb-2.5"><VideoEngineMetaCard meta={meta ?? {}} /></div>}

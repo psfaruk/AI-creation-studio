@@ -6,12 +6,17 @@
 // ============================================================
 
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { createApiKey, listApiKeys, platformModelOptions } from '@/lib/platform/api-keys';
 import { readPlatformVerification } from '@/lib/platform/platform-models';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   try {
     const [keys, verifications] = await Promise.all([listApiKeys(), readPlatformVerification()]);
     return NextResponse.json({
@@ -30,6 +35,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

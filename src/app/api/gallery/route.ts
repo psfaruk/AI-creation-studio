@@ -1,5 +1,6 @@
 // GET /api/gallery — সব artifact-এর গ্যালারি তালিকা (kind-ফিল্টারসহ)
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { toArtifactMeta } from '@/lib/agent/serialize';
 
@@ -7,6 +8,9 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const url = new URL(req.url);
   const kindParam = url.searchParams.get('kind');
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 120, 1), 300);

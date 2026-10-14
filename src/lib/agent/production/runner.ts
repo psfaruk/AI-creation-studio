@@ -17,7 +17,7 @@ import { db } from '@/lib/db';
 import { saveArtifactFile, readArtifactFile } from '../storage';
 import { toArtifactMeta } from '../serialize';
 import { emitProduction } from './bus';
-import { cleanupWorkingDir, makeWorkingDir } from '@/lib/media/ffmpeg';
+import { cleanupWorkingDir, makeWorkingDir, killProductionFfmpeg, runWithFfmpegTracking } from '@/lib/media/ffmpeg';
 import { validateSpec } from '../capabilities';
 
 const STALE_PRODUCTION_MS = 20 * 60 * 1000; // ২০ মিনিট
@@ -62,6 +62,15 @@ export class CancelledError extends Error {
   }
 }
 
+/**
+ * §3-D নাম-চুক্তি: ai_video/ffmpeg-ট্র্যাকার থেকে আসা বাতিল-ত্রুটি
+ * (VideoAbortedError / ffmpeg-kill) instanceof ছাড়াই চেনার সাধারণ পথ —
+ * আমদানি-চক্র (runner ↔ pipelines ↔ ai_video) এড়াতে নাম-মিলিয়ে চেক।
+ */
+function isCancellationError(err: unknown): boolean {
+  return err instanceof CancelledError || (err instanceof Error && err.name === 'CancelledError');
+}
+
 /** ধাপের সময়সীমা অতিক্রমণ (S10) — fail-soft: ধাপ failed-চিহ্ত হয়,
  *  সৎ partialNote যোগ হয়, প্রোডাকশন পরের ধাপে চলে যায় */
 export class StepTimeoutError extends Error {
@@ -101,6 +110,9 @@ export interface PipelineContext {
   ): Promise<T>;
   /** দুটি ধাপের মাঝে বাতিল-অনুরোধ পরীক্ষা (CancelledError ছুড়ে) */
   checkCancelled(): Promise<void>;
+  /** §3-D: নিক্ষেপ-বিহীন বাতিল-অনুরোধ পরীক্ষা — ai_video-র পোল-লুপ ও
+   *  দীর্ঘ অপেক্ষাগুলোতে ২ সে. টিকে জিজ্ঞাসা করে */
+  isCancelled(): Promise<boolean>;
   /** চূড়ান্ত artifact সংরক্ষণ + DB নিবন্ধন */
   registerArtifact(params: {
     buffer: Buffer;
@@ -191,7 +203,25 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
     partialNotes,
     async checkCancelled() {
       const fresh = await db.production.findUnique({ where: { id: productionId }, select: { status: true } });
-      if (fresh?.status === 'cancelling') throw new CancelledError();
+      if (fresh?.status === 'cancelling') {
+        // §3-D: এই প্রোডাকশনের সক্রিয় ffmpeg-সন্তান তৎক্ষণাৎ মেরে ফেলো —
+        // চলমান এনকোড প্রক্রিয়া বাতিলকরণের পরেও মিনিটখানেক চলতে পারে
+        try {
+          const killed = killProductionFfmpeg(productionId);
+          if (killed > 0) console.log(`[production] ${productionId.slice(-6)} বাতিল: ${killed}টি ffmpeg প্রক্রিয়া বন্ধ`);
+        } catch {
+          // সর্বোচেষ্ট
+        }
+        throw new CancelledError();
+      }
+    },
+    async isCancelled() {
+      try {
+        const fresh = await db.production.findUnique({ where: { id: productionId }, select: { status: true } });
+        return fresh?.status === 'cancelling';
+      } catch {
+        return false;
+      }
     },
     async runStep<T>(
       key: string,
@@ -274,7 +304,21 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
         return result;
       } catch (err) {
         if (timer) clearTimeout(timer);
-        if (err instanceof CancelledError) throw err;
+        if (isCancellationError(err)) {
+          // বাতিল — ধাপটি failed নয়, skipped হিসেবে সৎভাবে চিহ্নিত
+          await db.productionStep.update({
+            where: { id: step.id },
+            data: { status: 'skipped', finishedAt: new Date() },
+          }).catch(() => undefined);
+          emitProduction(productionId, {
+            type: 'step_end',
+            productionId,
+            stepId: step.id,
+            key,
+            status: 'skipped',
+          });
+          throw err;
+        }
         const message = err instanceof Error ? err.message : String(err);
         // S10 fail-soft: সময়সীমা-অতিক্রম ধাপ প্রোডাকশন মারবে না —
         // ধাপ failed + সৎ নোট + undefined রিটার্ন (কল-সাইট-সচেতন চুক্তি)
@@ -376,25 +420,61 @@ async function runProduction(productionId: string): Promise<void> {
     let errorMessage: string | undefined;
     let result: Record<string, unknown> = {};
 
+    // §3-D আক্রমণাত্মক বাতিল-প্রহরী: ৫ সেকেন্ড পর পর অবস্থা দেখে
+    // 'cancelling' পেলে সক্রিয় ffmpeg-সন্তান মেরে ফেলে — ধাপ-চেকপয়েন্টের
+    // অপেক্ষায় থাকা দীর্ঘ এনকোডও দ্রুত বিরত হয়।
+    const cancelWatch = setInterval(() => {
+      void (async () => {
+        try {
+          const fresh = await db.production.findUnique({ where: { id: productionId }, select: { status: true } });
+          if (fresh?.status === 'cancelling') killProductionFfmpeg(productionId);
+        } catch {
+          // নীরব
+        }
+      })();
+    }, 5_000);
+    if (typeof (cancelWatch as any).unref === 'function') (cancelWatch as any).unref();
+
     try {
-      const pipelineResult = await pipeline(ctx);
+      // §3-D: ffmpeg-ট্র্যাকিং-সুযোগে পাইপলাইন — এই প্রোডাকশনের সব
+      // runFfmpeg-সন্তান বাতিলে kill করা যায় (film-helpers-এর ভেতরেরও)
+      const pipelineResult = await runWithFfmpegTracking(productionId, () => pipeline(ctx));
       result = pipelineResult.result;
       if (pipelineResult.statusOverride === 'partial' || ctx.partialNotes.length > 0) {
         finalStatus = 'partial';
         result = { ...result, partialNotes: ctx.partialNotes };
       }
     } catch (err) {
-      if (err instanceof CancelledError) {
+      if (isCancellationError(err)) {
         finalStatus = 'cancelled';
       } else {
         errorMessage = err instanceof Error ? err.message : String(err);
         finalStatus = 'failed';
-        // কিছু আর্টিফ্যাক্ট তৈরি হয়ে থাকলে partial
-        const produced = await db.artifact.count({ where: { productionId } });
-        if (produced > 0) {
-          finalStatus = 'partial';
-          result = { partialNotes: [...ctx.partialNotes, `ত্রুটি: ${errorMessage.slice(0, 300)}`] };
+        // §3-D সামঞ্জস্য: ত্রুটি যদি আমাদের বাতিল-kill-এর পার্শ্ব-ফল হয়
+        // (যেমন মারা যাওয়া ffmpeg-এর ত্রুটি), ব্যবহারকারী বাতিলই চেয়েছিলেন
+        const currentStatus = await db.production
+          .findUnique({ where: { id: productionId }, select: { status: true } })
+          .then(r => r?.status)
+          .catch(() => undefined);
+        if (currentStatus === 'cancelling') {
+          finalStatus = 'cancelled';
+          errorMessage = undefined;
+        } else {
+          // কিছু আর্টিফ্যাক্ট তৈরি হয়ে থাকলে partial
+          const produced = await db.artifact.count({ where: { productionId } });
+          if (produced > 0) {
+            finalStatus = 'partial';
+            result = { partialNotes: [...ctx.partialNotes, `ত্রুটি: ${errorMessage.slice(0, 300)}`] };
+          }
         }
+      }
+    } finally {
+      clearInterval(cancelWatch);
+      // যা-ই হোক, এই প্রোডাকশনের ঝুলে-থাকা ffmpeg-সন্তান থাকলে পরিষ্কার
+      try {
+        killProductionFfmpeg(productionId);
+      } catch {
+        // নীরব
       }
     }
 
@@ -443,19 +523,20 @@ async function failProduction(productionId: string, message: string): Promise<vo
   }
 }
 
-/** >সময়সীমা-অতিক্রম চলমান প্রোডাকশন → failed (AI-ভিডিওতে দীর্ঘ সীমা) */
+/** >সময়সীমা-অতিক্রম চলমান প্রোডাকশন → failed (AI-ভিডিওতে দীর্ঘ সীমা)।
+ *  §2 সততা: ত্রুটি-বার্তা সম্ভাব্য কারণ স্পষ্টভাবে বলে। */
 export async function sweepStaleProductions(): Promise<void> {
   try {
     const aiVideoTypes = ['motion_video', 'music_video', 'short_film'];
     const now = Date.now();
-    for (const [staleMs, types] of [
-      [STALE_AI_VIDEO_MS, aiVideoTypes],
-      [STALE_PRODUCTION_MS, ['image', 'audio'] as string[]],
-    ] as [number, string[]][]) {
+    for (const [staleMs, types, message] of [
+      [STALE_AI_VIDEO_MS, aiVideoTypes, `সময়সীমা অতিক্রম (৬০ মিনিট) — সাধারণত প্রোভাইডার থ্রটলিং/লম্বা কিউ-এর কারণে; আবার চেষ্টা করুন`] as const,
+      [STALE_PRODUCTION_MS, ['image', 'audio'] as string[], `সময়সীমা অতিক্রম (২০ মিনিট) — সম্ভাব্য কারণ: প্রোভাইডার রেট-সীমা বা আটকে যাওয়া কল; আবার চেষ্টা করুন`] as const,
+    ] as [number, string[], string][]) {
       const cutoff = new Date(now - staleMs);
       const res = await db.production.updateMany({
         where: { status: { in: ['running', 'validating'] }, type: { in: types }, startedAt: { lt: cutoff } },
-        data: { status: 'failed', error: 'সময়সীমা অতিক্রম করেছে (stale sweep)', finishedAt: new Date() },
+        data: { status: 'failed', error: message, finishedAt: new Date() },
       });
       if (res.count > 0) {
         console.log(`[production] sweep: ${res.count} টি stale প্রোডাকশন failed (${types.join(',')})`);
@@ -463,6 +544,38 @@ export async function sweepStaleProductions(): Promise<void> {
     }
   } catch (err) {
     console.error('[production] sweep error', err);
+  }
+}
+
+// ------------------------------------------------------------
+// §2 সততা: রিস্টার্টে বাধাগ্রস্ত প্রোডাকশন — মডিউল লোডে একবারই
+// 'running'/'queued'/'validating'/'cancelling' সারিগুলো সৎভাবে failed
+// করা হয় ("চলছে" দেখানো মিথ্যা হবে — প্রসেস মরে গেছে)। globalThis-
+// গার্ডেড; মেমরির running/queue-সেটে থাকা আইডি বাদ যায় (dev HMR-এ
+// চলমান কাজ মিথ্যাভাবে বাদ না পড়তে)।
+// ------------------------------------------------------------
+async function sweepInterruptedOnBoot(): Promise<void> {
+  try {
+    const state = queueState();
+    const rows = await db.production.findMany({
+      where: { status: { in: ['running', 'queued', 'validating', 'cancelling'] } },
+      select: { id: true },
+    });
+    const interrupted = rows
+      .map(r => r.id)
+      .filter(id => !state.running.has(id) && !state.queue.includes(id));
+    if (interrupted.length === 0) return;
+    const message = 'সার্ভার রিস্টার্টে বাধাগ্রস্ত হয়েছে — আবার চালু করুন (নিচের "আবার চালান" বা "সংশোধন" দিয়ে নতুন প্রস্তাব তৈরি হবে)';
+    await db.production.updateMany({
+      where: { id: { in: interrupted } },
+      data: { status: 'failed', error: message, finishedAt: new Date() },
+    });
+    for (const id of interrupted) {
+      emitProduction(id, { type: 'production_finished', productionId: id, status: 'failed', error: message });
+    }
+    console.log(`[production] boot-sweep: ${interrupted.length} টি রিস্টার্টে-বাধাগ্রস্ত প্রোডাকশন সৎভাবে failed করা হলো`);
+  } catch (err) {
+    console.error('[production] boot-sweep error', err);
   }
 }
 
@@ -482,5 +595,14 @@ export async function sweepStaleProductions(): Promise<void> {
     if (typeof (gg.__staleSweepTimer as any).unref === 'function') {
       (gg.__staleSweepTimer as any).unref();
     }
+  }
+  // §2 বুট-সুইপ — একবারই, ৩ সেকেন্ড দেরিতে (মডিউল-গ্রাফ বসন্ত ও
+  // চালু-হওয়া কনকারেন্ট কাজ running-সেটে ঢোকার সময় পায়)
+  if (!gg.__productionBootSwept) {
+    gg.__productionBootSwept = true;
+    const bootTimer = setTimeout(() => {
+      sweepInterruptedOnBoot().catch(() => undefined);
+    }, 3_000);
+    if (typeof (bootTimer as any).unref === 'function') (bootTimer as any).unref();
   }
 }

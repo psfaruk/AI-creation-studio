@@ -12,6 +12,7 @@
 //  - লাইট রেট-লিমিট: ২০ লেখা/ঘণ্টা (আইপি-ভিত্তিক)
 // ============================================================
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { checkRateLimit } from '@/lib/limits';
 import {
   clearProviderKey,
@@ -36,13 +37,19 @@ function parseProvider(raw: unknown): ChatProviderId | null {
 }
 
 /** GET → মাস্কড কী-অবস্থা */
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const statuses = await providerKeyStatuses();
   return NextResponse.json({ providers: statuses });
 }
 
 /** POST → কী সংরক্ষণ */
 export async function POST(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const rl = checkRateLimit(`keys:${clientKey(req)}`, 20, 60 * 60_000);
   if (!rl.allowed) {
     return NextResponse.json(
@@ -82,6 +89,9 @@ export async function POST(req: Request) {
 
 /** DELETE → কী মুছে ফেলা */
 export async function DELETE(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const rl = checkRateLimit(`keys:${clientKey(req)}`, 20, 60 * 60_000);
   if (!rl.allowed) {
     return NextResponse.json({ error: 'অনেক দ্রুত অনুরোধ — কিছুক্ষণ পরে চেষ্টা করুন' }, { status: 429 });

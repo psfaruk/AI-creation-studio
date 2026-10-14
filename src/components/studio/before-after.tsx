@@ -9,6 +9,7 @@
 
 import { useState } from 'react';
 import { ChevronsLeftRight } from 'lucide-react';
+import { withStudioToken } from '@/components/auth/security-gate';
 import { cn } from '@/lib/utils';
 
 export function BeforeAfter({
@@ -31,14 +32,14 @@ export function BeforeAfter({
     >
       {/* পরের ছবি — সম্পূর্ণ (লেআউট নির্ধারণ করে) */}
       <img
-        src={afterUrl}
+        src={withStudioToken(afterUrl)}
         alt={`${alt} — পরে`}
         draggable={false}
         className="pointer-events-none block w-full select-none"
       />
       {/* আগের ছবি — বাম দিক থেকে pos% পর্যন্ত ক্লিপড */}
       <img
-        src={beforeUrl}
+        src={withStudioToken(beforeUrl)}
         alt={`${alt} — আগে`}
         draggable={false}
         className="pointer-events-none absolute inset-0 h-full w-full select-none object-cover"

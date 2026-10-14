@@ -12,6 +12,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { getZAI } from '@/lib/agent/llm';
 import {
   writePlatformVerificationEntry,
@@ -126,6 +127,9 @@ function makeErr(msg: string, t0: number): PlatformVerificationEntry {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   let body: Record<string, unknown> = {};
   try {
     body = (await req.json()) as Record<string, unknown>;

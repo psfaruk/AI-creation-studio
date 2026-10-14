@@ -10,12 +10,16 @@
 // লিখে যোগ করা যায় (ডায়ালগে ঘর আছে)।
 // ============================================================
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { probeProviderModels } from '@/lib/agent/custom-providers';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   let body: unknown;
   try {
     body = await req.json();

@@ -105,7 +105,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     quality: 'quality_not_verified',
     capability: 'সম্পূর্ণ গান (কণ্ঠসংগীত + সুর)',
     taskType: 'full_song',
-    tools: ['generate_singing (সৎ-গেটেড)'],
+    tools: ['generate_singing (⛔ এই পরিবেশে অবরুদ্ধ — সৎ-গেটেড)'],
     modelKey: 'ace-step',
     model: 'ACE-Step (প্রার্থী #১) · YuE (প্রার্থী #২)',
     license: 'allowed_noncommercial',
@@ -116,9 +116,9 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     lastTestNote:
       'দুই প্রার্থী: ACE-Step — রিপো Apache-2.0, তবে নির্দিষ্ট checkpoint ও dependency-শর্ত যাচাই বাকি; YuE — ওয়েট CC-BY-NC 4.0 (অ-বাণিজ্যিকে অনুমোদিত)',
     errorReason:
-      'প্রার্থী-দুটির লাইসেন্স-পথ আলাদা (YuE: অ-বাণিজ্যিকে অনুমোদিত; ACE-Step: রিপো Apache-2.0, ওয়েট-শর্ত যাচাই বাকি)। প্রকৃত বাধা উভয়ের ক্ষেত্রেই: GPU নেই (ন্যূনতম ~৪.৫GB VRAM) + SDK-তে গান-জেনারেশন API নেই + বাংলা লিরিক্স-বেঞ্চমার্ক হয়নি।',
-    overall: 'future',
-    honestNote: 'TTS-কে কখনো "গান গাওয়া" বলে দেখানো হয় না।',
+      '⛔ এই পরিবেশে অবরুদ্ধ। প্রকৃত বাধা: GPU নেই (ন্যূনতম ~৪.৫GB VRAM) + SDK-তে গান-জেনারেশন API নেই + বাংলা লিরিক্স-বেঞ্চমার্ক হয়নি। (লাইসেন্স এখানে বাধা নয় — YuE অ-বাণিজ্যিকে অনুমোদিত।)',
+    overall: 'unavailable_here',
+    honestNote: '⛔ গান গাওয়া এখন চালু নয় — TTS-কে কখনো "গান গাওয়া" বলে দেখানো হয় না। ভবিষ্যৎ GPU-পরিবেশে সম্ভব।',
     fallback: 'প্রসিডিউরাল ইনস্ট্রুমেন্টাল + লিরিক্স-ডকুমেন্ট (plan_music), অথবা নিজের রেকর্ড করা গান আপলোড।',
   },
   {
@@ -126,15 +126,16 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     quality: 'quality_not_verified',
     capability: 'স্টেম-পৃথকীকরণ (কণ্ঠ/বাদ্য আলাদা)',
     taskType: 'stem_separation',
-    tools: ['separate_stems (সৎ-গেটেড)'],
+    tools: ['separate_stems (⛔ এই পরিবেশে অবরুদ্ধ — সৎ-গেটেড)'],
     modelKey: 'demucs-uvr',
     model: 'Demucs / UVR',
     license: 'needs_review',
     provider: 'not_exposed_by_sdk',
     integration: 'not_integrated',
     runtime: 'unavailable_hardware',
-    errorReason: 'SDK-তে API নেই; CPU-তে অত্যন্ত ধীর ও ৪.১GB RAM-এ ঝুঁকিপূর্ণ (স্যান্ডবক্স-ক্র্যাশ এড়ানো হয়েছে); Demucs কোড MIT, তবে প্রতিটি checkpoint ও dependency-র শর্ত আলাদাভাবে যাচাই বাকি।',
-    overall: 'future',
+    errorReason: '⛔ এই পরিবেশে অবরুদ্ধ। প্রকৃত বাধা: SDK-তে API নেই; CPU-তে অত্যন্ত ধীর ও ৪.১GB RAM-এ ঝুঁকিপূর্ণ (স্যান্ডবক্স-ক্র্যাশ এড়ানো হয়েছে); Demucs কোড MIT, তবে প্রতিটি checkpoint ও dependency-র শর্ত আলাদাভাবে যাচাই বাকি।',
+    overall: 'unavailable_here',
+    honestNote: '⛔ স্টেম-পৃথকীকরণ এখন চালু নয় — "শীঘ্রই আসছে" নয়, সত্যিই বন্ধ।',
     fallback: 'মিক্স-টুল দিয়ে ভলিউম/ডাকিং-সমন্বয় সম্ভব (পৃথকীকরণ ছাড়া)।',
   },
   // ---------------- ছবি ----------------
@@ -500,8 +501,8 @@ export function availabilityMatrixResponse(): AvailabilityMatrixResponse {
       available: 'সামগ্রিক: চালু',
       available_with_limits: 'সামগ্রিক: চালু — নির্দিষ্ট সীমা/সতর্কতাসহ',
       experimental: 'সামগ্রিক: পরীক্ষামূলক (সৎ লেবেলসহ)',
-      unavailable_here: 'সামগ্রিক: এই পরিবেশে অনুপলব্ধ',
-      future: 'সামগ্রিক: ভবিষ্যৎ পরিবেশে সম্ভব',
+      unavailable_here: 'সামগ্রিক: ⛔ এই পরিবেশে অবরুদ্ধ (কারণ: হার্ডওয়্যার/API/ইন্টিগ্রেশন — লাইসেন্স নয়)',
+      future: 'সামগ্রিক: ভবিষ্যৎ পরিবেশে সম্ভব (এখানে নয়)',
     },
   };
 }

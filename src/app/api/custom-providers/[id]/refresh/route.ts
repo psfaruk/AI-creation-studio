@@ -7,6 +7,7 @@
 // (কিছু সংরক্ষণ করে না — সম্পাদনা-ডায়ালগে ব্যবহারকারী বেছে PATCH করে)
 // ============================================================
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { listCustomProviders, probeProviderModels } from '@/lib/agent/custom-providers';
 import { readFile } from 'fs/promises';
 import path from 'path';
@@ -30,7 +31,10 @@ async function getStored(id: string): Promise<{ baseUrl: string; apiKey: string 
   }
 }
 
-export async function POST(_req: Request, ctx: Ctx) {
+export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await ctx.params;
   // আগে নিশ্চিত হই আইডিটি সত্যিই তালিকায় আছে (404-সৎতা)
   const providers = await listCustomProviders();

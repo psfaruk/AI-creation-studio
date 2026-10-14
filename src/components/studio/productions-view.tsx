@@ -28,7 +28,8 @@ import {
 } from 'lucide-react';
 
 import { formatTimeBn, relativeTimeBn, toBnDigits } from '@/components/chat/bn-format';
-import { ProductionCard } from '@/components/studio/production-card';
+import { withStudioToken } from '@/components/auth/security-gate';
+import { ProductionCard, ProviderStatusRow } from '@/components/studio/production-card';
 import { QuickCreateCard } from '@/components/studio/quick-create';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,6 +37,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useProductions } from '@/hooks/use-productions';
+import { toast } from '@/hooks/use-toast';
 import type {
   ProductionStatus,
   ProductionStepView,
@@ -110,13 +112,15 @@ function stepStatusIcon(status: ProductionStepView['status']) {
 // একটি প্রোডাকশন কার্ড (লাইভ ভিউ স্টোর থেকে)
 // ------------------------------------------------------------
 
-function ProductionMonitorCard({ summary }: { summary: ProductionSummary }) {
+function ProductionMonitorCard({ summary, onRevised }: { summary: ProductionSummary; onRevised?: () => void }) {
   const view = useProductions(s => s.productions[summary.id]);
   const ensureFetched = useProductions(s => s.ensureFetched);
   const cancelProduction = useProductions(s => s.cancelProduction);
+  const reviseProduction = useProductions(s => s.reviseProduction);
 
   const [open, setOpen] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isRerunning, setIsRerunning] = useState(false);
 
   // স্টোরে লাইভ ভিউ থাকলে সেটিই নতুন (SSE আপডেট করে)
   const status: ProductionStatus = view?.status ?? summary.status;
@@ -139,6 +143,18 @@ function ProductionMonitorCard({ summary }: { summary: ProductionSummary }) {
     setIsCancelling(true);
     await cancelProduction(summary.id);
     setIsCancelling(false);
+  };
+
+  // §2-E: ব্যর্থ/বাতিল প্রোডাকশনের নিরাপদ পুনঃচালানো — বিদ্যমান revise
+  // এন্ডপয়েন্টই; নতুন awaiting_confirmation প্রস্তাব তৈরি হয় (সরাসরি চালু নয়)
+  const handleRerun = async () => {
+    setIsRerunning(true);
+    const revision = await reviseProduction(summary.id, {});
+    setIsRerunning(false);
+    if (revision) {
+      toast({ title: 'আবার চালানোর প্রস্তাব তৈরি হয়েছে', description: 'নিশ্চিত করার অপেক্ষায় — তালিকা রিফ্রেশ হচ্ছে' });
+      onRevised?.();
+    }
   };
 
   const showError = (status === 'failed' || status === 'partial') && (view?.error ?? '');
@@ -193,6 +209,10 @@ function ProductionMonitorCard({ summary }: { summary: ProductionSummary }) {
               <span className="shrink-0">{toBnDigits(progress)}%</span>
             </div>
             <Progress value={progress} className="h-1.5" aria-label="অগ্রগতি" />
+            {/* §2-B: ক্লাউড ভিডিও-প্রোভাইডারের সৎ স্ট্যাটাস */}
+            {view && ['motion_video', 'music_video', 'short_film'].includes(view.spec.type) && view.providerStatus && (
+              <ProviderStatusRow provider={view.providerStatus} />
+            )}
             <Button
               type="button"
               size="sm"
@@ -202,9 +222,23 @@ function ProductionMonitorCard({ summary }: { summary: ProductionSummary }) {
               disabled={isCancelling || status === 'cancelling'}
             >
               <Ban className="size-4" aria-hidden="true" />
-              {status === 'cancelling' ? 'বাতিল হচ্ছে…' : 'বাতিল করুন'}
+              {status === 'cancelling' ? '✕ বাতিল হচ্ছে…' : '✕ বাতিল করুন'}
             </Button>
           </div>
+        )}
+
+        {(status === 'failed' || status === 'cancelled') && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="min-h-11 border-emerald-600/40 text-emerald-700 hover:bg-emerald-600/10 dark:text-emerald-400"
+            onClick={() => void handleRerun()}
+            disabled={isRerunning}
+          >
+            {isRerunning ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <RefreshCcw className="size-4" aria-hidden="true" />}
+            🔁 আবার চালান
+          </Button>
         )}
 
         {showError && (
@@ -229,7 +263,7 @@ function ProductionMonitorCard({ summary }: { summary: ProductionSummary }) {
               a.kind === 'image' ? (
                 <img
                   key={a.id}
-                  src={a.url}
+                  src={withStudioToken(a.url)}
                   alt={a.fileName}
                   loading="lazy"
                   title={a.fileName}
@@ -470,7 +504,7 @@ export function ProductionsView() {
                 <ProductionCard productionId={p.id} />
               </li>
             ) : (
-              <ProductionMonitorCard key={p.id} summary={p} />
+              <ProductionMonitorCard key={p.id} summary={p} onRevised={() => setReload(n => n + 1)} />
             ),
           )}
         </ul>

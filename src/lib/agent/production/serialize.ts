@@ -10,9 +10,14 @@ import type {
   ProductionSummary,
   ProductionType,
   ProductionView,
+  VideoProviderStatusView,
 } from '@/lib/types';
 import type { Artifact, Production, ProductionStep } from '@prisma/client';
 import type { CreativeJobSpec } from '@/lib/types';
+import { videoProviderStatus } from '../video/ai_video';
+
+/** §2-B: যেসব প্রকৃতিতে ক্লাউড ভিডিও-প্রোভাইডার (CogVideoX-3) জড়িত */
+const VIDEO_PROVIDER_TYPES: ReadonlySet<string> = new Set(['motion_video', 'music_video', 'short_film']);
 
 export function toStepView(step: ProductionStep): ProductionStepView {
   return {
@@ -71,6 +76,12 @@ export function toProductionView(
   } catch {
     spec = { type: production.type as ProductionType, title: production.title, quality: 'standard' };
   }
+  // §2-B/§2-D: ভিডিও-ধর্মী সক্রিয় প্রোডাকশনে ক্লাউড-ভিডিও প্রোভাইডারের
+  // সৎ স্ট্যাটাস (ব্যস্ত/কুলডাউন/মুক্ত) — UI-র "ক্লাউড ভিডিও" সারি এটাই দেখায়।
+  const isVideoProviderType = VIDEO_PROVIDER_TYPES.has(production.type);
+  const isActive = !isTerminalStatus(production.status);
+  const providerStatus: VideoProviderStatusView | undefined =
+    isVideoProviderType && isActive ? videoProviderStatus() : undefined;
   return {
     id: production.id,
     conversationId: production.conversationId,
@@ -88,6 +99,7 @@ export function toProductionView(
     finishedAt: production.finishedAt?.toISOString(),
     steps: steps.sort((a, b) => a.seq - b.seq).map(toStepView),
     artifacts: artifacts.map(toProductionArtifactMeta),
+    ...(providerStatus ? { providerStatus } : {}),
   };
 }
 

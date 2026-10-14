@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
+import { withStudioToken } from '@/components/auth/security-gate';
 import { GENERIC_ERROR, useChatStore } from '@/hooks/use-chat-store';
 import { toast } from '@/hooks/use-toast';
 import type {
@@ -136,10 +137,13 @@ export function useAgentRun() {
 
   const openStream = useCallback(
     (runId: string, conversationId: string, userMessageId: string, pendingId: string) => {
-      const es = new EventSource(`/api/runs/${runId}/events`);
+      const es = new EventSource(withStudioToken(`/api/runs/${runId}/events`));
       esRef.current = es;
       finishedRef.current = false;
       let finalMessageSeen = false;
+      /** 'message' ইভেন্টে বসে যাওয়া প্রকৃত assistant-বার্তার id —
+       *  run_finished-এ সমাপ্তি-তথ্য (runEnd) ওখানে বসাতে হয় (অডিট §১-E) */
+      let settledAssistantId: string | null = null;
 
       /** ড্রেন-লুপ চালু রাখো — বাফার ফাঁকা হলে নিজেই থামে */
       const ensureDrain = () => {
@@ -227,6 +231,7 @@ export function useAgentRun() {
             // চূড়ান্ত কর্তৃত্বপূর্ণ টেক্সট — ড্রেন-বাফার বাদ দিয়ে একবারে বসে;
             // এর পরের কোনো পিছল-ডেল্টা আর নেওয়া হয় না
             finalMessageSeen = true;
+            settledAssistantId = evt.message.id;
             stopDrain();
             store.replaceMessage(pendingId, evt.message);
             return;
@@ -259,18 +264,32 @@ export function useAgentRun() {
             const s = useChatStore.getState();
             s.setIsRunActive(false);
             void s.refetchConversations(); // শিরোনাম আপডেট হতে পারে
+            // (অডিট §১-E) সমাপ্তির বিস্তারিত তথ্য — বসে-যাওয়া assistant বার্তায়
+            // (বা না বসলে pending-এ) runEnd হিসেবে জমা; UI এটি দিয়ে ব্যর্থতা-চিপ
+            // (শ্রেণি-লেবেল + "আবার চেষ্টা") দেখায়।
+            const targetId = settledAssistantId ?? pendingId;
+            if (s.activeId === conversationId) {
+              s.updateMessage(targetId, (m) => ({
+                ...m,
+                runEnd: {
+                  status: evt.status,
+                  ...(evt.endReason ? { endReason: evt.endReason } : {}),
+                  ...(evt.errorCategory ? { errorCategory: evt.errorCategory } : {}),
+                  ...(evt.cacheStatus ? { cacheStatus: evt.cacheStatus } : {}),
+                  ...(evt.requestedMode ? { requestedMode: evt.requestedMode } : {}),
+                  ...(evt.usedModel ? { usedModel: evt.usedModel } : {}),
+                  ...(evt.error ? { error: evt.error.slice(0, 300) } : {}),
+                },
+                content:
+                  m.content ||
+                  (evt.status === 'failed' || evt.status === 'interrupted'
+                    ? `⚠️ ${evt.error || 'রানটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।'}`
+                    : m.content),
+              }));
+            }
             if (evt.status === 'failed' || evt.status === 'interrupted') {
               toast({ title: GENERIC_ERROR, variant: 'destructive' });
-              if (s.activeId === conversationId) {
-                // placeholder-এ ত্রুটি-নোট রেখে দাও
-                s.updateMessage(pendingId, (m) => ({
-                  ...m,
-                  content:
-                    m.content ||
-                    `⚠️ ${evt.error || 'রানটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।'}`,
-                }));
-              }
-            } else if (s.activeId === conversationId) {
+            } else if (s.activeId === conversationId && !finalMessageSeen) {
               // 'message' ইভেন্ট মিস হলেও সার্ভার-সত্য দিয়ে রিকভার
               void s.refreshActiveConversation();
             }
@@ -309,6 +328,7 @@ export function useAgentRun() {
     const content = (contentOverride ?? store.draft).trim();
     const attachments = opts?.skipAttachments ? [] : [...store.pendingAttachments];
     const chatModel = store.chatModel;
+    const chatMode = store.chatMode;
     if (!content && attachments.length === 0) return;
 
     const conversationIdAtSend = store.activeId ?? '';
@@ -332,6 +352,7 @@ export function useAgentRun() {
           conversationId: conversationIdAtSend,
           content,
           model: chatModel,
+          mode: chatMode,
           attachments: attachments.map(({ kind, name, dataUrl }) => ({ kind, name, dataUrl })),
         } satisfies ChatRequest),
       });

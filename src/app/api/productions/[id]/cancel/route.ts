@@ -1,5 +1,6 @@
 // POST /api/productions/[id]/cancel — চলমান/অপেক্ষমাণ প্রোডাকশন বাতিল
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { toProductionView } from '@/lib/agent/production/serialize';
 import { emitProduction } from '@/lib/agent/production/bus';
@@ -7,7 +8,10 @@ import { emitProduction } from '@/lib/agent/production/bus';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   const production = await db.production.findUnique({ where: { id } });
   if (!production) {

@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
+import { requireOwner } from '@/lib/security';
 import { getZAI } from '@/lib/agent/llm';
 import { getProviderKey, providerKeyStatuses, type ProviderKeyStatus } from '@/lib/agent/provider-keys';
 import { verifyExternalModel } from '@/lib/agent/external-llm';
@@ -133,13 +134,19 @@ async function buildResponse(verification: ModelVerificationFile, testedCount: n
 }
 
 /** GET → ক্যাটালগ + ক্যাশ-করা যাচাই + কী-অবস্থা (নতুন কল করে না) */
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const verification = await loadVerification();
   return buildResponse(verification, 0);
 }
 
 /** POST → যাচাই চালাও (ক্যাশ সদ্যিষ্ট না হলে) ও ফলাফল ফেরাও */
-export async function POST() {
+export async function POST(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const zai = await getZAI();
   const verification = await loadVerification();
   const keyStatuses = await providerKeyStatuses();

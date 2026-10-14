@@ -7,6 +7,7 @@
 // এই প্যাটার্নে '/' বা '..' বসানো অসম্ভব — path traversal হতে পারে না।
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { readFile } from 'fs/promises';
 import path from 'path';
 import { benchmarkAudioDir } from '@/lib/agent/audio/tts-benchmark-runner';
@@ -18,6 +19,10 @@ const RUN_ID_RE = /^ttsbn-[0-9]{8}-[0-9]{6}$/;
 const FILE_NAME_RE = /^[0-9]{2}-bn-[0-9]{3}\.(mp3|wav)$/;
 
 export async function GET(req: NextRequest) {
+  // অডিও-মিডিয়া রুট (<audio> ট্যাগ) — কুকি ছাড়া ?st= টোকেনও চলে
+  const auth = await requireOwner(req, { allowQueryToken: true });
+  if (!auth.ok) return auth.response;
+
   const run = req.nextUrl.searchParams.get('run') ?? '';
   const file = req.nextUrl.searchParams.get('file') ?? '';
   if (!RUN_ID_RE.test(run) || !FILE_NAME_RE.test(file)) {

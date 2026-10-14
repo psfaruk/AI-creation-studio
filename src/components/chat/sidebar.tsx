@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   BookOpen,
   Factory,
   Images,
   KeyRound,
   LayoutGrid,
+  Lock,
   MessageSquare,
   Plus,
   ShieldCheck,
@@ -37,6 +38,51 @@ import { useTools } from '@/hooks/use-tools';
 import { useUiView } from '@/hooks/use-ui-view';
 import type { AppView } from '@/lib/types';
 import { cn } from '@/lib/utils';
+
+/** সাইডবার-ফুটারের লক-বাটন — সেশন বন্ধ করে গেট-ফর্মে ফেরায় */
+function LockButton() {
+  const [locking, setLocking] = useState(false);
+
+  const handleLock = async () => {
+    if (locking) return;
+    setLocking(true);
+    try {
+      const token = window.localStorage.getItem('studio-session-token');
+      await fetch('/api/auth/lock', {
+        method: 'POST',
+        headers: token ? { 'x-studio-token': token } : undefined,
+      });
+    } catch {
+      // নেটওয়ার্ক-সমস্যা হলেও লোকাল টোকেন মুছে রিলোড
+    }
+    try {
+      window.localStorage.removeItem('studio-session-token');
+    } catch {
+      // উপেক্ষা
+    }
+    window.location.reload();
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => void handleLock()}
+          disabled={locking}
+          aria-label="লক করুন"
+          className="h-8 gap-1.5 px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <Lock className="size-3.5" aria-hidden="true" />
+          লক
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="right">লক করুন — সেশন বন্ধ হবে</TooltipContent>
+    </Tooltip>
+  );
+}
 
 const CATEGORY_LABELS: Record<ToolCategory, string> = {
   research: 'রিসার্চ',
@@ -285,6 +331,12 @@ export function SidebarContent({ onAfterSelect }: { onAfterSelect?: () => void }
           <h3 className="mb-2 px-1 text-xs font-medium text-muted-foreground">টুল রেজিস্ট্রি</h3>
           <ToolsSection tools={tools} />
         </section>
+      </div>
+
+      {/* ফুটার — লক-বাটনসহ */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2">
+        <span className="text-[10px] text-muted-foreground/70">মালিক-সেশন সক্রিয়</span>
+        <LockButton />
       </div>
     </div>
   );

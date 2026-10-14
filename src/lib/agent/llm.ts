@@ -19,7 +19,7 @@ import { createHash } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { withRetry, type RetryWaitInfo } from './retry';
-import { findChatModel, isCustomModelId, type ChatModelOption } from './chat-models';
+import { findChatModel, isCustomModelId, PROVIDERS, type ChatModelOption } from './chat-models';
 import { externalChatComplete } from './external-llm';
 import { customChatComplete } from './custom-providers';
 
@@ -28,6 +28,26 @@ export { externalChatComplete, ExternalFatalError, ExternalRetryableError } from
 export interface LLMMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+// ------------------------------------------------------------
+// (অডিট §A) সিস্টেম-রোল ফিক্স — আমাদের প্রোটোকলে সিস্টেম-প্রম্পটটি
+// প্রথম assistant-বার্তা হিসেবে বহাল হয় (LLMMessage-র ইউনিয়নে 'system'
+// নেই)। external-llm.ts এর toExternalMessages এটিকে আগেই সত্যিকারের
+// system-রোলে রূপান্তর করে; Z.ai SDK-পথেও এখন একই রূপান্তর হয় —
+// নইলে SDK প্রথম assistant-বার্তাটিকে নির্দেশনা নয় সাধারণ
+// কথোপকথনের অংশ মনে করতে পারত।
+// ------------------------------------------------------------
+
+/** SDK-কে পাঠানোর আগে প্রথম assistant-বার্তাটিকে system-রোলে রূপান্তর */
+export function toSdkMessages(
+  messages: LLMMessage[]
+): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  return messages.map((m, i) =>
+    i === 0 && m.role === 'assistant'
+      ? { role: 'system' as const, content: m.content }
+      : { role: m.role, content: m.content }
+  );
 }
 
 // Singleton SDK instance (module-level promise; globalThis-এ রাখা হয় যাতে
@@ -100,8 +120,14 @@ async function writeLlmCache(key: string, text: string): Promise<void> {
 export interface ChatCompleteOptions {
   /** রেট-লিমিট-অপেক্ষার নোট (UI-স্ট্যাটাসের জন্য) — Z.ai SDK-পথের জন্য */
   onRateLimitWait?: (info: RetryWaitInfo) => void;
-  /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু) */
+  /** ডিস্ক-ক্যাশ বাদ দিয়ে সরাসরি API (default: false = ক্যাশ চালু)। ডায়াগনস্টিক-মোড এটি ব্যবহার করে। */
   skipCache?: boolean;
+  /**
+   * (অডিট §C) লাইভ ক্যাশ-অবজারভেবিলিটি — প্রতিটি সফল কলের পর একবার ডাকা হয়:
+   * ক্যাশ-হিট (latencyMs≈০), ক্যাশ-মিস বা ইচ্ছাকৃত বাইপাস (skipCache) —
+   * প্রকৃত রাউটেড প্রোভাইডার + বাস্তব লেটেন্সিসহ। ব্যর্থ কলে ডাকা হয় না।
+   */
+  onMeta?: (meta: ChatCallMeta) => void;
   /**
    * লাইভ টোকেন-স্ট্রিম — প্রতিটি ডেল্টা-অংশ যথাসময়ে ফেরে।
    * (ডিস্ক-ক্যাশ-হিট বা নন-স্ট্রিম ফলব্যাকে ডেল্টা আসে না — তখন পুরো টেক্সট একবারে।)
@@ -116,6 +142,27 @@ export interface ChatCompleteOptions {
    *   - এক্সটার্নাল → সেই প্রোভাইডারের প্রকৃত API (নিজের কী)
    */
   model?: string;
+}
+
+/**
+ * (অডিট §C) একটি chatComplete-কলের পরিলেখ — orchestrator এটিকে
+ * AgentRun.cacheStatus + AgentStep payload + SSE-নোটে পাঠায়।
+ */
+export interface ChatCallMeta {
+  cache: 'hit' | 'miss' | 'bypass';
+  provider: 'zai' | 'external' | 'custom';
+  /** মানব-পাঠযোগ্য প্রোভাইডার-নাম (যেমন 'DeepSeek', 'Groq') */
+  providerLabel?: string;
+  model?: string;
+  latencyMs: number;
+}
+
+/** অনুরোধ-আইডি থেকে রোমান্টিক (কোয়ার্স) প্রোভাইডার — ক্যাশ-হিটের আগেই জানা যায় */
+function coarseProviderOf(requestedId: string): 'zai' | 'external' | 'custom' {
+  if (requestedId === '') return 'zai';
+  if (isCustomModelId(requestedId)) return 'custom';
+  const entry = findChatModel(requestedId);
+  return entry && entry.provider !== 'zai' ? 'external' : 'zai';
 }
 
 // ------------------------------------------------------------
@@ -198,32 +245,55 @@ function extractDeltaFromSseEvent(rawEvent: string, onDelta?: (d: string) => voi
  *   'zai' → SDK-পথ (S9: ৬ চেষ্টা + চ্যানেল-কুলডাউন-সৎ-অপেক্ষা + full-jitter)
  *   এক্সটার্নাল → প্রোভাইডারের প্রকৃত API (২ চেষ্টা, সৎ HTTP-ম্যাপিং)
  * একই context ডিস্ক-ক্যাশ থেকে ফেরে (উভয় পথেই)।
+ * (অডিট §C) প্রতিটি সফল কলের ক্যাশ-অবস্থা + প্রোভাইডার + লেটেন্সি onMeta-য় যায়।
  */
 export async function chatComplete(
   messages: LLMMessage[],
   opts?: ChatCompleteOptions
 ): Promise<string> {
   const key = cacheKeyOf(messages, opts?.model);
+  const requestedId = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : '';
   if (!opts?.skipCache) {
     const cached = await readLlmCache(key);
     if (cached != null) {
       stats().hits++;
+      // ক্যাশ-হিট: প্রকৃত API-কল হয়নি — লেটেন্সি ≈০; প্রোভাইডার অনুরোধ-আইডি থেকেই নির্ণীত
+      opts?.onMeta?.({
+        cache: 'hit',
+        provider: coarseProviderOf(requestedId),
+        ...(requestedId !== '' ? { model: requestedId } : {}),
+        latencyMs: 0,
+      });
       return cached;
     }
   }
   stats().misses++;
 
   // ---- এক্সটার্নাল-প্রোভাইডার রাউটিং ----
-  const requestedId = opts?.model && opts.model.trim() !== '' ? opts.model.trim() : '';
   const streamOpts = opts?.onDelta
     ? { onDelta: opts.onDelta, onAttemptBegin: opts.onAttemptBegin }
     : undefined;
+  const emitMissOrBypass = (
+    provider: ChatCallMeta['provider'],
+    providerLabel: string | undefined,
+    t0: number
+  ) => {
+    opts?.onMeta?.({
+      cache: opts?.skipCache ? 'bypass' : 'miss',
+      provider,
+      ...(providerLabel ? { providerLabel } : {}),
+      ...(requestedId !== '' ? { model: requestedId } : {}),
+      latencyMs: Math.max(0, Date.now() - t0),
+    });
+  };
 
   // কাস্টম-প্ল্যাটফর্ম মডেল (custom:<providerId>:<apiModel>) —
   // ব্যবহারকারীর নিজের Base URL + কী-তে প্রকৃত OpenAI SDK-কল
   if (isCustomModelId(requestedId)) {
+    const t0 = Date.now();
     const text = await customChatComplete(messages, requestedId, streamOpts);
     if (text && text.length > 0) {
+      emitMissOrBypass('custom', 'কাস্টম প্ল্যাটফর্ম', t0);
       await writeLlmCache(key, text);
     }
     return text;
@@ -231,8 +301,10 @@ export async function chatComplete(
 
   const entry = requestedId !== '' ? findChatModel(requestedId) : undefined;
   if (entry && entry.provider !== 'zai') {
+    const t0 = Date.now();
     const text = await externalChatComplete(messages, entry, streamOpts);
     if (text && text.length > 0) {
+      emitMissOrBypass('external', PROVIDERS[entry.provider]?.label, t0);
       await writeLlmCache(key, text);
     }
     return text;
@@ -241,11 +313,15 @@ export async function chatComplete(
   // ---- Z.ai SDK-পথ (স্ট্রিমিংসহ — স্মুথ লাইভ-আউটপুটের উৎস) ----
   const zai = await getZAI();
   const model = requestedId !== '' ? requestedId : undefined;
+  const t0 = Date.now();
   const text = await withRetry(
     async () => {
       opts?.onAttemptBegin?.();
       const res = await zai.chat.completions.create({
-        messages,
+        // (অডিট §A) সিস্টেম-প্রম্পট = প্রথম assistant-বার্তা → সত্যিকারের
+        // system-রোলে পাঠানো হয় (SDK-র টাইপ ChatMessage এ রোল-ইউনিয়নে
+        // 'system' আছে — external-llm.ts-এর toExternalMessages-এর মতোই)।
+        messages: toSdkMessages(messages),
         ...(model ? { model } : {}),
         stream: true,
         thinking: { type: 'disabled' },
@@ -264,6 +340,7 @@ export async function chatComplete(
     }
   );
   if (text && text.length > 0) {
+    emitMissOrBypass('zai', PROVIDERS.zai?.label, t0);
     await writeLlmCache(key, text);
   }
   return text;

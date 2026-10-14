@@ -10,6 +10,8 @@ import { promisify } from 'util';
 import { statfs } from 'fs/promises';
 import { getZAI } from './agent/llm';
 import { isRateLimitErrorText } from './agent/retry';
+import { toolParityReport } from './agent/registry';
+import { TOOL_CATALOG } from './types';
 import { channelBlockedMs, noteRateLimit } from './agent/rate-limit-coordinator';
 import type { HardwareReport } from '@/lib/types';
 
@@ -140,6 +142,11 @@ async function checkLlm(): Promise<ToolHealth> {
  * TTS মাইক্রো-চেক: এক শব্দের অডিও। S9: চ্যানেল-কুলডাউন চলছে কি-না আগে দেখো —
  * synthesizeSpeech-এর নতুন রিট্রাই-বাজেট ৪২৯-এ মিনিট-অপেক্ষা করে, স্বাস্থ্য-চেকে
  * সেটি অনাবশ্যক; কুলডাউন-রায়ই সৎ ও তাৎক্ষণিক।
+ *
+ * অডিট-ফিক্স (২০২৬-১০-১৪): আগে এই প্রোব সরাসরি response_format:'mp3' পাঠাত —
+ * upstream এখন mp3 প্রত্যাখ্যান করে (৪০০/1214 "不支持当前response_format值")।
+ * sdk-helpers.ts-এর synthesizeSpeech-এর মতোই এখন wav-আগে, mp3 শুধু
+ * পুরনো-সার্ভার ফলব্যাক। রেট-লিমিট-রিট্রাই বাজেট নেই — এক-কলের সৎ প্রোব।
  */
 async function checkTts(): Promise<ToolHealth> {
   const blockedMs = channelBlockedMs('tts');
@@ -154,24 +161,38 @@ async function checkTts(): Promise<ToolHealth> {
   }
   const t0 = Date.now();
   try {
-    // S9: এক-কলের raw প্রোব (কোনো রিট্রাই-বাজেট নয় — স্বাস্থ্য-চেক দ্রুত ফেরে)
+    // অডিট-ফিক্স: wav-আগে এক-কলের raw প্রোব (mp3 প্রত্যাখ্যাত হলে ৪০০/1214 —
+    // তখনই একবার mp3 ফলব্যাক; কোনো রিট্রাই-বাজেট নেই — স্বাস্থ্য-চেক দ্রুত ফেরে)
     const zai = await getZAI();
-    const r = (await zai.audio.tts.create({
-      input: 'hi',
-      voice: 'jam',
-      speed: 1,
-      response_format: 'mp3',
-      stream: false,
-    } as any)) as unknown as { arrayBuffer?: () => Promise<ArrayBuffer> };
-    const size = r && typeof r.arrayBuffer === 'function'
-      ? new Uint8Array(await r.arrayBuffer()).length
-      : 0;
+    const probeOnce = async (format: 'wav' | 'mp3'): Promise<number> => {
+      const r = (await zai.audio.tts.create({
+        input: 'hi',
+        voice: 'jam',
+        speed: 1,
+        response_format: format,
+        stream: false,
+      } as any)) as unknown as { arrayBuffer?: () => Promise<ArrayBuffer> };
+      return r && typeof r.arrayBuffer === 'function'
+        ? new Uint8Array(await r.arrayBuffer()).length
+        : 0;
+    };
+    let size = 0;
+    let usedFormat: 'wav' | 'mp3' = 'wav';
+    try {
+      size = await probeOnce('wav');
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (!/response_format|1214/i.test(msg)) throw err;
+      usedFormat = 'mp3';
+      size = await probeOnce('mp3');
+    }
     return {
       key: 'tts',
       label: 'TTS (কণ্ঠ সংশ্লেষণ)',
       status: size > 1000 ? 'ok' : 'degraded',
       latencyMs: Date.now() - t0,
       checkedAt: new Date().toISOString(),
+      note: size > 1000 ? `${usedFormat} প্রোব সফল` : `অডিও খুব ছোট (${size} বাইট, ${usedFormat})`,
     };
   } catch (err: any) {
     const msg = String(err?.message ?? err);
@@ -187,14 +208,60 @@ async function checkTts(): Promise<ToolHealth> {
   }
 }
 
-/** FFmpeg চেক */
+/** অডিট §৩-C: FFmpeg-স্বাস্থ্য গভীর চেক — শুধু বাইনারি নয়:
+ *  প্রয়োজনীয় ফিল্টার (zoompan/xfade/afade) + স্টোরেজ-লেখা-পরীক্ষা + ডিস্ক-জায়গা */
 async function checkFfmpeg(hw: HardwareReport): Promise<ToolHealth> {
+  if (!hw.ffmpeg) {
+    return {
+      key: 'ffmpeg',
+      label: 'FFmpeg (মিডিয়া প্রসেসিং)',
+      status: 'down',
+      checkedAt: new Date().toISOString(),
+      note: 'ffmpeg পাওয়া যায়নি — ভিডিও/অডিও-পাইপলাইন চলবে না',
+    };
+  }
+  const problems: string[] = [];
+
+  // ১) প্রয়োজনীয় ফিল্টার আছে কি?
+  const REQUIRED_FILTERS = ['zoompan', 'xfade', 'afade', 'amix', 'concat', 'scale'] as const;
+  try {
+    const { stdout } = await execFileAsync('ffmpeg', ['-hide_banner', '-filters'], { timeout: 10_000 });
+    const missing = REQUIRED_FILTERS.filter(f => !new RegExp(`\\s${f}\\s`).test(stdout));
+    if (missing.length > 0) problems.push(`ফিল্টার নেই: ${missing.join(', ')}`);
+  } catch {
+    problems.push('-filters তালিকা পড়া যায়নি');
+  }
+
+  // ২) স্টোরেজ-ডিরেক্টরি লেখা যায়? (artifacts + productions)
+  try {
+    const { writeFile, rm } = await import('fs/promises');
+    const probe = `${process.cwd()}/storage/.ffmpeg-health-probe`;
+    await writeFile(probe, 'ok');
+    await rm(probe, { force: true });
+  } catch {
+    problems.push('storage/ লেখা যাচ্ছে না');
+  }
+
+  // ৩) ডিস্ক-জায়গা সতর্কতা (<২ GB হলে ভিডিও-অ্যাসেম্বলি ঝুঁকিতে)
+  try {
+    const st: any = await statfs(process.cwd());
+    const freeGb = (Number(st?.bavail) * Number(st?.bsize)) / (1024 ** 3);
+    if (Number.isFinite(freeGb) && freeGb < 2) {
+      problems.push(`ডিস্ক প্রায় শেষ (${freeGb.toFixed(1)} GB খালি)`);
+    }
+  } catch {
+    // statfs-ব্যর্থতা স্বাস্থ্য-রায় নির্ধারণ করবে না
+  }
+
   return {
     key: 'ffmpeg',
     label: 'FFmpeg (মিডিয়া প্রসেসিং)',
-    status: hw.ffmpeg ? 'ok' : 'down',
+    status: problems.length === 0 ? 'ok' : 'degraded',
     checkedAt: new Date().toISOString(),
-    note: hw.ffmpeg ? `v${hw.ffmpeg}` : 'ffmpeg পাওয়া যায়নি',
+    note:
+      problems.length === 0
+        ? `v${hw.ffmpeg} — ফিল্টার ✓ স্টোরেজ ✓`
+        : problems.join(' · '),
   };
 }
 
@@ -247,6 +314,20 @@ export async function runToolHealthChecks(opts?: { force?: boolean }): Promise<T
     { key: 'singing', label: 'গান-গাওয়া মডেল (ACE-Step/YuE)', status: 'down', note: 'প্রকৃত বাধা: GPU নেই ও SDK-তে গান-জেনারেশন API নেই — লাইসেন্স অ-বাণিজ্যিক ব্যবহারে অনুমোদিত (সৎ-অবস্থা)' },
   ];
 
+  // অডিট §৪-A: TOOLS ↔ TOOL_CATALOG প্যারিটি — দুই তালিকার ড্রিফ্ট-সতর্কতা
+  const parity = toolParityReport(TOOL_CATALOG);
+  const parityHealth: ToolHealth = {
+    key: 'registry-parity',
+    label: 'টুল-রেজিস্ট্রি ↔ ক্যাটালগ প্যারিটি',
+    status: parity.ok ? 'ok' : 'degraded',
+    checkedAt: parity.checkedAt,
+    note: parity.ok
+      ? `নির্ভুল — ${parity.executableCount}টি এক্সিকিউটেবল টুল, ${parity.catalogCount}টি ক্যাটালগ-এন্ট্রি`
+      : `ড্রিফ্ট ধরা পড়েছে — ক্যাটালগে নেই: [${parity.missingInCatalog.join(', ') || '—'}]${
+          parity.missingInRegistry.length ? `; display-only: [${parity.missingInRegistry.join(', ')}]` : ''
+        }`,
+  };
+
   const checked = ['llm', 'tts', 'ffmpeg'].map(k => cache[k]).filter(Boolean) as ToolHealth[];
-  return [...checked, ...statics];
+  return [...checked, parityHealth, ...statics];
 }

@@ -2,6 +2,7 @@
 // প্রথমে DB থেকে replay, তারপর live event bus + ১.৫s DB diff-poll
 // (HMR-এর সময়ও যাতে ইভেন্ট হারিয়ে না যায়)।
 import { db } from '@/lib/db';
+import { requireOwner } from '@/lib/security';
 import { TOOL_CATALOG, type RunEvent, type RunStatus } from '@/lib/types';
 import { subscribe } from '@/lib/agent/events';
 import { buildMessageView, toRunStatus } from '@/lib/agent/serialize';
@@ -13,6 +14,10 @@ const POLL_INTERVAL_MS = 1500;
 const PING_INTERVAL_MS = 15_000;
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  // SSE (EventSource) — কুকি ছাড়া ?st= টোকেনও চলে
+  const auth = await requireOwner(req, { allowQueryToken: true });
+  if (!auth.ok) return auth.response;
+
   const { id: runId } = await params;
   const run = await db.agentRun.findUnique({ where: { id: runId } });
   if (!run) {

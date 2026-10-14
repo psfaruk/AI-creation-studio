@@ -425,6 +425,41 @@ export const TOOLS: ToolSpec[] = [
   ...PRODUCTION_TOOLS,
 ];
 
+// ------------------------------------------------------------
+// অডিট §৪-A: TOOLS ↔ TOOL_CATALOG প্যারিটি-চেক — দুই তালিকার
+// ড্রিফ্ট যেন নীরবে ঢুকতে না পারে। UI-ক্যাটাগে থাকা কিন্তু রেজিস্ট্রিতে
+// নেই এমন নাম "display-only" হতে পারে (সচেতনভাবে রাখা) — তাই সেটি
+// সতর্কতা, আর রেজিস্ট্রিতে থাকা কিন্তু ক্যাটালগে নেই সেটি সমস্যা।
+// ------------------------------------------------------------
+export interface ToolParityReport {
+  ok: boolean;
+  executableCount: number;
+  catalogCount: number;
+  /** রেজিস্ট্রিতে আছে, UI-ক্যাটালগে নেই — ব্যবহারকারী জানবে না */
+  missingInCatalog: string[];
+  /** UI-ক্যাটালগে আছে, রেজিস্ট্রিতে নেই — display-only হলে সচেতন সিদ্ধান্ত */
+  missingInRegistry: string[];
+  duplicatesInCatalog: string[];
+  checkedAt: string;
+}
+
+export function toolParityReport(catalog: { name: string }[]): ToolParityReport {
+  const execNames = TOOLS.map(t => t.name);
+  const catalogNames = catalog.map(t => t.name);
+  const duplicatesInCatalog = catalogNames.filter((n, i) => catalogNames.indexOf(n) !== i);
+  const missingInCatalog = execNames.filter(n => !catalogNames.includes(n));
+  const missingInRegistry = catalogNames.filter(n => !execNames.includes(n));
+  return {
+    ok: missingInCatalog.length === 0 && duplicatesInCatalog.length === 0,
+    executableCount: execNames.length,
+    catalogCount: catalogNames.length,
+    missingInCatalog,
+    missingInRegistry,
+    duplicatesInCatalog,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 /** অজানা টুল / zod validation ব্যর্থ → structured error (কখনো throw নয়) */
 export function validateToolCall(toolName: string, args: unknown): ToolValidation {
   const spec = TOOLS.find(t => t.name === toolName);

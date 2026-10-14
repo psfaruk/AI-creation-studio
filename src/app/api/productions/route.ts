@@ -2,6 +2,7 @@
 // POST /api/productions — S9: LLM ছাড়াই সরাসরি প্রোডাকশন-প্রস্তাব তৈরি
 //   (চ্যাট-LLM রেট-লিমিটেড হলেও স্টুডিও থেকে মিউজিক ভিডিও/ফিল্ম চালু যায়)
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { sweepStaleProductions } from '@/lib/agent/production/runner';
 import { toProductionSummary } from '@/lib/agent/production/serialize';
@@ -17,6 +18,9 @@ function clientKey(req: Request): string {
 }
 
 export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   await sweepStaleProductions();
   const url = new URL(req.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 100);
@@ -42,6 +46,10 @@ export async function GET(req: Request) {
  * - ফেরত: ProductionSummary (awaiting_confirmation অবস্থায়) + adjustments/notes।
  */
 export async function POST(req: Request) {
+  // --- মালিক-সেশন (P0 নিরাপত্তা) ---
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   // --- স্থানীয় রেট-লিমিট (§১১ নিরাপত্তা) ---
   const rl = checkRateLimit(`prod-create:${clientKey(req)}`, 10, 60_000);
   if (!rl.allowed) {

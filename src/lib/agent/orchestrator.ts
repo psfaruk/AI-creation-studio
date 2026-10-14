@@ -6,12 +6,18 @@
 
 import type { AgentRun } from '@prisma/client';
 import { db } from '@/lib/db';
-import { TOOL_CATALOG } from '@/lib/types';
+import { RUN_ERROR_CATEGORY_LABELS_BN, TOOL_CATALOG } from '@/lib/types';
+import type {
+  ChatMode,
+  RunCacheStatus,
+  RunEndReason,
+  RunErrorCategory,
+} from '@/lib/types';
 import { emit } from './events';
-import { chatComplete, parseToolCall, type LLMMessage } from './llm';
+import { chatComplete, parseToolCall, type ChatCallMeta, type LLMMessage } from './llm';
 import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
 import { isChannelBlocked } from './rate-limit-coordinator';
-import { SYSTEM_PROMPT } from './prompts';
+import { CHAT_ONLY_DIRECTIVE, SYSTEM_PROMPT } from './prompts';
 import { describeChatModel, findChatModel, isCustomModelId, type ChatModelOption } from './chat-models';
 import { findCustomModel } from './custom-providers';
 import { validateToolCall, type ToolOutput, type ToolSpec } from './registry';
@@ -33,6 +39,113 @@ function safeJson(value: unknown): string {
   } catch {
     return 'null';
   }
+}
+
+/** ইংরেজি সংখ্যা → বাংলা সংখ্যা (সার্ভার-পাশের সামান্য সহায়ক) */
+function bnNum(n: number | string): string {
+  const digits = '০১২৩৪৫৬৭৮৯';
+  return String(n).replace(/\d/g, d => digits[Number(d)]);
+}
+
+// ------------------------------------------------------------
+// (অডিট §১-B) ত্রুটি-শ্রেণি ও সমাপ্তির কারণ — প্রতিটি টার্মিনাল
+// পথ AgentRun-এ errorCategory + endReason লেখে; ব্যর্থতায় বাংলা
+// শ্রেণি-লেবেলও ব্যবহারকারীকে দেখানো হয়।
+// ------------------------------------------------------------
+
+/**
+ * ত্রুটির বার্তা/স্ট্যাটাস পরীক্ষা করে স্পষ্ট শ্রেণি ঠিক করে।
+ * ক্রম গুরুত্বপূর্ণ: কী → রেট-লিমিট → মডেল → টাইমআউট →
+ * ffmpeg → স্টোরেজ → ৫xx → অজানা।
+ */
+export function categorizeError(err: unknown): RunErrorCategory {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  const s = msg.toLowerCase();
+  const status = (err as { status?: unknown } | null)?.status;
+  const statusNum = typeof status === 'number' ? status : undefined;
+
+  // কী-সমস্যা (এক্সটার্নাল/কাস্টম প্রোভাইডার)
+  if (/কী যোগ করা হয়নি|api key পাওয়া যায়নি|missing.+key|no api key|কী-বিহীন/i.test(msg)) {
+    return 'missing_key';
+  }
+  if (
+    statusNum === 401 ||
+    statusNum === 403 ||
+    /কী অবৈধ|invalid api key|unauthorized|forbidden|permission/i.test(s)
+  ) {
+    return 'invalid_key';
+  }
+  // রেট-লিমিট / সাময়িক অনুপলব্ধতা (৪২৯ কখনোই লাইসেন্স-সমস্যা নয়)
+  if (isRateLimitErrorText(msg)) return 'rate_limited';
+  // মডেল-সমস্যা (আইডি বদলেছে / এই ব্যাকএন্ডে নেই)
+  if (
+    /মডেল-আইডি|মডেলটি আর তালিকায় নেই|model.{0,24}(not found|not exist|does not exist)|invalid model|model_not_found/i.test(
+      msg
+    )
+  ) {
+    return 'invalid_model';
+  }
+  // টাইমআউট (ইংরেজি + বাংলা বার্তা দুটোই)
+  if (/etimedout|timed? ?out|timeout|aborterror|abort was|সময়শেষ|টাইমআউট|টুল টাইমআউট/i.test(s)) {
+    return 'timeout';
+  }
+  // ffmpeg / মিডিয়া-পাইপলাইন
+  if (/ffmpeg|ffprobe/i.test(s)) return 'ffmpeg_error';
+  // স্টোরেজ / ফাইল-সিস্টেম
+  if (/enoent|eacces|eperm|enospc|eisdir|disk quota|readonly database|স্টোরেজ|storage path/i.test(s)) {
+    return 'storage_error';
+  }
+  // প্রোভাইডার-সার্ভার (৫xx) / সাধারণ প্রোভাইডার-ত্রুটি
+  if (
+    (statusNum != null && statusNum >= 500) ||
+    /\b5\d{2}\b|সার্ভার-ত্রুটি|internal server|bad gateway|service unavailable/i.test(s)
+  ) {
+    return 'provider_error';
+  }
+  return 'unknown';
+}
+
+/**
+ * এরর-শ্রেণি → রান-সমাপ্তির কারণ (coarse)।
+ * সূক্ষ্ম কারণ errorCategory-তে থাকে; এখানে RunEndReason-ইউনিয়নের
+// মধ্যে সবচেয়ে সৎ মোটা-বালতি বেছে নেওয়া হয়।
+ */
+function endReasonFromCategory(cat: RunErrorCategory): RunEndReason {
+  switch (cat) {
+    case 'rate_limited':
+      return 'rate_limit';
+    case 'timeout':
+      return 'timeout';
+    case 'malformed_tool_json':
+    case 'unknown_tool':
+    case 'tool_error':
+    case 'ffmpeg_error':
+    case 'storage_error':
+      // টুল-ডোমেনে রান ভেঙেছে — সূক্ষ্ম কারণ errorCategory-তে সংরক্ষিত
+      return 'invalid_tool_call';
+    case 'aborted':
+      return 'cancelled';
+    default:
+      // provider_error / invalid_key / missing_key / invalid_model / unknown / max_steps
+      return 'provider_error';
+  }
+}
+
+/** রান-সারির সমাপ্তি-তথ্য থেকে run_finished SSE-পেলোডের ঐচ্ছিক অংশ */
+function runEndPayloadOf(run: {
+  endReason: string | null;
+  errorCategory: string | null;
+  cacheStatus: string | null;
+  requestedMode: string | null;
+  usedModel: string | null;
+}) {
+  return {
+    ...(run.endReason ? { endReason: run.endReason as RunEndReason } : {}),
+    ...(run.errorCategory ? { errorCategory: run.errorCategory as RunErrorCategory } : {}),
+    ...(run.cacheStatus ? { cacheStatus: run.cacheStatus as RunCacheStatus } : {}),
+    ...(run.requestedMode ? { requestedMode: run.requestedMode as ChatMode } : {}),
+    ...(run.usedModel ? { usedModel: run.usedModel } : {}),
+  };
 }
 
 /** টেক্সটটি কি ভাঙা টুল-কল JSON-এর মতো দেখাচ্ছে? (কাটা আউটপুট শনাক্তকরণ) */
@@ -179,25 +292,32 @@ export function startAgentRun(runId: string): void {
 }
 
 // ------------------------------------------------------------
-// S9: রেট-লিমিট-সৎ-অপেক্ষাসহ chatComplete + নিয়ম-ভিত্তিক ইন্টেন্ট-ফলব্যাক
+// S9 + অডিট §C: রেট-লিমিট-সৎ-অপেক্ষা + ক্যাশ-অবজারভেবিলিটিসহ chatComplete
 // ------------------------------------------------------------
 
 /**
- * chatComplete + প্রতিটি রেট-লিমিট-অপেক্ষায় SSE run_note —
- * ব্যবহারকারী দেখে "অপেক্ষা চলছে", নিঃশব্দ আটকে থাকা নয়।
- * নির্বাচিত মডেল ('' = ডিফল্ট) পাস-থ্রু হয়; streamer দিলে লাইভ
- * টোকেন-স্ট্রিমও চলে (টুল-কল দমন-সহ)।
+ * chatComplete + প্রতিটি রেট-লিমিট-অপেক্ষায় SSE run_note +
+ * (অডিট §C) প্রতিটি সফল কলের ক্যাশ-মেটা: AgentRun.cacheStatus আপডেট +
+ * "ক্যাশ: হিট/মিস/বাইপাস" নোট (ডায়াগনস্টিক-মোডে প্রোভাইডার+লেটেন্সিসহ
+ * ভার্বোস + skipCache বাইপাস)। মেটা ফেরায় — কলার AgentStep-এর
+ * payload-তে সংরক্ষণ করে।
  */
 async function chatCompleteWithNotes(
   runId: string,
   context: LLMMessage[],
-  model?: string,
-  streamer?: DeltaStreamer
-): Promise<string> {
-  return chatComplete(context, {
-    ...(model ? { model } : {}),
-    ...(streamer
-      ? { onDelta: streamer.onDelta, onAttemptBegin: streamer.onAttemptBegin }
+  callOpts: {
+    model?: string;
+    streamer?: DeltaStreamer;
+    /** ডায়াগনস্টিক-মোড: ডিস্ক-ক্যাশ বাইপাস + ভার্বোস ক্যাশ-নোট */
+    diagnostic?: boolean;
+  }
+): Promise<{ text: string; meta: ChatCallMeta | null }> {
+  let meta: ChatCallMeta | null = null;
+  const text = await chatComplete(context, {
+    ...(callOpts.model ? { model: callOpts.model } : {}),
+    ...(callOpts.diagnostic ? { skipCache: true } : {}),
+    ...(callOpts.streamer
+      ? { onDelta: callOpts.streamer.onDelta, onAttemptBegin: callOpts.streamer.onAttemptBegin }
       : {}),
     onRateLimitWait: info => {
       const sec = Math.max(1, Math.round(info.delayMs / 1000));
@@ -207,10 +327,28 @@ async function chatCompleteWithNotes(
         level: 'waiting',
         note:
           `ক্লাউড LLM রেট-লিমিটেড (৪২৯ — সাময়িক, লাইসেন্স-সমস্যা নয়)। ` +
-          `পুনঃচেষ্টা ${info.attempt}/৬ — ${sec} সেকেন্ড অপেক্ষা করা হচ্ছে…`,
+          `পুনঃচেষ্টা ${bnNum(info.attempt)}/${bnNum(6)} — ${bnNum(sec)} সেকেন্ড অপেক্ষা করা হচ্ছে…`,
+      });
+    },
+    onMeta: m => {
+      meta = m;
+      // AgentRun.cacheStatus — প্রতিটি LLM-কলে একবার (অডিট §C)
+      db.agentRun
+        .update({ where: { id: runId }, data: { cacheStatus: m.cache } })
+        .catch(() => undefined);
+      const cacheLabel = m.cache === 'hit' ? 'হিট' : m.cache === 'miss' ? 'মিস' : 'বাইপাস';
+      emit(runId, {
+        type: 'run_note',
+        runId,
+        level: 'info',
+        note: callOpts.diagnostic
+          ? `ডায়াগনস্টিক: ক্যাশ ${cacheLabel} · প্রোভাইডার ${m.providerLabel ?? m.provider}` +
+              `${m.model ? ` · মডেল ${m.model}` : ''} · সময় ${bnNum((m.latencyMs / 1000).toFixed(1))} সে.`
+          : `ক্যাশ: ${cacheLabel}`,
       });
     },
   });
+  return { text, meta };
 }
 
 /** ইন্টেন্ট-ফলব্যাকের চেনা কাজের ধরন */
@@ -477,8 +615,17 @@ async function runAgentLoop(runId: string): Promise<void> {
   const startedAt = Date.now();
   let proposedProductionId: string | null = null;
 
-  // ---- ০. মডেল-নির্বাচন: ব্যবহারকারীর অনুরোধকৃত মডেল ----
-  // সততা: নির্বাচিত মডেল ব্যর্থ হলে (৪২৯-ব্যতীত কারণে) একবার ডিফল্টে
+  // ---- ০. মোড ও মডেল-নির্বাচন (অডিট §১-A) ----
+  // requestedMode: 'chat_only' = টুল ছাড়া এক-কল সরাসরি উত্তর;
+  // 'diagnostic' = ক্যাশ-বাইপাস + ভার্বোস ক্যাশ/লেটেন্সি-নোট; 'normal' = এজেন্ট-লুপ।
+  const requestedMode: ChatMode =
+    run.requestedMode === 'chat_only' || run.requestedMode === 'diagnostic'
+      ? run.requestedMode
+      : 'normal';
+  const chatOnly = requestedMode === 'chat_only';
+  const diagnostic = requestedMode === 'diagnostic';
+
+  // ব্যবহারকারীর অনুরোধকৃত মডেল — ব্যর্থ হলে (৪২৯-ব্যতীত কারণে) একবার ডিফল্টে
   // সৎ ফলব্যাক হয় + run_note-এ জানানো হয়; usedModel-এ প্রকৃত মডেল থাকে।
   const requestedModel = run.model ?? '';
   let usedModel = requestedModel;
@@ -516,6 +663,17 @@ async function runAgentLoop(runId: string): Promise<void> {
       orderBy: { createdAt: 'asc' },
     });
     for (const upload of uploads) {
+      // শুধু-আলাপ মোডে কোনো টুলই চলে না — আপলোডের উপস্থিতি জানিয়ে
+      // context-এ সৎ নোট যোগ হয় (অডিট §১-A)
+      if (chatOnly) {
+        if (upload.kind !== 'video') {
+          context.push({
+            role: 'user',
+            content: `ব্যবহারকারী একটি ${upload.kind === 'image' ? 'ছবি' : 'অডিও'} আপলোড করেছেন (${upload.fileName})। শুধু-আলাপ মোডে বিশ্লেষণ-টুল চালানো হয়নি — ফাইলের বিষয়বস্তু দেখা যাচ্ছে না।`,
+          });
+        }
+        continue;
+      }
       if (upload.kind === 'video') {
         // ভিডিও প্রি-স্টেপ নেই — উপস্থিতি জানিয়ে দাও, LLM দরকার হলে inspect_media কল করবে
         context.push({
@@ -540,6 +698,87 @@ async function runAgentLoop(runId: string): Promise<void> {
     }
   }
 
+  // ---- ২ক. (অডিট §১-A) শুধু-আলাপ মোড: একটিই LLM-কল, কোনো টুল-লুপ নেই ----
+  // context-এর শেষ user-বার্তায় মোড-নির্দেশ জোড়া হয়; ফেরত আসা টেক্সটই
+  // চূড়ান্ত উত্তর — parseToolCall-চেকও হয় না (নির্দেশটিই তা নিষেধ করে)।
+  if (chatOnly) {
+    emit(runId, {
+      type: 'run_note',
+      runId,
+      level: 'info',
+      note: 'শুধু-আলাপ মোড — কোনো টুল ছাড়াই সরাসরি উত্তর লেখা হচ্ছে…',
+    });
+    const lastIdx = context.length - 1;
+    if (lastIdx >= 0 && context[lastIdx].role === 'user') {
+      context[lastIdx] = { role: 'user', content: context[lastIdx].content + CHAT_ONLY_DIRECTIVE };
+    } else {
+      context.push({ role: 'user', content: CHAT_ONLY_DIRECTIVE.trim() });
+    }
+
+    const t0 = Date.now();
+    const streamer = createDeltaStreamer(runId);
+    let chatOnlyText = '';
+    let chatOnlyMeta: ChatCallMeta | null = null;
+    try {
+      const r = await chatCompleteWithNotes(runId, context, {
+        model: usedModel,
+        streamer,
+        diagnostic,
+      });
+      chatOnlyText = r.text;
+      chatOnlyMeta = r.meta;
+    } catch (err) {
+      streamer.finish();
+      throw err; // failRun সৎ শ্রেণিসহ (rate_limited ইত্যাদি) ধরবে
+    }
+    streamer.finish();
+
+    const decisionSeq = nextSeq();
+    await db.agentStep.create({
+      data: {
+        runId,
+        seq: decisionSeq,
+        kind: 'llm_decision',
+        name: 'llm_chat_only',
+        payloadJson: safeJson({
+          mode: 'chat_only',
+          text: chatOnlyText.slice(0, 4000),
+          ...(chatOnlyMeta
+            ? {
+                cache: chatOnlyMeta.cache,
+                provider: chatOnlyMeta.provider,
+                ...(chatOnlyMeta.providerLabel ? { providerLabel: chatOnlyMeta.providerLabel } : {}),
+                ...(chatOnlyMeta.model ? { model: chatOnlyMeta.model } : {}),
+                latencyMs: chatOnlyMeta.latencyMs,
+              }
+            : {}),
+        }),
+      },
+    });
+    logStep(runId, decisionSeq, 'llm', 'chat-only-final', Date.now() - t0);
+
+    const finalChatOnlyText = chatOnlyText.trim()
+      ? chatOnlyText
+      : 'দুঃখিত, এই মুহূর্তে উত্তর তৈরি করা যায়নি — শুধু-আলাপ মোডে খালি উত্তর এসেছে। অনুগ্রহ করে আবার চেষ্টা করুন।';
+
+    await db.agentRun
+      .update({ where: { id: runId }, data: { usedModel: describeChatModel(usedModel) } })
+      .catch(() => undefined);
+    await finalizeRun(
+      runId,
+      finalChatOnlyText,
+      {
+        steps: 1,
+        toolCalls: stats.toolCalls,
+        durationMs: Date.now() - startedAt,
+        seq: nextSeq(),
+      },
+      null,
+      { endReason: 'final_answer' }
+    );
+    return;
+  }
+
   // ---- ৩. execution loop (MAX_STEPS পর্যন্ত) ----
   let llmSteps = 0;
   let finalText: string | null = null;
@@ -550,9 +789,12 @@ async function runAgentLoop(runId: string): Promise<void> {
   loop: for (let step = 1; step <= MAX_STEPS; step++) {
     const t0 = Date.now();
     let text: string;
+    let stepMeta: ChatCallMeta | null = null;
     const streamer = createDeltaStreamer(runId);
     try {
-      text = await chatCompleteWithNotes(runId, context, usedModel, streamer);
+      const r = await chatCompleteWithNotes(runId, context, { model: usedModel, streamer, diagnostic });
+      text = r.text;
+      stepMeta = r.meta;
       streamer.finish();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -600,7 +842,13 @@ async function runAgentLoop(runId: string): Promise<void> {
         });
         try {
           const retryStreamer = createDeltaStreamer(runId);
-          text = await chatCompleteWithNotes(runId, context, '', retryStreamer);
+          const r2 = await chatCompleteWithNotes(runId, context, {
+            model: '',
+            streamer: retryStreamer,
+            diagnostic,
+          });
+          text = r2.text;
+          stepMeta = r2.meta;
           retryStreamer.finish();
         } catch (err2) {
           const msg2 = err2 instanceof Error ? err2.message : String(err2);
@@ -627,7 +875,19 @@ async function runAgentLoop(runId: string): Promise<void> {
         seq: decisionSeq,
         kind: 'llm_decision',
         name: 'llm',
-        payloadJson: safeJson({ text: text.slice(0, 4000) }),
+        // (অডিট §C) ক্যাশ-মেটা প্রতিটি llm_decision-ধাপের পেলোডে সংরক্ষিত
+        payloadJson: safeJson({
+          text: text.slice(0, 4000),
+          ...(stepMeta
+            ? {
+                cache: stepMeta.cache,
+                provider: stepMeta.provider,
+                ...(stepMeta.providerLabel ? { providerLabel: stepMeta.providerLabel } : {}),
+                ...(stepMeta.model ? { model: stepMeta.model } : {}),
+                latencyMs: stepMeta.latencyMs,
+              }
+            : {}),
+        }),
       },
     });
     logStep(runId, decisionSeq, 'llm', 'decision', Date.now() - t0);
@@ -716,13 +976,41 @@ async function runAgentLoop(runId: string): Promise<void> {
     );
   }
 
-  // ---- ৫. MAX_STEPS ছাড়িয়ে গেলে বাধ্যতামূলক চূড়ান্ত উত্তর ----
+  // ---- ৫. MAX_STEPS ছাড়িয়ে গেলে বাধ্যতামূলক মোড়ক-উত্তর (অডিট §১-B: সৎ) ----
+  // সততা: ধাপ-সীমা শেষ হলে endReason সবসময় 'max_steps'। মোড়ক-কল থেকে
+  // সত্যিকারের উত্তর এলে status 'completed' + সৎ ফুটনোট; নইলে/মোড়ক-কল
+  // ব্যর্থ হলে status 'failed' + errorCategory ('max_steps' বা প্রকৃত কারণ) +
+  // আংশিক অগ্রগতির বাংলা সারাংশ।
   if (finalText === null) {
     forced = true;
     context.push({ role: 'user', content: 'আর কোনো টুল ছাড়া এখনই চূড়ান্ত উত্তর দাও।' });
     const t0 = Date.now();
     const forcedStreamer = createDeltaStreamer(runId);
-    const text = await chatCompleteWithNotes(runId, context, usedModel, forcedStreamer);
+    let forcedText = '';
+    let forcedMeta: ChatCallMeta | null = null;
+    try {
+      const r = await chatCompleteWithNotes(runId, context, {
+        model: usedModel,
+        streamer: forcedStreamer,
+        diagnostic,
+      });
+      forcedText = r.text;
+      forcedMeta = r.meta;
+    } catch (err) {
+      forcedStreamer.finish();
+      const msg = err instanceof Error ? err.message : String(err);
+      const errorCategory = categorizeError(err);
+      logStep(runId, nextSeq(), 'llm', 'forced-final-failed', Date.now() - t0);
+      await db.agentRun
+        .update({ where: { id: runId }, data: { usedModel: describeChatModel(usedModel) } })
+        .catch(() => undefined);
+      await failRun(
+        runId,
+        `ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হওয়ার পর চূড়ান্ত-উত্তরের কলও ব্যর্থ: ${msg}`,
+        { errorCategory, endReason: 'max_steps' }
+      );
+      return;
+    }
     forcedStreamer.finish();
     const forcedSeq = nextSeq();
     await db.agentStep.create({
@@ -731,15 +1019,48 @@ async function runAgentLoop(runId: string): Promise<void> {
         seq: forcedSeq,
         kind: 'final_answer',
         name: 'llm_forced',
-        payloadJson: safeJson({ text: text.slice(0, 4000) }),
+        payloadJson: safeJson({
+          text: forcedText.slice(0, 4000),
+          maxSteps: true,
+          ...(forcedMeta
+            ? {
+                cache: forcedMeta.cache,
+                provider: forcedMeta.provider,
+                ...(forcedMeta.providerLabel ? { providerLabel: forcedMeta.providerLabel } : {}),
+                ...(forcedMeta.model ? { model: forcedMeta.model } : {}),
+                latencyMs: forcedMeta.latencyMs,
+              }
+            : {}),
+        }),
       },
     });
     logStep(runId, forcedSeq, 'llm', 'forced-final', Date.now() - t0);
-    const stillToolCall = parseToolCall(text);
-    finalText =
-      text.trim() && !stillToolCall
-        ? text
-        : 'দুঃখিত, এই কাজটি সম্পূর্ণ করতে অনুমোদিত ধাপের সীমা (১২) শেষ হয়ে গেছে। অনুগ্রহ করে প্রশ্নটি ছোট ছোট অংশে ভাগ করে আবার জিজ্ঞাসা করুন।';
+    const stillToolCall = parseToolCall(forcedText);
+    if (forcedText.trim() && !stillToolCall) {
+      // সৎ মোড়ক: উত্তর আসল, কিন্তু কেন থামল তা ব্যবহারকারী জানবেন
+      finalText =
+        forcedText.trimEnd() +
+        `\n\n---\n*নোট: অনুমোদিত ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হওয়ায় টুল-চালানো এখানে থামিয়ে এই সারাংশটি দেওয়া হলো — আংশিক অগ্রগতির সৎ মোড়ক।*`;
+    } else {
+      // মোড়ক-কলও ব্যবহারযোগ্য উত্তর দেয়নি — সৎ ব্যর্থতা + আংশিক-অগ্রগতির সারাংশ
+      await db.agentRun
+        .update({ where: { id: runId }, data: { usedModel: describeChatModel(usedModel) } })
+        .catch(() => undefined);
+      await failRun(
+        runId,
+        `ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হয়েছে — এই মুহূর্তে ব্যবহারযোগ্য চূড়ান্ত উত্তর তৈরি করা যায়নি।`,
+        {
+          errorCategory: 'max_steps',
+          endReason: 'max_steps',
+          content:
+            `দুঃখিত, কাজটি সম্পূর্ণ করা যায়নি — **অনুমোদিত ধাপ-সীমা (${bnNum(MAX_STEPS)}) শেষ হয়ে গেছে**।\n\n` +
+            `এ পর্যন্ত যা হয়েছে: ${bnNum(llmSteps)}টি সিদ্ধান্ত-ধাপ, ${bnNum(stats.toolCalls)}টি টুল-কল ` +
+            `(${bnNum(Math.round((Date.now() - startedAt) / 1000))} সেকেন্ড ধরে কাজ চেয়েছে)।\n\n` +
+            `কাজটি ছোট ছোট অংশে ভাগ করে আবার পাঠালে প্রতিটি অংশ ধাপ-সীমার মধ্যে সম্পূর্ণ হওয়ার সম্ভাবনা বেশি।`,
+        }
+      );
+      return;
+    }
   }
 
   // প্রকৃতপক্ষে ব্যবহৃত মডেল রেকর্ড (ফলব্যাক হলে আলাদা) — সৎ-লেবেলিং
@@ -751,27 +1072,38 @@ async function runAgentLoop(runId: string): Promise<void> {
     })
     .catch(() => undefined);
 
-  await finalizeRun(runId, finalText, {
-    steps: forced ? MAX_STEPS : llmSteps,
-    toolCalls: stats.toolCalls,
-    durationMs: Date.now() - startedAt,
-    seq: nextSeq(),
-  }, proposedProductionId);
+  await finalizeRun(
+    runId,
+    finalText,
+    {
+      steps: forced ? MAX_STEPS : llmSteps,
+      toolCalls: stats.toolCalls,
+      durationMs: Date.now() - startedAt,
+      seq: nextSeq(),
+    },
+    proposedProductionId,
+    // সৎ সমাপ্তির কারণ: ধাপ-সীমায় থামা মোড়ক হলে 'max_steps', নইলে চূড়ান্ত উত্তর
+    { endReason: forced ? 'max_steps' : 'final_answer' }
+  );
 }
 
 /**
  * চূড়ান্ত উত্তর: assistant Message + run completed — ট্রানজেকশনে
  * (race-free), তারপর 'message' + 'run_finished' emit।
+ * (অডিট §১-B/§১-E) endReason সবসময় লেখা হয়; run_finished-পেলোডে
+ * সমাপ্তির বিস্তারিত তথ্য (endReason/cacheStatus/requestedMode/usedModel) যায়।
  */
 async function finalizeRun(
   runId: string,
   content: string,
   stats: { steps: number; toolCalls: number; durationMs: number; seq: number },
-  productionId: string | null = null
+  productionId: string | null = null,
+  end?: { endReason?: RunEndReason }
 ): Promise<void> {
   const run = await db.agentRun.findUnique({ where: { id: runId } });
   if (!run || run.status !== 'running') return;
   const finishedAt = new Date();
+  const endReason: RunEndReason = end?.endReason ?? 'final_answer';
 
   const [message] = await db.$transaction([
     db.message.create({
@@ -787,6 +1119,7 @@ async function finalizeRun(
       where: { id: runId },
       data: {
         status: 'completed',
+        endReason,
         stepCount: stats.steps,
         toolCallCount: stats.toolCalls,
         durationMs: stats.durationMs,
@@ -803,23 +1136,44 @@ async function finalizeRun(
         seq: stats.seq,
         kind: 'final_answer',
         name: 'final',
-        payloadJson: safeJson({ length: content.length }),
+        payloadJson: safeJson({ length: content.length, endReason }),
       },
     }),
   ]);
 
-  logStep(runId, stats.seq, 'final', 'completed', stats.durationMs);
+  logStep(runId, stats.seq, 'final', `completed (${endReason})`, stats.durationMs);
 
   const view = await buildMessageView(message);
   emit(runId, { type: 'message', conversationId: run.conversationId, message: view });
-  emit(runId, { type: 'run_finished', runId, conversationId: run.conversationId, status: 'completed' });
+  // ট্রানজেকশন-পরের সদ্য-সদ্য সারি থেকে সমাপ্তির বিস্তারিত তথ্য (§১-E)
+  const finalRun = await db.agentRun.findUnique({ where: { id: runId } });
+  emit(runId, {
+    type: 'run_finished',
+    runId,
+    conversationId: run.conversationId,
+    status: 'completed',
+    ...(finalRun ? runEndPayloadOf(finalRun) : { endReason }),
+  });
 }
 
 /** রান ব্যর্থ: run failed + fallback assistant message + events। */
-async function failRun(runId: string, errorMessage: string): Promise<void> {
+async function failRun(
+  runId: string,
+  errorMessage: string,
+  opts?: {
+    /** কলার জানলে স্পষ্ট শ্রেণি; নইলে categorizeError বার্তা থেকে ঠিক করে */
+    errorCategory?: RunErrorCategory;
+    endReason?: RunEndReason;
+    /** ব্যবহারকারীমুখী চূড়ান্ত বার্তা-ওভাররাইড (যেমন max_steps-সারাংশ) */
+    content?: string;
+  }
+): Promise<void> {
   const run = await db.agentRun.findUnique({ where: { id: runId } });
   if (!run || run.status !== 'running') return;
 
+  const errorCategory = opts?.errorCategory ?? categorizeError(errorMessage);
+  const endReason = opts?.endReason ?? endReasonFromCategory(errorCategory);
+  const categoryLabel = RUN_ERROR_CATEGORY_LABELS_BN[errorCategory];
   const durationMs = Date.now() - run.startedAt.getTime();
   const stepCount = await db.agentStep.count({ where: { runId } });
   const toolCallCount = await db.toolCall.count({ where: { runId } });
@@ -827,14 +1181,17 @@ async function failRun(runId: string, errorMessage: string): Promise<void> {
   const finishedAt = new Date();
   // S9: ৪২৯ = সাময়িক অবস্থা — ব্যবহারকারীকে পরিষ্কার বোঝাও ও বিকল্প-পথ বলো
   const isTemporarilyUnavailable = /TEMPORARILY_UNAVAILABLE|429|rate.?limit/i.test(errorMessage);
-  const content = isTemporarilyUnavailable
-    ? `দুঃখিত, এই মুহূর্তে কাজটি সম্পন্ন করা যায়নি।\n\n` +
-      `ত্রুটি: ${errorMessage.slice(0, 400)}\n\n` +
-      `**এটি সাময়িক** — ক্লাউড API-র রেট-লিমিট (৪২৯); লাইসেন্স বা অনুমতির সমস্যা নয়।\n\n` +
-      `- কয়েক মিনিট পর একই বার্তা আবার পাঠালে সাধারণত কাজ করবে।\n` +
-      `- তাড়াহুড়ো থাকলে **স্টুডিও** ভিউ থেকে সরাসরি মিউজিক ভিডিও / শর্ট ফিল্ম তৈরি করা যায় (LLM ছাড়াই)।\n` +
-      `- রেট-লিমিট-উইন্ডোতেও লোকাল প্রসিডিউরাল গান + ভিজ্যুয়াল দিয়ে ভিডিও তৈরি হবে (সৎ লেবেলসহ)।`
-    : `দুঃখিত, কাজটি সম্পন্ন করা যায়নি।\n\nত্রুটি: ${errorMessage.slice(0, 500)}`;
+  const categoryLine = `**কারণ-শ্রেণি: ${categoryLabel}**`;
+  const content =
+    opts?.content ??
+    (isTemporarilyUnavailable
+      ? `দুঃখিত, এই মুহূর্তে কাজটি সম্পন্ন করা যায়নি। ${categoryLine}\n\n` +
+        `ত্রুটি: ${errorMessage.slice(0, 400)}\n\n` +
+        `**এটি সাময়িক** — ক্লাউড API-র রেট-লিমিট (৪২৯); লাইসেন্স বা অনুমতির সমস্যা নয়।\n\n` +
+        `- কয়েক মিনিট পর একই বার্তা আবার পাঠালে সাধারণত কাজ করবে।\n` +
+        `- তাড়াহুড়ো থাকলে **স্টুডিও** ভিউ থেকে সরাসরি মিউজিক ভিডিও / শর্ট ফিল্ম তৈরি করা যায় (LLM ছাড়াই)।\n` +
+        `- রেট-লিমিট-উইন্ডোতেও লোকাল প্রসিডিউরাল গান + ভিজ্যুয়াল দিয়ে ভিডিও তৈরি হবে (সৎ লেবেলসহ)।`
+      : `দুঃখিত, কাজটি সম্পন্ন করা যায়নি। ${categoryLine}\n\nত্রুটি: ${errorMessage.slice(0, 500)}`);
 
   const ops: any[] = [
     db.agentRun.update({
@@ -842,6 +1199,8 @@ async function failRun(runId: string, errorMessage: string): Promise<void> {
       data: {
         status: 'failed',
         error: errorMessage.slice(0, 1000),
+        errorCategory,
+        endReason,
         stepCount,
         toolCallCount,
         durationMs,
@@ -860,18 +1219,23 @@ async function failRun(runId: string, errorMessage: string): Promise<void> {
   const results = await db.$transaction(ops);
   const message = existing ?? results[0];
 
-  logStep(runId, stepCount, 'final', 'failed', durationMs);
+  logStep(runId, stepCount, 'final', `failed (${errorCategory}/${endReason})`, durationMs);
 
   if (!existing && message) {
     const view = await buildMessageView(message);
     emit(runId, { type: 'message', conversationId: run.conversationId, message: view });
   }
+  // ট্রানজেকশন-পরের সারি থেকে সমাপ্তির বিস্তারিত তথ্য (§১-E)
+  const finalRun = await db.agentRun.findUnique({ where: { id: runId } });
   emit(runId, {
     type: 'run_finished',
     runId,
     conversationId: run.conversationId,
     status: 'failed',
     error: errorMessage.slice(0, 500),
+    ...(finalRun
+      ? runEndPayloadOf(finalRun)
+      : { errorCategory, endReason }),
   });
 }
 
@@ -881,7 +1245,14 @@ export async function sweepStaleRuns(): Promise<void> {
     const cutoff = new Date(Date.now() - STALE_RUN_MS);
     const res = await db.agentRun.updateMany({
       where: { status: 'running', startedAt: { lt: cutoff } },
-      data: { status: 'interrupted', error: 'রানটি অসম্পূর্ণ অবস্থায় আটকে গিয়েছিল (stale sweep)', finishedAt: new Date() },
+      data: {
+        status: 'interrupted',
+        error: 'রানটি অসম্পূর্ণ অবস্থায় আটকে গিয়েছিল (stale sweep)',
+        // (অডিট §১-B) সমাপ্তির কারণও সৎভাবে লেখা হয় — ১০ মিনিটে শেষ হয়নি
+        endReason: 'timeout',
+        errorCategory: 'timeout',
+        finishedAt: new Date(),
+      },
     });
     if (res.count > 0) {
       console.log(`[agent] sweep: ${res.count} টি stale রান interrupted করা হয়েছে`);

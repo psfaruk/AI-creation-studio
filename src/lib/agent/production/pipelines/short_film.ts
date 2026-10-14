@@ -48,7 +48,7 @@ import type { CameraMove, FilmMode } from '@/lib/types';
 import { ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
 import { AI_VIDEO_MODEL } from '../../video/ai_video';
-import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec, prewarmVideoClip, videoGenerationEtaNote } from './motion_video';
+import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec, prewarmVideoClip, videoGenerationEtaNote, type ShotEngineRecord } from './motion_video';
 import {
   synthesizeVerifiedSpeech,
   resolveVoice,
@@ -669,7 +669,11 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         ...(firstPortrait ? { imageUrl: firstPortrait } : {}),
         requestKey: `sf-${ctx.productionId}-shot-1`,
       },
-      { onStatus: () => undefined }
+      {
+        onStatus: () => undefined,
+        // §3-D: প্রি-ওয়ার্ম-পোলও বাতিল মানবে
+        isCancelled: () => ctx.isCancelled(),
+      }
     );
     ctx.partialNotes.push('স্পিড-আপ: প্রথম AI-শট অভিনয়-পরিকল্পনার পরেই চালু (ওভারল্যাপ)।');
   }
@@ -915,6 +919,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
 
   // ------------------------------------------------------- ৫ generate_shots
   const shotEngineLabels: string[] = [];
+  const shotEngines: ShotEngineRecord[] = [];
   let aiShots = 0;
   await ctx.runStep(
     'generate_shots',
@@ -960,6 +965,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               fallbackMove: shot.cameraMove,
               fallbackMood: String(spec.mood ?? ''),
               onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
+              // §3-D: প্রোভাইডার-পোলের ভেতরেও বাতিল-চেক
+              isCancelled: () => ctx.isCancelled(),
             });
             if (res.usedAi) {
               aiShots++;
@@ -982,6 +989,13 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               });
             }
             shotEngineLabels.push(res.engineLabel);
+            shotEngines.push({
+              index: i + 1,
+              engine: res.engine,
+              label: res.engineLabel,
+              ...(res.aiModel ? { model: res.aiModel } : {}),
+              ...(res.fallbackError ? { error: res.fallbackError.slice(0, 200) } : {}),
+            });
             valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
           } catch (err) {
             ctx.partialNotes.push(
@@ -1087,6 +1101,12 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
                 })`
               : `শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`
           );
+          shotEngines.push({
+            index: i + 1,
+            engine: frameIsLocal ? 'local_procedural' : 'storyboard',
+            label: shotEngineLabels[shotEngineLabels.length - 1],
+            ...(frameIsLocal ? { error: frameFailReason.slice(0, 200) } : {}),
+          });
           valid.push({ ...shot, framePath, clipPath });
         }
       }
@@ -1414,6 +1434,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         language,
         layers: usedLayers,
         shotEngineLabels,
+        shotEngines,
         subtitles: !!srtContent,
         speechVerification: verificationSummaries,
         mix: mixReport
@@ -1439,6 +1460,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     result.scenes = scenes.length;
     result.engine = engine;
     result.shotEngineLabels = shotEngineLabels;
+    result.shotEngines = shotEngines;
+    result.aiShots = aiShots;
     result.layers = usedLayers;
     result.continuityWarnings = continuityWarnings;
     result.subtitles = !!srtContent;

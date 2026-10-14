@@ -10,17 +10,24 @@
 // পছন্দের মডেলগুলো এখানে models-অ্যারেতে পাঠানো হয়।
 // ============================================================
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { addCustomProvider, listCustomProviders } from '@/lib/agent/custom-providers';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const providers = await listCustomProviders();
   return NextResponse.json({ providers });
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   let body: unknown;
   try {
     body = await req.json();

@@ -125,6 +125,20 @@ export interface AiShotRequest {
   /** S11: লোকাল-প্রসিডিউরাল শেষ-উপায়ের মুড-প্যালেট (spec.mood থেকে) */
   fallbackMood?: string;
   onStatus?: (note: string) => Promise<void> | void;
+  /** §3-D বাতিল-চেক — প্রোভাইডার-পোল/অপেক্ষার ভেতরেও ২ সে. টিকে জিজ্ঞাসা হয় */
+  isCancelled?: () => boolean | Promise<boolean>;
+}
+
+/** §২-C সৎ প্রতি-শট ইঞ্জিন-চিহ্ন (resultJson.shotEngines-এ যায়) */
+export type ShotEngine = 'ai_video' | 'storyboard' | 'storyboard_fallback' | 'local_procedural';
+
+export interface ShotEngineRecord {
+  index: number;
+  engine: ShotEngine;
+  /** মানব-পাঠযোগ্য ব্যাখ্যা (shotEngineLabels-এর একই লেখা) */
+  label: string;
+  model?: string;
+  error?: string;
 }
 
 export interface AiShotResult {
@@ -132,6 +146,8 @@ export interface AiShotResult {
   /** সৎ ইঞ্জিন-লেবেল (shotEngineLabels-এ যায়) */
   engineLabel: string;
   usedAi: boolean;
+  /** §২-C: কাঠামোগত ইঞ্জিন-চিহ্ন — সিরিয়ালাইজেশন/ব্যাজে ব্যবহৃত */
+  engine: ShotEngine;
   /** ফলব্যাক হলে স্টোরিবোর্ড ফ্রেমের পাথ (artifact নিবন্ধনের জন্য) */
   framePath?: string;
   /** S11: ফলব্যাক-ফ্রেমটি লোকাল প্রসিডিউরাল (ক্লাউড-ইমেজও ব্যর্থ) — সৎ নোটের জন্য */
@@ -172,7 +188,7 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
               // §১০: লজিক্যাল শটের আইডেম্পোটেন্সি-চাবি — পুনঃচেষ্টায়ও একই request_id
               ...(req.requestKey ? { requestKey: req.requestKey } : {}),
             },
-            { onStatus: note => void req.onStatus?.(note) }
+            { onStatus: note => void req.onStatus?.(note), isCancelled: req.isCancelled }
           );
       await writeFile(rawPath, clip.buffer);
       // লক্ষ্য-মাত্রা/fps-এ স্বাভাবিকীকরণ (কেন্দ্র-ক্রপ)
@@ -191,6 +207,7 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
         clipPath,
         engineLabel: `শট ${req.index + 1}: প্রকৃত AI (${clip.model})`,
         usedAi: true,
+        engine: 'ai_video',
         aiModel: clip.model,
       };
     } catch (err) {
@@ -261,6 +278,7 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
       framePath,
       frameLocal: true,
       usedAi: false,
+      engine: 'local_procedural',
       engineLabel: `শট ${req.index + 1}: লোকাল প্রসিডিউরাল ফ্রেম + ক্যামেরা-মোশন (${
         isRateLimitErrorText(frameFailMsg) ? 'ক্লাউড রেট-লিমিটেড' : 'ক্লাউড ব্যর্থ'
       })`,
@@ -271,6 +289,7 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
     clipPath,
     framePath,
     usedAi: false,
+    engine: 'storyboard_fallback',
     engineLabel: `শট ${req.index + 1}: ক্যামেরা-মোশন ফলব্যাক (AI-ব্যর্থ: ${lastErr.slice(0, 120)})`,
     fallbackError: lastErr.slice(0, 240),
   };
@@ -300,6 +319,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
   const genSize = ASPECT_TO_GEN_SIZE[aspect];
   const wd = ctx.workingDir;
   const shotEngineLabels: string[] = [];
+  const shotEngines: ShotEngineRecord[] = [];
   let aiShots = 0;
   const result: Record<string, unknown> = {};
 
@@ -380,6 +400,8 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
           onStatus: note => {
             step.setDetail(`শট ১ ব্যাকগ্রাউন্ডে: ${note}`).catch(() => undefined);
           },
+          // §3-D: প্রি-ওয়ার্ম-পোলও বাতিল মানবে (ক্লাউড-টাস্ক থাকলে অবহেলিত হয়)
+          isCancelled: () => ctx.isCancelled(),
         }
       );
       ctx.partialNotes.push('স্পিড-আপ: প্রথম AI-শট পরিকল্পনার সাথে-সাথেই চালু হয়েছে (ওভারল্যাপ)।');
@@ -419,6 +441,8 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
               fallbackMove: spec.cameraMove ?? shot.cameraMove,
               fallbackMood: String(spec.mood ?? ''),
               onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
+              // §3-D: প্রোভাইডার-পোলের ভেতরেও বাতিল-চেক
+              isCancelled: () => ctx.isCancelled(),
             });
             if (res.usedAi) {
               aiShots++;
@@ -441,6 +465,13 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
               });
             }
             shotEngineLabels.push(res.engineLabel);
+            shotEngines.push({
+              index: i + 1,
+              engine: res.engine,
+              label: res.engineLabel,
+              ...(res.aiModel ? { model: res.aiModel } : {}),
+              ...(res.fallbackError ? { error: res.fallbackError.slice(0, 200) } : {}),
+            });
             valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
           } catch (err) {
             ctx.partialNotes.push(
@@ -537,6 +568,12 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
                 })`
               : `শট ${i + 1}: ক্যামেরা-মোশন (ইঞ্জিন-নির্বাচিত)`
           );
+          shotEngines.push({
+            index: i + 1,
+            engine: frameIsLocal ? 'local_procedural' : 'storyboard',
+            label: shotEngineLabels[shotEngineLabels.length - 1],
+            ...(frameIsLocal ? { error: frameFailReason.slice(0, 200) } : {}),
+          });
           valid.push({ ...shot, clipPath });
         }
       }
@@ -692,6 +729,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
         shots: shots.length,
         sound,
         shotEngineLabels,
+        shotEngines,
         ...(soundDesignLabel ? { soundDesign: soundDesignLabel } : {}),
         honestLabel,
         lipSync: false, // §৫ — লিপ-সিঙ্ক মডেল নেই, দাবিও নেই
@@ -708,6 +746,8 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     result.shots = shots.length;
     result.engine = engine;
     result.shotEngineLabels = shotEngineLabels;
+    result.shotEngines = shotEngines;
+    result.aiShots = aiShots;
     result.aspect = aspect;
     result.sound = sound;
     result.hasAudio = info.hasAudio;

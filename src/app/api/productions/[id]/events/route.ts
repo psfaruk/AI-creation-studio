@@ -1,8 +1,10 @@
 // GET /api/productions/[id]/events — SSE লাইভ অগ্রগতি
 // (রিপ্লে → লাইভ bus → DB diff-poll fallback, run-events-এর আদলে)
 import { db } from '@/lib/db';
+import { requireOwner } from '@/lib/security';
 import { subscribeProduction, getProductionReplay } from '@/lib/agent/production/bus';
 import { toProductionView } from '@/lib/agent/production/serialize';
+import { videoProviderStatus } from '@/lib/agent/video/ai_video';
 import type { ProductionEvent } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -13,11 +15,17 @@ const POLL_MS = 2_500;
 const MAX_LIVE_MS = 60 * 60 * 1000; // ১ ঘণ্টা
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  // SSE (EventSource) — কুকি ছাড়া ?st= টোকেনও চলে
+  const auth = await requireOwner(req, { allowQueryToken: true });
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   const production = await db.production.findUnique({ where: { id } });
   if (!production) {
     return new Response('not found', { status: 404 });
   }
+  // §2-B: ভিডিও-ধর্মী প্রোডাকশনে ক্লাউড-প্রোভাইডারের সৎ স্ট্যাটাস টিকে টিকে যায়
+  const isVideoProviderType = ['motion_video', 'music_video', 'short_film'].includes(production.type);
 
   const encoder = new TextEncoder();
   const startedAt = Date.now();
@@ -27,6 +35,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
+      let tickCount = 0;
       const send = (event: ProductionEvent) => {
         if (closed) return;
         try {
@@ -132,6 +141,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
       const pollTimer = setInterval(async () => {
         if (closed) return;
+        // §2-B: প্রোভাইডার-স্ট্যাটাস টিক (~৫ সে. অন্তর) — ব্যস্ত/কুলডাউন/মুক্ত
+        if (isVideoProviderType && tickCount++ % 2 === 0) {
+          send({ type: 'provider_status', productionId: id, provider: videoProviderStatus() });
+        }
         try {
           const fresh = await db.production.findUnique({
             where: { id },

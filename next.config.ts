@@ -2,10 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  /* অডিট-সমাধান: ignoreBuildErrors সরানো হলো — TypeScript-ত্রুটি এখন আর
+     নীরবে বিল্ডে ঢুকবে না (CI-গেট; `bun run typecheck` দিয়ে আলাদাভাবেও
+     যাচাইযোগ্য)। */
   reactStrictMode: false,
 };
 

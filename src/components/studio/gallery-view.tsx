@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 
 import { formatSizeBn, relativeTimeBn, toBnDigits, withDownloadParam } from '@/components/chat/bn-format';
+import { withStudioToken } from '@/components/auth/security-gate';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -128,7 +129,7 @@ function TextPreviewBody({ item }: { item: GalleryItem }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(item.url)
+    fetch(withStudioToken(item.url))
       .then(res => (res.ok ? res.text() : Promise.reject(new Error('ফেচ ব্যর্থ'))))
       .then(text => {
         if (!cancelled) setState({ text });
@@ -279,7 +280,7 @@ export function GalleryView() {
                 >
                   {item.kind === 'image' ? (
                     <img
-                      src={item.url}
+                      src={withStudioToken(item.url)}
                       alt={item.fileName}
                       loading="lazy"
                       className="aspect-square w-full object-cover transition-transform duration-300 group-hover:scale-105"
@@ -357,7 +358,7 @@ export function GalleryView() {
             <div className="space-y-4">
               {preview.kind === 'image' && (
                 <img
-                  src={preview.url}
+                  src={withStudioToken(preview.url)}
                   alt={preview.fileName}
                   className="mx-auto max-h-[62vh] w-auto rounded-lg border"
                 />
@@ -367,7 +368,7 @@ export function GalleryView() {
                   <video
                     controls
                     preload="metadata"
-                    src={preview.url}
+                    src={withStudioToken(preview.url)}
                     className="max-h-[60vh] w-full rounded-lg bg-black"
                     aria-label={preview.fileName}
                   />
@@ -379,7 +380,7 @@ export function GalleryView() {
                 </>
               )}
               {preview.kind === 'audio' && (
-                <audio controls preload="metadata" src={preview.url} className="w-full" aria-label={preview.fileName} />
+                <audio controls preload="metadata" src={withStudioToken(preview.url)} className="w-full" aria-label={preview.fileName} />
               )}
               {preview.kind === 'text' && <TextPreviewBody key={preview.id} item={preview} />}
 
@@ -388,7 +389,7 @@ export function GalleryView() {
                   asChild
                   className="min-h-11 bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700"
                 >
-                  <a href={withDownloadParam(preview.url)} download>
+                  <a href={withDownloadParam(withStudioToken(preview.url))} download>
                     <Download className="size-4" aria-hidden="true" />
                     ডাউনলোড
                   </a>

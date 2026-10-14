@@ -3,11 +3,16 @@
 // ============================================================
 
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { revokeApiKey } from '@/lib/platform/api-keys';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await ctx.params;
   const ok = await revokeApiKey(id);
   if (!ok) {

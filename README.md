@@ -9,7 +9,7 @@ An **Agentic AI Creative Studio** — a local-first, hardware-adaptive content c
 | 🎬 AI Video | CogVideoX-3 (cloud) | Real MP4 output, E2E verified |
 | 🎵 Music Generation | Procedural (local) | Multi-genre, deterministic seeds |
 | 🎚️ Sound Design | Local (A1–A5 presets) | Stems, mixing, mastering |
-| 🗣️ TTS | Cloud TTS | Bangla + English voices |
+| 🗣️ TTS | Edge Neural + Cloud | Bangla (bn-BD) + English voices |
 | 🖼️ Image Generation | Cloud (z-ai-web-dev-sdk) | Posters, stills, concept art |
 | 🧠 LLM Chat / Agent | Cloud LLM | Creative direction, orchestration |
 | 🎞️ Production Assembly | Local (ffmpeg) | Music videos, short films |
@@ -31,34 +31,73 @@ An **Agentic AI Creative Studio** — a local-first, hardware-adaptive content c
 
 ## 🚀 Getting Started
 
+**Prerequisites (পূর্বশর্ত):**
+
+- Node.js 20+ অথবা [Bun](https://bun.sh) 1.x
+- `ffmpeg` — PATH-এ থাকতে হবে (ভিডিও/অডিও অ্যাসেম্বলি ও লোকাল ফ্রেম-রেন্ডারের জন্য; `ffmpeg -version` দিয়ে যাচাই করুন)
+
 ```bash
-# 1. Install dependencies
-bun install   # or npm install
+# 1. Install dependencies (ডিপেন্ডেন্সি ইনস্টল)
+bun install          # or: npm install
 
-# 2. Configure environment
-cp .env.example .env   # then edit DATABASE_URL if needed
+# 2. Configure environment (এনভায়রনমেন্ট কনফিগ)
+cp .env.example .env
+# .env-এ DATABASE_URL দেখে নিন — ডিফল্ট file:./db/custom.db (পোর্টেবল রিলেটিভ পাথ)
 
-# 3. Push database schema
-bun run db:push
+# 3. Push database schema (SQLite ডেটাবেস তৈরি)
+bun run db:push      # prisma db push (npm: npm run db:push)
 
-# 4. Start dev server
-bun run dev            # http://localhost:3000
+# 4. Start dev server (ডেভ-সার্ভার চালু)
+bun run dev          # http://localhost:3000
 ```
+
+Production build: `bun run build` → `bun run start` (standalone output; নিচের ডিপ্লয়মেন্ট সেকশন দেখুন)।
+
+## 📁 স্টোরেজ কাঠামো (Storage Layout)
+
+অ্যাপের রানটাইম-ডেটা কোথায় থাকে — `storage/` ও `upload/` সম্পূর্ণ **git-অগ্রাহ্য** (`.gitignore`-এ `/storage/` blanket নিয়ম, security-audit ফিক্স):
+
+```
+db/custom.db                 # SQLite ডেটাবেস (Prisma) — কথোপকথন, রান, আর্টিফ্যাক্ট-মেটা (রানটাইম ফাইল)
+storage/
+  artifacts/                 # জেনারেট করা মিডিয়া (png/mp3/mp4/txt)
+  productions/               # প্রোডাকশন-ভিত্তিক ওয়ার্ক-ফাইল (শট, ভয়েস-লাইন, বাইবেল-ইমেজ)
+  llm-chat/                  # LLM রেসপন্স-ক্যাশ — TTL ১২ ঘণ্টা (প্রম্পট-টেক্সট থাকে, তাই কমিট-অযোগ্য)
+  tts-cache/                 # TTS অডিও-ক্যাশ
+  provider-keys.json         # গোপন — এক্সটার্নাল প্রোভাইডার API-কী (কখনোই কমিট করবেন না)
+  custom-providers.json      # গোপন — ব্যবহারকারীর কাস্টম প্ল্যাটফর্ম + কী (কখনোই কমিট করবেন না)
+upload/                      # ইউজার-আপলোড/টুল-জাঞ্জ — একইভাবে git-বহির্ভূত
+```
+
+## 🔐 নিরাপত্তা (Security)
+
+- **একক-মালিক মডেল (single-owner):** এই স্টুডিওতে একজনই মালিক। প্রথম চালুর সময় পাসকোড সেট না থাকলে **প্রথম ভিজিটর** UI-তে (SecurityGate ফ্লো) পাসকোড সেট করে মালিক হয়ে যান — এরপর সেটি সার্ভারে হ্যাশ হয়ে জমা থাকে।
+- **`STUDIO_OWNER_PASSCODE` (env):** পাবলিক ডিপ্লয়ের আগে `.env`-এ এটি বসিয়ে দিলে প্রথম-ভিজিটর-সেট ফ্লো বাইপাস হয় — সেটিই মালিকের পাসকোড। না দিলে প্রথম ভিজিটরই সেট করবেন (লোকাল ব্যবহারে খালি রাখাই স্বাভাবিক)।
+- **API-নিরাপত্তা:** `/api/auth/*` (লগইন/সেশন) ছাড়া প্রতিটি `/api/...` রুট **মালিকের সেশন (owner session) ছাড়া প্রত্যাখ্যাত**। শুধু ব্যতিক্রম `/api/v1/*` — এগুলোতে মালিক-সেশন লাগে না, বরং **platform Bearer key** লাগে (মেশিন-টু-মেশিন অ্যাক্সেস)।
+- **লক-বাটন:** সাইডবারের লক-বাটন দিয়ে সেশন সঙ্গে সঙ্গে লক করা যায় — শেয়ারড স্ক্রিনে স্টুডিও খোলা রেখে দূরে যাওয়ার সময় কাজে লাগে।
+- **গোপন ফাইল:** `storage/provider-keys.json` ও `storage/custom-providers.json`-এ API-কী থাকে — পুরো `storage/` ডিরেক্টরি git-অগ্রাহ্য, তবু ব্যাকআপ/শেয়ারের সময় সাবধান থাকুন। UI-তে কী কখনোই মাস্কড ছাড়া দেখানো হয় না।
+
+## 🌍 ডিপ্লয়মেন্ট (Deployment)
+
+- **দীর্ঘস্থায়ী প্রসেস দরকার (persistent Node process):** ফায়ার-অ্যান্ড-ফরগেট এজেন্ট-রান ও লম্বা ভিডিও-জব (মিনিট-পর্যায়ের) ব্যাকগ্রাউন্ডে চলে — তাই **serverless (Vercel/Lambda-স্টাইল) উপযোগী নয়**। VPS/Docker-এ দীর্ঘস্থায়ী Node প্রসেস হিসেবে চালান।
+- **পারসিস্টেন্ট ভলিউম আবশ্যক:** SQLite ফাইল (`db/custom.db`) ও `./storage` ডিরেক্টরি **রিডিপ্লয়েও টিকে থাকতে হবে** — এগুলো হারালে কথোপকথন, আর্টিফ্যাক্ট ও প্রোডাকশন সব হারাবেন।
+- **সিঙ্গেল-ইনস্ট্যান্স:** প্রোডাকশন-কিউ ও ইভেন্ট-বাস ইন-মেমরি — তাই **একই সময়ে একটিই ইনস্ট্যান্স** চালান। মাল্টি-রেপ্লিকা দরকার হলে আগে বাইরের কিউ (Redis ইত্যাদি) যুক্ত করতে হবে।
+- জেনারেট করা সব ফাইল `./storage`-এর নিচে থাকে (নিচের স্টোরেজ-কাঠামো দেখুন) — ভলিউম-ব্যাকআপ ও ক্লিনআপ সেখানেই করুন।
 
 ## 📁 Project Structure
 
 ```
 src/
-  app/            # Next.js App Router (single / route)
+  app/            # Next.js App Router (studio UI + /api routes)
   components/     # shadcn/ui + studio UI components
   lib/
-    agent/        # Agentic pipeline (production, capability routing)
+    agent/        # Agentic pipeline (production, capability routing, TTS, video)
+    media/        # ffmpeg helpers
     db.ts         # Prisma client
-storage/
-  artifacts/      # Generated media (wav, png, mp4, txt)
-scripts/          # Backtest & verification scripts
-agent-ctx/        # Agent work context docs
+storage/          # Runtime data (gitignored — see স্টোরেজ কাঠামো above)
 prisma/           # DB schema
+db/               # SQLite database file (runtime data)
+.zscripts/        # Dev-server lifecycle scripts
 ```
 
 ## ⚠️ Honest Status Labels

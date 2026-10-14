@@ -8,12 +8,13 @@
 import { create } from 'zustand';
 
 import { toast } from '@/hooks/use-toast';
-import type { ChatMessage, ConversationDetail, ConversationSummary } from '@/lib/types';
+import type { ChatMessage, ChatMode, ConversationDetail, ConversationSummary } from '@/lib/types';
 
 export const GENERIC_ERROR = 'কিছু একটা সমস্যা হয়েছে। আবার চেষ্টা করুন।';
 
 const ACTIVE_CONVERSATION_KEY = 'agentic-active-conversation';
 const CHAT_MODEL_KEY = 'agentic-chat-model';
+const CHAT_MODE_KEY = 'agentic-chat-mode';
 
 /** শেষ সক্রিয় কথোপকথন localStorage-এ মনে রাখা (রিলোডে ফিরিয়ে আনার জন্য) */
 function rememberActiveConversation(id: string | null): void {
@@ -43,6 +44,25 @@ function rememberChatModel(id: string): void {
   }
 }
 
+/** নির্বাচিত চ্যাট-মোড localStorage-এ মনে রাখা (অডিট §১-A) */
+function loadChatMode(): ChatMode {
+  try {
+    const v = window.localStorage.getItem(CHAT_MODE_KEY);
+    return v === 'chat_only' || v === 'diagnostic' ? v : 'normal';
+  } catch {
+    return 'normal';
+  }
+}
+
+function rememberChatMode(mode: ChatMode): void {
+  try {
+    if (mode === 'normal') window.localStorage.removeItem(CHAT_MODE_KEY);
+    else window.localStorage.setItem(CHAT_MODE_KEY, mode);
+  } catch {
+    // নীরব
+  }
+}
+
 /** কম্পোজারে যোগ হওয়া ফাইল (dataURL আকারে) */
 export interface PendingAttachment {
   kind: 'image' | 'audio' | 'video';
@@ -62,9 +82,12 @@ interface ChatStore {
   composerFocusSignal: number;
   /** নির্বাচিত চ্যাট-মডেল ('' = ডিফল্ট) — composer-এর সিলেক্টর থেকে সেট */
   chatModel: string;
+  /** রান-মোড (অডিট §১-A) — composer-এর মোড-সিলেক্টর থেকে সেট */
+  chatMode: ChatMode;
 
   setDraft: (value: string) => void;
   setChatModel: (id: string) => void;
+  setChatMode: (mode: ChatMode) => void;
   addAttachments: (files: PendingAttachment[]) => void;
   removeAttachment: (index: number) => void;
   resetComposerInput: () => void;
@@ -96,11 +119,16 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   pendingAttachments: [],
   composerFocusSignal: 0,
   chatModel: typeof window !== 'undefined' ? loadChatModel() : '',
+  chatMode: typeof window !== 'undefined' ? loadChatMode() : 'normal',
 
   setDraft: (value) => set({ draft: value }),
   setChatModel: (id) => {
     rememberChatModel(id);
     set({ chatModel: id });
+  },
+  setChatMode: (mode) => {
+    rememberChatMode(mode);
+    set({ chatMode: mode });
   },
   addAttachments: (files) =>
     set((state) => ({ pendingAttachments: [...state.pendingAttachments, ...files] })),

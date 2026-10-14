@@ -1,12 +1,16 @@
 // GET /api/artifacts/[id] → ArtifactMeta
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { toArtifactMeta } from '@/lib/agent/serialize';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   const artifact = await db.artifact.findUnique({ where: { id } });
   if (!artifact) {

@@ -1,6 +1,7 @@
 // POST /api/chat → ChatResponse { runId, conversationId, userMessage }
 // রান ব্যাকগ্রাউন্ডে চলে (startAgentRun fire-and-forget)।
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { startAgentRun } from '@/lib/agent/orchestrator';
 import { isCustomModelId, isValidChatModelId } from '@/lib/agent/chat-models';
@@ -8,6 +9,7 @@ import { customModelExists } from '@/lib/agent/custom-providers';
 import { buildMessageView, toAttachmentView } from '@/lib/agent/serialize';
 import { saveArtifactFile } from '@/lib/agent/storage';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
+import type { ChatMode } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,6 +59,10 @@ function extFromMime(mime: string, name: string): string {
 }
 
 export async function POST(req: Request) {
+  // --- মালিক-সেশন (P0 নিরাপত্তা) ---
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   // --- রেট-লিমিট (§১১ নিরাপত্তা) ---
   const rl = checkRateLimit(`chat:${clientKey(req)}`, RATE_LIMITS.chat.limit, RATE_LIMITS.chat.windowMs);
   if (!rl.allowed) {
@@ -94,6 +100,22 @@ export async function POST(req: Request) {
     );
   }
   const chatModel = typeof body?.model === 'string' ? body.model : '';
+
+  // রান-মোড যাচাই (অডিট §১-A): normal | chat_only | diagnostic —
+  // অজানা/অনুপস্থিত মান 'normal'; ডাক্তার না থাকলে 400।
+  const CHAT_MODES: ChatMode[] = ['normal', 'chat_only', 'diagnostic'];
+  const rawMode = body?.mode;
+  if (rawMode != null && typeof rawMode !== 'string') {
+    return NextResponse.json({ error: 'মোড মান সঠিক নয়' }, { status: 400 });
+  }
+  if (typeof rawMode === 'string' && rawMode !== '' && !CHAT_MODES.includes(rawMode as ChatMode)) {
+    return NextResponse.json(
+      { error: 'অজানা মোড — normal / chat_only / diagnostic এর একটি হতে হবে' },
+      { status: 400 }
+    );
+  }
+  const chatMode: ChatMode =
+    rawMode === 'chat_only' || rawMode === 'diagnostic' ? rawMode : 'normal';
 
   if (trimmed.length > MAX_CONTENT) {
     return NextResponse.json({ error: 'বার্তা সর্বোচ্চ ৮০০০ অক্ষরের হতে পারে' }, { status: 400 });
@@ -184,12 +206,13 @@ export async function POST(req: Request) {
     });
   }
 
-  // এজেন্ট রান তৈরি ও ব্যাকগ্রাউন্ডে চালু (নির্বাচিত মডেলসহ)
+  // এজেন্ট রান তৈরি ও ব্যাকগ্রাউন্ডে চালু (নির্বাচিত মডেল + অনুরোধকৃত মোডসহ)
   const run = await db.agentRun.create({
     data: {
       conversationId: conversation.id,
       status: 'running',
       ...(chatModel ? { model: chatModel } : {}),
+      ...(chatMode !== 'normal' ? { requestedMode: chatMode } : {}),
     },
   });
 

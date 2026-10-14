@@ -432,6 +432,8 @@ async function runInstrumental(ctx: PipelineContext): Promise<PipelineResult> {
       sections: inst.res.meta.sections.length,
       loudnessLufs: check.loudnessLufs ?? null,
       honestLabel: inst.res.meta.honestLabel,
+      // §২-C সৎ ইঞ্জিন-চিহ্ন — UI-ব্যাজ (🎹 লোকাল ইন্সট্রুমেন্টাল)
+      musicEngine: 'procedural_instrumental',
     },
   };
 }

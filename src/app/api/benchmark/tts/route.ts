@@ -7,12 +7,16 @@
 // পাস; মানব-শ্রবণ পরীক্ষা বাধ্যতামূলক (রিপোর্টের honestNote-এ সর্বদা লেখা)।
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { cancelTtsBenchmark, getTtsBenchmarkState, startTtsBenchmark } from '@/lib/agent/audio/tts-benchmark-runner';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   try {
     const state = await getTtsBenchmarkState();
     return NextResponse.json(state);
@@ -25,6 +29,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   // বডি ঐচ্ছিক — না থাকলে/খালি হলে 'quick'
   let scope: unknown = 'quick';
   try {
@@ -46,6 +53,9 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ started: true, reportId: started.reportId }, { status: 202 });
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   return NextResponse.json({ requested: cancelTtsBenchmark() });
 }

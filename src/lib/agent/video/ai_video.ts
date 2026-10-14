@@ -93,6 +93,33 @@ export interface AiVideoTask {
   request: AiVideoRequest;
 }
 
+/** প্রোভাইডার-স্ট্যাটাস — UI-র "ক্লাউড ভিডিও" সারির জন্য (audit §2-B/§2-D) */
+export interface VideoProviderStatus {
+  /** একটি টাস্ক এখন চলছে (গেটে ইন-ফ্লাইট) */
+  busy: boolean;
+  inFlightTaskId?: string;
+  /** চলমান টাস্ক কত সেকেন্ড ধরে চলছে */
+  inFlightSec?: number;
+  /** সাবমিট-জানালা খুলতে আর কত মি.সে. (কুলডাউন) */
+  cooldownRemainingMs: number;
+  /** সর্বশেষ ব্যর্থতার সংক্ষিপ্ত বার্তা (না থাকলে বাদ) */
+  lastError?: string;
+  /** সর্বশেষ ~৫ টাস্কের গড় জেনারেশন-সময় (মি.সে.) */
+  avgGenerationMs?: number;
+}
+
+/**
+ * বাতিলকরণ-সংকেত — নামটি সচেতনভাবে 'CancelledError' রাখা হয়েছে যাতে
+ * runner (production/runner.ts) instanceof ছাড়াই নাম-মিলিয়ে চিনে নেয়
+ * এবং প্রোডাকশনকে failed নয়, cancelled করে। (আমদ্রি-আমদ্রি আমদানি-চক্র এড়াতে।)
+ */
+export class VideoAbortedError extends Error {
+  constructor(reason = 'বাতিলকরণ-অনুরোধ — প্রোভাইডার-অপেক্ষা বন্ধ') {
+    super(reason);
+    this.name = 'CancelledError';
+  }
+}
+
 export interface AiVideoOutcome {
   status: 'SUCCESS' | 'FAIL' | 'TIMEOUT';
   url?: string;
@@ -114,6 +141,17 @@ export interface AiVideoClip {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** বাতিলযোগ্য ঘুম — ২ সেকেন্ড টিকে বাতিল-কলব্যাক দেখে; বাতিল হলে VideoAbortedError */
+async function sleepCancellable(ms: number, isCancelled?: () => boolean | Promise<boolean>): Promise<void> {
+  const end = Date.now() + Math.max(0, ms);
+  for (;;) {
+    if (isCancelled && (await isCancelled())) throw new VideoAbortedError();
+    const remain = end - Date.now();
+    if (remain <= 0) return;
+    await sleep(Math.min(remain, 2000));
+  }
+}
 
 /**
  * §১০ আইডেম্পোটেন্সি: requestKey → নির্ধারক request_id
@@ -152,6 +190,8 @@ interface VideoGate {
   nextAllowedAt: number;
   /** সর্বশেষ সফল সাবমিটের সময় (min-gap হিসাবে) */
   lastSubmitAt: number;
+  /** সর্বশেষ ব্যর্থতার সংক্ষিপ্ত বার্তা — UI-র সৎ স্ট্যাটাসের জন্য */
+  lastError?: string;
   /** পরিসংখ্যান — সৎ ETA-নোট ও UI-র জন্য */
   submits: number;
   completions: number;
@@ -178,29 +218,31 @@ function gate(): VideoGate {
   return g.__aiVideoGate as VideoGate;
 }
 
-/** গেট-পরিসংখ্যান (সৎ ETA-নোট/UI) */
-export function videoSchedulerStats(): {
-  inflight: boolean;
-  inflightSec: number;
-  cooldownRemainingMs: number;
-  submits: number;
-  completions: number;
-  failures: number;
-  avgGenerationMs: number;
-} {
+/** গেট-পরিসংখ্যান — videoProviderStatus-এর পুরনো নাম (পিছন-সামঞ্জস্য) */
+export function videoSchedulerStats(): VideoProviderStatus {
+  return videoProviderStatus();
+}
+
+/** প্রোভাইডার-স্ট্যাটাস — সিরিয়ালাইজেশন/SSE-তে "ক্লাউড ভিডিও" সারির জন্য (audit §2-B/§2-D) */
+export function videoProviderStatus(): VideoProviderStatus {
   const s = gate();
   const samples = s.generationMsSamples.slice(-5);
-  return {
-    inflight: Boolean(s.inflight),
-    inflightSec: s.inflight ? Math.round((Date.now() - s.inflight.startedAt) / 1000) : 0,
+  const status: VideoProviderStatus = {
+    busy: Boolean(s.inflight),
+    ...(s.inflight ? { inFlightTaskId: s.inflight.taskId, inFlightSec: Math.round((Date.now() - s.inflight.startedAt) / 1000) } : {}),
     cooldownRemainingMs: Math.max(0, s.nextAllowedAt - Date.now()),
-    submits: s.submits,
-    completions: s.completions,
-    failures: s.failures,
-    avgGenerationMs: samples.length
-      ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length)
-      : 0,
+    ...(s.lastError ? { lastError: s.lastError } : {}),
+    ...(samples.length ? { avgGenerationMs: Math.round(samples.reduce((a, b) => a + b, 0) / samples.length) } : {}),
   };
+  return status;
+}
+
+/** গেটের ইন-ফ্লাইট টাস্ক অবহেলা (বাতিলকরণে): ক্লাউডে টাস্ক বাকি থাকতে পারে —
+ *  গেট মুক্ত করে সমাপ্তি-কুলডাউন বসিয়ে দেওয়া হয় যাতে পরের সাবমিট জানানা না হামার করে। */
+function abandonInflight(): void {
+  const s = gate();
+  s.inflight = null;
+  s.nextAllowedAt = Math.max(s.nextAllowedAt, Date.now() + AI_VIDEO_LIMITS.postCompletionCooldownMs);
 }
 
 /** চলমান টাস্কের পোল-প্রমিশ (না থাকলে null) — সাবমিট-অপেক্ষার জন্য */
@@ -210,8 +252,8 @@ function inflightPoll(): Promise<AiVideoOutcome> | null {
 
 /** গড় জেনারেশন-সময়ের সৎ আনুমানিক বাংলা নোট */
 export function videoGenerationEtaNote(): string {
-  const st = videoSchedulerStats();
-  const avgSec = Math.round(st.avgGenerationMs / 1000);
+  const st = videoProviderStatus();
+  const avgSec = st.avgGenerationMs ? Math.round(st.avgGenerationMs / 1000) : 0;
   return avgSec > 0
     ? `প্রতি শটে আনুমানিক ${avgSec} সেকেন্ড`
     : 'প্রতি শটে আনুমানিক ২–৪ মিনিট';
@@ -228,7 +270,10 @@ export function videoGenerationEtaNote(): string {
  *  ৩) ৪২৯ = "জানালা বন্ধ" — ক্রমবর্ধমান ল্যাডারে ধৈর্য (সর্বোচ্চ ~৮ মিনিট);
  *  ৪) প্রত্যাশিত ৪২৯-এ coordinator-কে আর বিষ নয়।
  */
-export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask> {
+export async function submitVideoTask(
+  req: AiVideoRequest,
+  opts?: { onStatus?: (note: string) => void; isCancelled?: () => boolean | Promise<boolean> }
+): Promise<AiVideoTask> {
   const zai = await getZAI();
   const duration = clampDuration(req.durationSec);
   // §১০: requestKey থাকলে নির্ধারক request_id — চক্রের বাইরে একবারই তৈরি
@@ -239,9 +284,15 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
   let lastErr: unknown = null;
 
   while (Date.now() < deadline) {
+    if (opts?.isCancelled && (await opts.isCancelled())) throw new VideoAbortedError();
+
     // --- ধাপ ১: ইন-ফ্লাইট টাস্ক থাকলে তার সমাপ্তির অপেক্ষা ---
     const running = inflightPoll();
     if (running) {
+      const other = gate().inflight;
+      opts?.onStatus?.(
+        `প্রোভাইডার ব্যস্ত — চলমান টাস্কের (${other?.taskId.slice(0, 10) ?? '…'}…) সমাপ্তির অপেক্ষা`
+      );
       try {
         await running;
       } catch {
@@ -251,7 +302,10 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
 
     // --- ধাপ ২: কুলডাউন বাকি থাকলে সৎ অপেক্ষা ---
     const wait = gate().nextAllowedAt - Date.now();
-    if (wait > 0) await sleep(Math.min(wait, 60_000));
+    if (wait > 0) {
+      opts?.onStatus?.(`কুলডাউন চলছে (~${Math.ceil(wait / 1000)} সে.) — জানালা খোলার অপেক্ষা`);
+      await sleepCancellable(Math.min(wait, 60_000), opts?.isCancelled);
+    }
 
     // --- ধাপ ৩: সাবমিট চেষ্টা ---
     try {
@@ -286,10 +340,13 @@ export async function submitVideoTask(req: AiVideoRequest): Promise<AiVideoTask>
       const ladderSec = AI_VIDEO_LIMITS.rateLimitLadderSec[Math.min(ladderIdx, AI_VIDEO_LIMITS.rateLimitLadderSec.length - 1)];
       const delayMs = ra != null && ra > 0 ? Math.min(ra, 120_000) : ladderSec * 1000;
       ladderIdx++;
-      await sleep(delayMs);
+      gate().lastError = `৪২৯ রেট-সীমা — ${Math.round(delayMs / 1000)} সে. পরে পুনঃচেষ্টা (${msg.slice(0, 80)})`;
+      opts?.onStatus?.(`৪২৯ (জানালা বন্ধ) — ${Math.round(delayMs / 1000)} সেকেন্ড অপেক্ষা`);
+      await sleepCancellable(delayMs, opts?.isCancelled);
     }
   }
   const detail = String((lastErr as any)?.message ?? lastErr ?? 'অজানা').slice(0, 200);
+  gate().lastError = `সাবমিট-জানালা ${Math.round(AI_VIDEO_LIMITS.submitBudgetMs / 60000)} মিনিটেও খোলেনি: ${detail}`;
   throw new TemporarilyUnavailableError(
     `ভিডিও-সাবমিট জানালা ${Math.round(AI_VIDEO_LIMITS.submitBudgetMs / 60000)} মিনিটেও খুলেনি (৪২৯): ${detail}`
   );
@@ -307,7 +364,7 @@ function clampDuration(d?: number): number {
  */
 export async function pollVideoTask(
   task: AiVideoTask,
-  opts?: { onStatus?: (note: string) => void; timeoutMs?: number }
+  opts?: { onStatus?: (note: string) => void; timeoutMs?: number; isCancelled?: () => boolean | Promise<boolean> }
 ): Promise<AiVideoOutcome> {
   const zai = await getZAI();
   const timeout = opts?.timeoutMs ?? AI_VIDEO_LIMITS.pollTimeoutMs;
@@ -319,7 +376,13 @@ export async function pollVideoTask(
   // অন্ধকারে চলে যায়, যদিও টাস্ক সমাপ্ত।)
   let queryDelayMs = AI_VIDEO_LIMITS.pollIntervalMs;
   while (Date.now() - t0 < timeout) {
-    await sleep(queryDelayMs);
+    // §3-D বাতিলকরণ: বাতিল-প্রোডাকশন প্রোভাইডার-পোলে আটকে থাকবে না —
+    // গেট মুক্ত (কুলডাউনসহ) করে VideoAbortedError ছুড়ে চলে যায়।
+    if (opts?.isCancelled && (await opts.isCancelled())) {
+      if (gate().inflight?.taskId === task.taskId) abandonInflight();
+      throw new VideoAbortedError();
+    }
+    await sleepCancellable(queryDelayMs, opts?.isCancelled);
     try {
       const q: any = await zai.async.result.query(task.taskId);
       queryDelayMs = AI_VIDEO_LIMITS.pollIntervalMs;
@@ -331,14 +394,18 @@ export async function pollVideoTask(
         return { status: 'SUCCESS', url: typeof url === 'string' ? url : undefined, coverUrl, raw: q };
       }
       if (status === 'FAIL') {
+        gate().lastError = `প্রোভাইডার টাস্ক ব্যর্থ ঘোষণা করেছে (${task.taskId.slice(0, 10)}…)`;
         noteCompletion(t0);
         return { status: 'FAIL', raw: q };
       }
       if (opts?.onStatus && Date.now() - lastNote > 30_000) {
         lastNote = Date.now();
-        opts.onStatus(`অপেক্ষা চলছে… ${Math.round((Date.now() - t0) / 1000)} সে.`);
+        opts.onStatus(
+          `টাস্ক ${task.taskId.slice(0, 10)}… চলছে — ${Math.round((Date.now() - t0) / 1000)} সে. অতিবাহিত`
+        );
       }
     } catch (err: any) {
+      if (err instanceof VideoAbortedError || err?.name === 'CancelledError') throw err;
       const msg = String(err?.message ?? err);
       if (/429|Too many/i.test(msg)) {
         // জিজ্ঞাসা-চ্যানেল থ্রটেলড — বিরতি বাড়াও (সর্বোচ্চ ৪৫ সে.)
@@ -349,6 +416,7 @@ export async function pollVideoTask(
       }
     }
   }
+  gate().lastError = `পোল-সময়সীমা অতিক্রম (${Math.round(timeout / 60000)} মিনিট)`;
   noteCompletion(t0);
   return { status: 'TIMEOUT' };
 }
@@ -432,11 +500,11 @@ export async function validateVideoBuffer(buffer: Buffer, opts?: { expectAudio?:
  */
 export async function generateVideoClip(
   req: AiVideoRequest,
-  opts?: { onStatus?: (note: string) => void; timeoutMs?: number }
+  opts?: { onStatus?: (note: string) => void; timeoutMs?: number; isCancelled?: () => boolean | Promise<boolean> }
 ): Promise<AiVideoClip> {
   const t0 = Date.now();
-  const task = await submitVideoTask(req);
-  opts?.onStatus?.(`টাস্ক জমা হয়েছে (${task.model}) — জেনারেশন চলছে…`);
+  const task = await submitVideoTask(req, { onStatus: opts?.onStatus, isCancelled: opts?.isCancelled });
+  opts?.onStatus?.(`টাস্ক জমা হয়েছে (${task.model}, আইডি ${task.taskId.slice(0, 10)}…) — জেনারেশন চলছে…`);
 
   // ইন-ফ্লাইট-নথিভুক্ত পোল — ফল যা-ই হোক, গেট কুলডাউন-সচেতন
   const pollPromise = pollVideoTask(task, opts);
@@ -452,6 +520,7 @@ export async function generateVideoClip(
   const outcome = await pollPromise;
   if (outcome.status !== 'SUCCESS' || !outcome.url) {
     const reason = outcome.status === 'TIMEOUT' ? 'সময়সীমা অতিক্রম' : 'মডেল ব্যর্থ ঘোষণা করেছে';
+    gate().lastError = `${reason} (${task.taskId.slice(0, 10)}…)`;
     throw new Error(`AI ভিডিও-জেনারেশন ব্যর্থ: ${reason}`);
   }
   const buffer = await downloadVideo(outcome.url);
@@ -490,7 +559,10 @@ function prewarmMap(): Map<string, Promise<AiVideoClip>> {
 }
 
 /** প্রি-ওয়ার্ম চালু (একই কীতে পুনঃকল নীরবে উপেক্ষিত) */
-export function prewarmVideoClip(req: AiVideoRequest, opts?: { onStatus?: (note: string) => void }): void {
+export function prewarmVideoClip(
+  req: AiVideoRequest,
+  opts?: { onStatus?: (note: string) => void; isCancelled?: () => boolean | Promise<boolean> }
+): void {
   if (!req.requestKey) return;
   const map = prewarmMap();
   if (map.has(req.requestKey)) return;
@@ -533,7 +605,7 @@ export interface MultiClipResult {
  */
 export async function generateVideoClips(
   reqs: AiVideoRequest[],
-  opts?: { onStatus?: (note: string) => void; timeoutMs?: number }
+  opts?: { onStatus?: (note: string) => void; timeoutMs?: number; isCancelled?: () => boolean | Promise<boolean> }
 ): Promise<MultiClipResult> {
   const clips: MultiClipResult['clips'] = [];
   const failures: MultiClipResult['failures'] = [];
@@ -543,7 +615,9 @@ export async function generateVideoClips(
       const clip = await generateVideoClip(reqs[i], opts);
       clips.push({ index: i, ok: true, clip });
     } catch (err: any) {
+      if (err?.name === 'CancelledError') throw err;
       gate().failures++;
+      gate().lastError = `শট ${i + 1} ব্যর্থ: ${String(err?.message ?? err).slice(0, 120)}`;
       failures.push({ index: i, error: String(err?.message ?? err).slice(0, 200) });
     }
   }

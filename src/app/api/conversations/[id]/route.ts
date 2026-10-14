@@ -1,6 +1,7 @@
 // GET    /api/conversations/[id] → ConversationDetail
 // DELETE /api/conversations/[id] → { ok: true } (cascade)
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { unlink } from 'fs/promises';
 import { db } from '@/lib/db';
 import { sweepStaleRuns } from '@/lib/agent/orchestrator';
@@ -9,7 +10,10 @@ import { buildMessageView } from '@/lib/agent/serialize';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   await sweepStaleRuns();
   const conv = await db.conversation.findUnique({
@@ -33,7 +37,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   });
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   const conv = await db.conversation.findUnique({ where: { id }, include: { artifacts: true } });
   if (!conv) {

@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 
 import { relativeTimeBn, toBnDigits } from '@/components/chat/bn-format';
+import { withStudioToken } from '@/components/auth/security-gate';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -177,8 +178,8 @@ function ResultRow({
         {/* শোনা-সেল: প্লেয়ারে চাপলে সারি-টগল যেন না হয় */}
         <TableCell className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
           {result.audioUrl ? (
-            <audio controls src={result.audioUrl} className="h-8" preload="none">
-              <a href={result.audioUrl} className="text-xs underline">
+            <audio controls src={withStudioToken(result.audioUrl)} className="h-8" preload="none">
+              <a href={withStudioToken(result.audioUrl)} className="text-xs underline">
                 অডিও
               </a>
             </audio>

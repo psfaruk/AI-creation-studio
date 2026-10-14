@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# .env.example টেমপ্লেটটি রিপোতে থাকবে (শুধু নিরাপদ প্লেসহোল্ডার — আসল মান কখনো নয়)
+!.env.example
 
 # vercel
 .vercel
@@ -65,8 +67,14 @@ mixrepro-*
 /model-test/
 storage/logs/
 
-# AI provider API keys (local-only, never commit!)
-storage/provider-keys.json
+# runtime storage — LLM cache, provider keys, generated media (security audit fix)
+# storage/-এর ভেতরে সবকিছুই রানটাইম ডেটা: llm-chat (১২ঘ LLM ক্যাশ — প্রম্পট লিক
+# হতে পারে), tts-cache, artifacts/, productions/, এবং গোপন provider-keys.json +
+# custom-providers.json (এই দুটি পুরনো আলাদা-আলাদা নিয়ম নতুন blanket নিয়মে অন্তর্ভুক্ত)
+/storage/
+# user uploads & tool junk
+/upload/
 
-# Custom provider configs with API keys (local-only!)
-storage/custom-providers.json
+# runtime SQLite database (audit fix — never commit runtime DB)
+db/*.db
+db/*.db-journal

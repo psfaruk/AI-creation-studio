@@ -9,6 +9,7 @@
 // ============================================================
 
 import { create } from 'zustand';
+import { withStudioToken } from '@/components/auth/security-gate';
 import { toast } from '@/hooks/use-toast';
 import type { ProductionEvent, ProductionView } from '@/lib/types';
 
@@ -60,23 +61,42 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
 
     let stopped = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    /** §2-F পুনঃসংযোগ-ব্যাকঅফ: ২ → ৪ → ৮ → … → ৩০ সে. সর্বোচ্চ */
+    let retryDelayMs = 2_000;
+    let es: EventSource | null = null;
     let finished = false;
 
     const stopAll = () => {
       stopped = true;
       finished = true;
       if (pollTimer) clearInterval(pollTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      es?.close();
       subscriptions.delete(id);
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     };
 
     // --- লাইভ অগ্রগতি প্রয়োগ ---
     const applyEvent = (evt: ProductionEvent) => {
+      if (evt.type === 'ping') return;
       if (!('productionId' in evt) || evt.productionId !== id) return;
       const s = useProductions.getState();
       const prev = s.productions[id];
       if (!prev) return;
 
       switch (evt.type) {
+        case 'provider_status': {
+          // §2-B: ক্লাউড ভিডিও-প্রোভাইডারের সৎ স্ট্যাটাস — "ক্লাউড ভিডিও" সারিতে দেখায়
+          s.applyView({ ...prev, providerStatus: evt.provider });
+          return;
+        }
         case 'step_start': {
           const steps = [...prev.steps];
           const idx = steps.findIndex(st => st.id === evt.stepId);
@@ -133,15 +153,33 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
       }
     };
 
-    // --- SSE ---
-    try {
-      const es = new EventSource(`/api/productions/${id}/events`);
-      const cleanup = () => {
-        es.close();
-        stopAll();
-      };
-      subscriptions.set(id, cleanup);
-      es.onmessage = e => {
+    // §2-F: পোলিং-ফলব্যাক — SSE ছিঁড়ে থাকা অবস্থাতেও সার্ভার-সত্য টানা হয়
+    const pollOnce = async () => {
+      if (finished) {
+        stopPolling();
+        return;
+      }
+      try {
+        const res = await fetch(`/api/productions/${id}`);
+        if (!res.ok) return;
+        const view = (await res.json()) as ProductionView;
+        useProductions.getState().applyView(view);
+        if (!ACTIVE_STATUSES.has(view.status)) {
+          finished = true;
+          stopAll();
+        }
+      } catch {
+        // নীরব — পরের টিকে আবার
+      }
+    };
+
+    const startPolling = () => {
+      if (stopped || finished || pollTimer) return;
+      pollTimer = setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
+    };
+
+    const attachHandlers = (source: EventSource) => {
+      source.onmessage = e => {
         if (finished) return;
         try {
           applyEvent(JSON.parse(e.data) as ProductionEvent);
@@ -149,8 +187,15 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
           // উপেক্ষা
         }
       };
-      for (const name of ['production_started', 'step_start', 'step_end', 'production_progress', 'production_finished']) {
-        es.addEventListener(name, (e) => {
+      for (const name of [
+        'production_started',
+        'step_start',
+        'step_end',
+        'production_progress',
+        'production_finished',
+        'provider_status',
+      ]) {
+        source.addEventListener(name, e => {
           if (finished) return;
           try {
             applyEvent(JSON.parse((e as MessageEvent).data) as ProductionEvent);
@@ -159,56 +204,51 @@ export const useProductions = create<ProductionStore>()((set, get) => ({
           }
         });
       }
+    };
+
+    // --- SSE (§2-F: ছিঁড়লে পোলিং-ফলব্যাক + ব্যাকঅফে পুনঃসংযোগ) ---
+    const openEs = () => {
+      if (stopped || finished) return;
+      try {
+        es = new EventSource(withStudioToken(`/api/productions/${id}/events`));
+      } catch {
+        // EventSource অসমর্থিত → শুধু পোলিং
+        startPolling();
+        return;
+      }
+      attachHandlers(es);
+      es.onopen = () => {
+        // সংযোগ ফিরেছে — ব্যাকঅফ রিসেট, পোলিং বন্ধ
+        retryDelayMs = 2_000;
+        stopPolling();
+      };
       es.onerror = () => {
         if (finished) {
-          cleanup();
+          stopAll();
           return;
         }
-        // SSE ছিঁড়েছে → পোলিং fallback
-        es.close();
-        subscriptions.delete(id);
-        if (pollTimer) return;
-        pollTimer = setInterval(async () => {
-          if (finished) {
-            if (pollTimer) clearInterval(pollTimer);
-            return;
-          }
-          try {
-            const res = await fetch(`/api/productions/${id}`);
-            if (!res.ok) return;
-            const view = (await res.json()) as ProductionView;
-            useProductions.getState().applyView(view);
-            if (!ACTIVE_STATUSES.has(view.status)) {
-              finished = true;
-              if (pollTimer) clearInterval(pollTimer);
-              subscriptions.delete(id);
-            }
-          } catch {
-            // নীরব
-          }
-        }, POLL_INTERVAL_MS);
+        // SSE ছিঁড়েছে → পোলিং-ফলব্যাক চালু + ব্যাকঅফে পুনঃসংযোগ
+        es?.close();
+        es = null;
+        startPolling();
+        scheduleRetry();
       };
-    } catch {
-      // EventSource অসমর্থিত → শুধু পোলিং
-      pollTimer = setInterval(async () => {
-        if (finished) {
-          if (pollTimer) clearInterval(pollTimer);
-          return;
-        }
-        try {
-          const res = await fetch(`/api/productions/${id}`);
-          if (!res.ok) return;
-          const view = (await res.json()) as ProductionView;
-          useProductions.getState().applyView(view);
-          if (!ACTIVE_STATUSES.has(view.status)) {
-            finished = true;
-            if (pollTimer) clearInterval(pollTimer);
-          }
-        } catch {
-          // নীরব
-        }
-      }, POLL_INTERVAL_MS);
-    }
+    };
+
+    const scheduleRetry = () => {
+      if (stopped || finished || retryTimer) return;
+      retryTimer = setTimeout(
+        () => {
+          retryTimer = null;
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+          openEs();
+        },
+        retryDelayMs
+      );
+    };
+
+    subscriptions.set(id, stopAll);
+    openEs();
   },
 
   confirmProduction: async (id, specOverrides) => {

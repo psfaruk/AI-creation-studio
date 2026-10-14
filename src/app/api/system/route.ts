@@ -2,6 +2,7 @@
 // POST /api/system — স্বাস্থ্য-চেক জোর করে পুনরায় চালাও (ব্যয়সীমিত মাইক্রো-চেক)
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { measureHardware, runToolHealthChecks } from '@/lib/system-info';
 import { ttsCacheStats } from '@/lib/agent/tts-cache';
 import { edgeTtsHealth } from '@/lib/agent/audio/edge_tts';
@@ -16,7 +17,10 @@ function clientKey(req: NextRequest): string {
   return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local';
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   try {
     const [hardware, tools, edgeTts] = await Promise.all([
       measureHardware(),
@@ -43,6 +47,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   try {
     const rl = checkRateLimit(`system-check:${clientKey(req)}`, RATE_LIMITS.systemCheck.limit, RATE_LIMITS.systemCheck.windowMs);
     if (!rl.allowed) {

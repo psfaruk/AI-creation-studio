@@ -4,8 +4,9 @@
 // সব কলে timeout + বিস্তারিত error বার্তা সহ।
 // ============================================================
 
-import { execFile as execFileCb } from 'child_process';
+import { execFile as execFileCb, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
+import { AsyncLocalStorage } from 'async_hooks';
 import { mkdtemp, rm, readdir, stat, mkdir } from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -21,21 +22,152 @@ export interface FfmpegRunResult {
   durationMs: number;
 }
 
+// ------------------------------------------------------------
+// §3-D বাতিলকরণ-হার্ডেনিং (audit): প্রোডাকশন-প্রতি সক্রিয় ffmpeg-
+// প্রক্রিয়ার রেজিস্ট্রি। শুধু সম্পূর্ণ সংযোজন-পথ — runFfmpeg-এর বাইরের
+// সব আচরণ অপরিবর্তিত: runWithFfmpegTracking-এর ভেতরে না চললে
+// আগের execFileAsync পথই ব্যবহৃত হয়।
+// ------------------------------------------------------------
+
+const ffmpegAls = new AsyncLocalStorage<{ productionId: string }>();
+
+/** প্রোডাকশন-সুযোগে কোড চালাও — এই সুযোগের ভেতরের সব runFfmpeg কলের
+ *  সন্তান-প্রক্রিয়া ওই প্রোডাকশনের নামে ট্র্যাক হয় (বাতিলে kill করা যায়)। */
+export function runWithFfmpegTracking<T>(productionId: string, fn: () => Promise<T>): Promise<T> {
+  return ffmpegAls.run({ productionId }, fn);
+}
+
+const gFfmpeg = globalThis as unknown as {
+  __ffmpegChildrenByProduction?: Map<string, Set<ChildProcess>>;
+  __ffmpegCancelledKills?: WeakSet<ChildProcess>;
+};
+
+function cancelledKills(): WeakSet<ChildProcess> {
+  if (!gFfmpeg.__ffmpegCancelledKills) gFfmpeg.__ffmpegCancelledKills = new WeakSet();
+  return gFfmpeg.__ffmpegCancelledKills;
+}
+
+function childrenByProduction(): Map<string, Set<ChildProcess>> {
+  if (!gFfmpeg.__ffmpegChildrenByProduction) {
+    gFfmpeg.__ffmpegChildrenByProduction = new Map();
+  }
+  return gFfmpeg.__ffmpegChildrenByProduction;
+}
+
+function trackChild(productionId: string, child: ChildProcess): void {
+  const map = childrenByProduction();
+  let set = map.get(productionId);
+  if (!set) {
+    set = new Set();
+    map.set(productionId, set);
+  }
+  set.add(child);
+  child.once('exit', () => {
+    set!.delete(child);
+    if (set!.size === 0) map.delete(productionId);
+  });
+}
+
+/**
+ * একটি প্রোডাকশনের সব সক্রিয় ffmpeg-সন্তান মেরে ফেলো (SIGKILL — দ্রুত ও
+ * নিশ্চিত)। ফেরে দেয় কতটি প্রক্রিয়া মারা হলো। ট্র্যাকড কলগুলো তখন
+ * CancelledError-নামের বাতিল-ত্রুটি ছুড়ে বিরত হয় — ফলে প্রোডাকশন
+ * "failed" নয়, "cancelled" হিসেবেই সমাপ্ত হয়।
+ */
+export function killProductionFfmpeg(productionId: string): number {
+  const map = childrenByProduction();
+  const set = map.get(productionId);
+  if (!set || set.size === 0) return 0;
+  let killed = 0;
+  for (const child of [...set]) {
+    try {
+      if (child.exitCode === null && !child.killed) {
+        cancelledKills().add(child);
+        child.kill('SIGKILL');
+        killed++;
+      }
+    } catch {
+      // সর্বোচেষ্ট — একটি ব্যর্থ হলেও বাকিরা মারা যাবে
+    }
+  }
+  return killed;
+}
+
 /** ffmpeg চালাও (timeout-সহ, ব্যর্থ হলে বোধগম্য বাংলা ত্রুটি) */
 export async function runFfmpeg(args: string[], opts?: { timeoutMs?: number; label?: string }): Promise<FfmpegRunResult> {
   const timeoutMs = opts?.timeoutMs ?? 180_000;
   const label = opts?.label ?? 'ffmpeg';
   const t0 = Date.now();
-  try {
-    const { stdout, stderr } = await execFileAsync(FFMPEG, ['-hide_banner', '-y', ...args], {
-      timeout: timeoutMs,
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    return { stdout, stderr, durationMs: Date.now() - t0 };
-  } catch (err: any) {
-    const detail = String(err?.stderr || err?.message || '').split('\n').filter(Boolean).slice(-3).join(' | ');
-    throw new Error(`${label} ব্যর্থ: ${detail.slice(0, 400)}`);
+  const scope = ffmpegAls.getStore();
+  // ট্র্যাকিং-সুযোগে না চললে আগের পথই — শূন্য আচরণ-পরিবর্তন
+  if (!scope) {
+    try {
+      const { stdout, stderr } = await execFileAsync(FFMPEG, ['-hide_banner', '-y', ...args], {
+        timeout: timeoutMs,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      return { stdout, stderr, durationMs: Date.now() - t0 };
+    } catch (err: any) {
+      const detail = String(err?.stderr || err?.message || '').split('\n').filter(Boolean).slice(-3).join(' | ');
+      throw new Error(`${label} ব্যর্থ: ${detail.slice(0, 400)}`);
+    }
   }
+  // ট্র্যাকড পথ — সন্তান-হ্যান্ডেল পাওয়া যায়, বাতিলে kill করা যায়
+  return new Promise<FfmpegRunResult>((resolve, reject) => {
+    const child = spawn(FFMPEG, ['-hide_banner', '-y', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    trackChild(scope.productionId, child);
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    let settled = false;
+    const MAX_BUF = 20 * 1024 * 1024;
+    let bufOverflow = false;
+    child.stdout?.on('data', (d: Buffer) => {
+      if (stdoutBuf.length < MAX_BUF) stdoutBuf += d.toString();
+      else bufOverflow = true;
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      if (stderrBuf.length < MAX_BUF) stderrBuf += d.toString();
+      else bufOverflow = true;
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // উপেক্ষা
+      }
+      reject(new Error(`${label} ব্যর্থ: সময়সীমা অতিক্রম (${Math.round(timeoutMs / 1000)} সে.)`));
+    }, timeoutMs);
+    child.once('error', err => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`${label} ব্যর্থ: ${String(err?.message ?? err).slice(0, 400)}`));
+    });
+    child.once('exit', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // আমাদের killProductionFfmpeg দ্বারা মারা হলে → বাতিল-ত্রুটি
+      // (নাম-চুক্তি: runner 'CancelledError' নাম চিনে প্রোডাকশন cancelled করে)
+      if (signal === 'SIGKILL' && cancelledKills().has(child)) {
+        reject(
+          Object.assign(new Error('প্রোডাকশন বাতিল — ffmpeg প্রক্রিয়া বন্ধ করা হয়েছে'), {
+            name: 'CancelledError',
+          })
+        );
+        return;
+      }
+      if (code === 0 && !bufOverflow) {
+        resolve({ stdout: stdoutBuf, stderr: stderrBuf, durationMs: Date.now() - t0 });
+        return;
+      }
+      const detail = stderrBuf.split('\n').filter(Boolean).slice(-3).join(' | ');
+      const reason = bufOverflow && code === 0 ? 'আউটপুট-বাফার উপচে পড়েছে' : `কোড ${code ?? '?'}${signal ? ` (${signal})` : ''}`;
+      reject(new Error(`${label} ব্যর্থ (${reason}): ${detail.slice(0, 400)}`));
+    });
+  });
 }
 
 /** ffprobe চালাও — JSON আউটপুট */

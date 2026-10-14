@@ -395,6 +395,12 @@ export interface ChatMessage {
    * চূড়ান্ত message ইভেন্টে pending বার্তা পুরো বদলে যায়, তাই নোটও মুছে যায়।
    */
   statusNote?: string;
+  /**
+   * এই রানের সমাপ্তি-তথ্য (অডিট §১-E) — সফল হলে endReason/cacheStatus/…
+   * ব্যর্থ হলে errorCategory-সহ; UI এটি দিয়ে ব্যর্থতা-চিপ + "আবার চেষ্টা" দেখায়।
+   * (সার্ভার-সত্য serialize.ts থেকে আসে; পুরনো বার্তায় না থাকলে অনুপস্থিত।)
+   */
+  runEnd?: RunEndInfo;
 }
 
 export interface ConversationSummary {
@@ -415,6 +421,8 @@ export interface ChatRequest {
   content: string;
   /** নির্বাচিত চ্যাট-মডেল ('' বা বাদ = ডিফল্ট; ক্যাটালগের id হতে হবে) */
   model?: string;
+  /** রান-মোড (অডিট §১-A; বাদ হলে 'normal') — chat_only = টুল ছাড়া এক-কল, diagnostic = ক্যাশ-বাইপাস + ভার্বোস */
+  mode?: ChatMode;
   attachments?: {
     kind: 'image' | 'audio' | 'video';
     name: string;
@@ -475,6 +483,12 @@ export type RunEvent =
       conversationId: string;
       status: RunStatus;
       error?: string;
+      /** (অডিট §১-E) সমাপ্তির বিস্তারিত তথ্য — সব ঐচ্ছিক, পুরনো ফিল্ড অপরিবর্তিত */
+      endReason?: RunEndReason;
+      errorCategory?: RunErrorCategory;
+      cacheStatus?: RunCacheStatus;
+      requestedMode?: ChatMode;
+      usedModel?: string;
     }
   | { type: 'ping' };
 
@@ -611,6 +625,10 @@ export interface ProductionView {
   finishedAt?: string;
   steps: ProductionStepView[];
   artifacts: ArtifactMeta[];
+  /** §2-B (audit 3-a append): ক্লাউড ভিডিও-প্রোভাইডারের সৎ স্ট্যাটাস —
+   *  শুধু ভিডিও-ধর্মী (motion_video/music_video/short_film) সক্রিয়
+   *  প্রোডাকশনে থাকে; পুরনো ক্লায়েন্টে অনুপস্থিতি নিরাপদ */
+  providerStatus?: VideoProviderStatusView;
 }
 
 export interface ProductionSummary {
@@ -625,6 +643,25 @@ export interface ProductionSummary {
 }
 
 // ---------------- SSE events (GET /api/productions/{id}/events) ----------------
+
+/**
+ * §2-B (audit 3-a append): ক্লাউড ভিডিও-প্রোভাইডার (CogVideoX-3) স্ট্যাটাস —
+ * ai_video.ts-এর ইন-ফ্লাইট গেট থেকে সৎ তথ্য (একসাথে একটাই টাস্ক, কুলডাউন)।
+ */
+export interface VideoProviderStatusView {
+  /** একটি টাস্ক এখন চলছে */
+  busy: boolean;
+  /** চলমান টাস্কের আইডি (সংক্ষেপ নয় — সার্ভার যেটা দেয়) */
+  inFlightTaskId?: string;
+  /** চলমান টাস্ক কত সেকেন্ড ধরে চলছে */
+  inFlightSec?: number;
+  /** সাবমিট-জানালা খুলতে আর কত মি.সে. (কুলডাউন) */
+  cooldownRemainingMs: number;
+  /** সর্বশেষ ব্যর্থতার সংক্ষিপ্ত বার্তা */
+  lastError?: string;
+  /** সর্বশেষ ~৫ টাস্কের গড় জেনারেশন-সময় (মি.সে.) */
+  avgGenerationMs?: number;
+}
 
 export type ProductionEvent =
   | { type: 'production_started'; productionId: string }
@@ -658,6 +695,8 @@ export type ProductionEvent =
       status: 'completed' | 'failed' | 'partial' | 'cancelled';
       error?: string;
     }
+  /** §2-B (audit 3-a append): ভিডিও-ধর্মী প্রোডাকশনে প্রোভাইডার-স্ট্যাটাস টিক */
+  | { type: 'provider_status'; productionId: string; provider: VideoProviderStatusView }
   | { type: 'ping' };
 
 // ------------------------------------------------------------
@@ -912,3 +951,103 @@ export interface TtsBenchmarkReport {
 // ------------------------------------------------------------
 
 export type AppView = 'chat' | 'studio' | 'gallery' | 'productions' | 'registry' | 'keys' | 'guide';
+
+// ============================================================
+// (অ্যাড-অন) এজেন্ট-রান অবজারভেবিলিটি — অডিট §১-B/§১-E/§১-A
+// শুধু নতুন টাইপ/ইন্টারফেস যোগ করা হয়েছে; পুরনো গঠন অপরিবর্তিত।
+// ============================================================
+
+/** চ্যাট-রানের মোড (অডিট §১-A) — normal = টুল-লুপসহ এজেন্ট */
+export type ChatMode = 'normal' | 'chat_only' | 'diagnostic';
+
+/** চ্যাট-মোডের বাংলা লেবেল (কম্পোজার-সিলেক্টর + রান-চিপে দেখানোর জন্য) */
+export const CHAT_MODE_LABELS_BN: Record<ChatMode, string> = {
+  normal: 'স্বাভাবিক',
+  chat_only: 'শুধু আলাপ',
+  diagnostic: 'ডায়াগনস্টিক',
+};
+
+/**
+ * রান-ব্যর্থতার স্পষ্ট শ্রেণি (অডিট §১-B) — orchestrator-এর
+ * categorizeError ঠিক করে; AgentRun.errorCategory কলামে সংরক্ষিত।
+ */
+export type RunErrorCategory =
+  | 'rate_limited'
+  | 'provider_error'
+  | 'invalid_key'
+  | 'missing_key'
+  | 'invalid_model'
+  | 'timeout'
+  | 'malformed_tool_json'
+  | 'unknown_tool'
+  | 'tool_error'
+  | 'ffmpeg_error'
+  | 'storage_error'
+  | 'max_steps'
+  | 'aborted'
+  | 'unknown';
+
+/** এরর-শ্রেণির বাংলা লেবেল — UI-চিপ ও ব্যর্থতা-বার্তায় ব্যবহৃত */
+export const RUN_ERROR_CATEGORY_LABELS_BN: Record<RunErrorCategory, string> = {
+  rate_limited: 'রেট-লিমিট (৪২৯)',
+  provider_error: 'প্রোভাইডার-ত্রুটি',
+  invalid_key: 'অবৈধ API কী',
+  missing_key: 'API কী নেই',
+  invalid_model: 'মডেলটি পাওয়া যায়নি',
+  timeout: 'সময়শেষ (টাইমআউট)',
+  malformed_tool_json: 'ভাঙা টুল-কল JSON',
+  unknown_tool: 'অজানা টুল',
+  tool_error: 'টুল-ত্রুটি',
+  ffmpeg_error: 'ffmpeg-ত্রুটি',
+  storage_error: 'স্টোরেজ-ত্রুটি',
+  max_steps: 'ধাপ-সীমা শেষ',
+  aborted: 'বাতিল',
+  unknown: 'অজানা ত্রুটি',
+};
+
+/** রান কেন শেষ হলো — AgentRun.endReason কলামে সংরক্ষিত (অডিট §১-B) */
+export type RunEndReason =
+  | 'final_answer'
+  | 'max_steps'
+  | 'provider_error'
+  | 'rate_limit'
+  | 'invalid_tool_call'
+  | 'timeout'
+  | 'cancelled';
+
+/** সমাপ্তির কারণের বাংলা লেবেল */
+export const RUN_END_REASON_LABELS_BN: Record<RunEndReason, string> = {
+  final_answer: 'চূড়ান্ত উত্তর দেওয়া হয়েছে',
+  max_steps: 'ধাপ-সীমা শেষ',
+  provider_error: 'প্রোভাইডার-ত্রুটি',
+  rate_limit: 'রেট-লিমিট',
+  invalid_tool_call: 'অবৈধ টুল-কল',
+  timeout: 'সময়শেষ',
+  cancelled: 'বাতিল করা হয়েছে',
+};
+
+/** LLM-কলের ডিস্ক-ক্যাশ অবস্থা (AgentRun.cacheStatus) */
+export type RunCacheStatus = 'hit' | 'miss' | 'bypass';
+
+/** ক্যাশ-অবস্থার বাংলা লেবেল */
+export const RUN_CACHE_STATUS_LABELS_BN: Record<RunCacheStatus, string> = {
+  hit: 'ক্যাশ: হিট',
+  miss: 'ক্যাশ: মিস',
+  bypass: 'ক্যাশ: বাইপাস',
+};
+
+/**
+ * একটি রানের সমাপ্তি-তথ্য — সফল/ব্যর্থ উভয় assistant বার্তার সাথেই যায়
+ * (serialize.ts ও run_finished SSE-ইভেন্ট দুই পথেই)। UI এটি দিয়ে স্ট্যাটাস-চিপ
+ * দেখায়: বাংলা শ্রেণি-লেবেল + ত্রুটি + "আবার চেষ্টা"।
+ */
+export interface RunEndInfo {
+  status: RunStatus;
+  endReason?: RunEndReason;
+  errorCategory?: RunErrorCategory;
+  cacheStatus?: RunCacheStatus;
+  requestedMode?: ChatMode;
+  usedModel?: string;
+  /** ব্যর্থ/বিঘ্নিত হলে সংক্ষিপ্ত ত্রুটি-বার্তা (চিপে দেখানোর জন্য) */
+  error?: string;
+}

@@ -1,6 +1,7 @@
 // GET /api/artifacts/[id]/file → লোকাল ফাইল stream (immutable cache)
 //   বা external sourceUrl-এ 302 redirect। `?download=1` → attachment header।
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { readArtifactFile } from '@/lib/agent/storage';
 
@@ -8,6 +9,10 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  // মিডিয়া-রুট (<img>/<audio>/<video> ট্যাগ) — কুকি ছাড়া ?st= টোকেনও চলে
+  const auth = await requireOwner(req, { allowQueryToken: true });
+  if (!auth.ok) return auth.response;
+
   const { id } = await params;
   const artifact = await db.artifact.findUnique({ where: { id } });
   if (!artifact) {

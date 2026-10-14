@@ -1040,3 +1040,109 @@ Stage Summary:
 - ৪টি নির্দেশের সবই প্রমাণ-সহ সম্পূর্ণ: ফিনিশিং-আইকন কার্যকর, সিলেক্টর নাম-শুধু, স্ট্রিমিং মাপা-স্মুথ-বৃদ্ধি, ৭৬২MB+ স্টোরেজ মুক্ত + ডেড-কোড অপসারিত
 - সব স্টোরেজ-ডিরেক্টরি self-healing (mkdir-recursive) — ভবিষ্যৎ ওয়াইপও নিরাপদ
 - নতুন অপারেশনাল-জ্ঞান: DB-ওয়াইপের পর dev-রিস্টার্ট বাধ্যতামূলক (বাসি হ্যান্ডেল = readonly-500)
+
+---
+Task ID: 0
+Agent: main (Z.ai Code)
+Task: Deep-audit ফিক্স-রাউন্ড প্ল্যানিং — প্রি-ওয়ার্ক (schema + পরিকল্পনা)
+
+Work Log:
+- upload/AI-creation-studio-deep-audit-report.txt সম্পূর্ণ পড়া হলো (P0 security, P1 observability/truthfulness, P2 quality gates)
+- Recon: provider-keys/keys রাউটে কোনো auth নেই (P0 নিশ্চিত); cancel রাউট আছে; v1/* রাউটে Bearer auth আছে; production-card/availability-badges আছে
+- prisma/schema.prisma-এ AgentRun-এ নতুন ফিল্ড: errorCategory, endReason, cacheStatus, requestedMode + db:push সম্পন্ন
+- পরিকল্পনা: Wave-1 (1-a security + 1-b hygiene, প্যারালাল) → Wave-2 (2-a agent observability + 3-a production truthfulness, প্যারালাল) → Wave-3 (4 quality gates) → integration + E2E + push
+
+Stage Summary:
+- AgentRun-এ observability ফিল্ড যোগ হয়েছে; Wave-1 dispatch-এর জন্য প্রস্তুত
+- সব এজেন্টকে নির্দেশ: worklog.md আগে পড়া, শেষে append করা, কোনো এজেন্ট git commit করবে না (কেন্দ্রীয়ভাবে main করবে)
+
+---
+Task ID: 1-b
+Agent: repo-hygiene-specialist
+Task: Git-hygiene + docs — runtime storage untrack, .gitignore ফিক্স, .env.example তৈরি, README-এ security/deployment/storage সেকশন (security-audit findings a–d)
+
+Work Log:
+- অডিট-ফাইন্ডিং নিশ্চিত: git-এ ৩৮টি রানটাইম-ফাইল ট্র্যাকড ছিল — storage/llm-chat/*.json (১২টি, প্রম্পট-লিক ঝুঁকি), storage/artifacts (৭), storage/productions/cmv…/* (১০), storage/tts-cache (৯) — সবগুলো ` M` মডিফাইড অবস্থাতেও (রানটাইমে বদলাচ্ছে = stale-state ঝুঁকি)
+- `git rm -r --cached storage/` — ৩৮টি ফাইলই staged-D; ডিস্কে সব অক্ষত (artifacts ৭, llm-chat ১৩, productions ১ dir, tts-cache ৮ ফাইল); `git ls-files storage/` = ০ ✓
+- upload/, tool-results/, model-test/, tmp-* ইত্যাদি git-এ ছিল না (আগেই পরিষ্কার) — শুধু ডিস্কে আছে
+- .gitignore: নতুন section "# runtime storage — … (security audit fix)" + `/storage/` blanket + `/upload/`; পুরনো দুটি আলাদা নিয়ম storage/provider-keys.json ও storage/custom-providers.json সরানো (blanket-এ অন্তর্ভুক্ত); বাকি সব এন্ট্রি অক্ষত
+- `.env*`-এর পরে `!.env.example` negation যোগ — যাচাই: `.env` এখনো ignored, `.env.example` negation-rule-জয়ী (git add -f ছাড়াই সফল, index-এ A)
+- .env.example তৈরি (কোনো আসল মান নেই): DATABASE_URL (পোর্টেবল ডিফল্ট file:./db/custom.db) → STUDIO_OWNER_PASSCODE (পাবলিক-ডিপ্লয় pre-seed; খালি হলে প্রথম ভিজিটর SecurityGate-এ সেট করেন) → ৫টি optional প্রোভাইডার-কী (DEEPSEEK_API_KEY, ZAI_API_KEY, GLM_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY — chat-models.ts-এর envVar-রেজিস্ট্রি + provider-keys.ts-এর file→env রেজল্যুশন থেকে নথিভুক্ত) — বাংলা+ইংরেজি কমেন্ট
+- README.md: Getting Started-এ prerequisites যোগ (Node 20+/Bun, ffmpeg), cp .env.example → .env + db:push + dev-ধাপ বাস্তবের সাথে মিলিয়ে সংশোধন; নতুন ৩ সেকশন — ① স্টোরেজ কাঠামো (db/custom.db, storage/* ট্রি, গোপন-ফাইল চিহ্নিত) ② নিরাপত্তা (একক-মালিক, প্রথম-ভিজিটর পাসকোড-সেট, STUDIO_OWNER_PASSCODE pre-seed, /api/auth/* ও Bearer-key /api/v1/* ছাড়া সব /api-তে owner-session, সাইডবার লক-বাটন) ③ ডিপ্লয়মেন্ট (persistent Node প্রসেস + persistent volume, serverless-অনুপযোগী, in-memory queue = single-instance, ফাইল ./storage-এ) — বাংলা-ফার্স্ট, বানানো-ফিচার নেই
+- README-এর মৃত রেফারেন্স সরানো: scripts/, agent-ctx/ (Task 8-এ ডিলিট হয়েছিল, README এখনো দেখাচ্ছিল) → প্রকৃত ট্রি-তে বদলানো (media/, .zscripts/, db/, storage/)
+- স্টেজিং: .gitignore + .env.example + README.md + ৩৮টি D — মোট staged ৪১; src/-এ আমার কোনো টাচ নেই (গিটে ০ staged src-এন্ট্রি; parallel এজেন্টের unstaged ` M` অক্ষত রাখা); commit/push করিনি নির্দেশমতো
+- চূড়ান্ত যাচাই: ls-files storage/ = ০ ✓ · `??` লিক শূন্য ✓ · ডিস্কে storage/ জীবিত ✓ · dev-server 200 ✓
+
+Stage Summary:
+- রানটাইম-ডেটা ও গোপন-ফাইল আর কখনো git-এ যাবে না (`/storage/` + `/upload/` blanket); ৩৮ ফাইল আনট্র্যাক (staged-D, ডিস্কে অক্ষত)
+- .env.example রিপোতে কমিটযোগ্য (negation-rule), প্লেসহোল্ডার-অনলি — ৭টি ভেরিয়েবল নথিভুক্ত: DATABASE_URL, STUDIO_OWNER_PASSCODE, DEEPSEEK/ZAI/GLM/GROQ/OPENROUTER_API_KEY
+- README এখন বাস্তব-সম্মত: prerequisites, স্টোরেজ-কাঠামো, নিরাপত্তা-মডেল, ডিপ্লয়মেন্ট-সীমাবদ্ধতা — মৃত রেফারেন্স সরানো
+- ⚠ অপ্রত্যাশিত আবিষ্কার (পরবর্তী-কাজ সুপারিশ): db/custom.db এখনো git-ট্র্যাকড (runtime SQLite; Task 8-এর worklog-এও এর রিবেস-বাগ উল্লেখ) — আমার স্কোপে ছিল না বলে আনট্র্যাক করিনি; সুপারিশ: `git rm --cached db/custom.db` + .gitignore-এ `db/*.db`
+
+---
+Task ID: 1-a
+Agent: security-specialist (+ main-agent verification)
+Task: P0 নিরাপত্তা — একক-মালিকের owner-security সিস্টেম (auth + guards + SecurityGate)
+
+Work Log:
+- src/lib/security.ts নতুন: scrypt পাসকোড-হ্যাশ (timingSafeEqual), ৩০-দিনের HMAC-সেশন টোকেন, storage/security.json (0600), STUDIO_OWNER_PASSCODE env pre-seed, unlock রেট-লিমিট (৫ ব্যর্থ/১৫ মি/IP), Origin-চেক CSRF-প্রতিরক্ষা
+- src/app/api/auth/{status,setup,unlock,lock}/route.ts নতুন — এগুলো ছাড়া সব /api রক্ষিত
+- ৩১টি রাউটে requireOwner গার্ড (provider-keys, keys, custom-providers, conversations, chat, artifacts+file, productions সব, runs/events, tools, models, system, availability, hardware, gallery, registry, benchmark, root) — /api/v1/* নিজস্ব Bearer-auth-এ অপরিবর্তিত
+- SecurityGate (src/components/auth/security-gate.tsx): setup/locked/open স্টেট, fetch-wrapper (x-studio-token হেডার + 401 ইভেন্ট), withStudioToken() হেল্পার EventSource/মিডিয়া-URL-এ বসানো (৯ ফাইলে), sidebar-এ LockButton
+- মেইন-এজেন্ট E2E যাচাই: fresh status 200 ✓, setup→token ✓, token-সহ guarded route 200 ✓, দ্বিতীয় setup 403 ✓, ভুল পাসকোড 429 (রেট-লিমিট) ✓, cross-origin POST 403 ✓
+- ⚠ টেস্ট-পাসকোড audit-test-123 (security.json এখনো আছে — Wave-2/3/4 এজেন্টদের curl টেস্টের জন্য; চূড়ান্ত ক্লিনআপ E2E-র আগে মেইন এজেন্ট করবে → ইউজার প্রথম-বার নিজের পাসকোড সেট করবেন)
+
+Stage Summary:
+- সব সংবেদনশীল API এখন মালিক-সেশনের পেছনে (audit-P0 solved); cookie+header+query(?st=, শুধু GET-মিডিয়া) তিন পথ
+- এজেন্ট-টাইমআউট হলেও কাজ প্রায় সম্পূর্ণ ছিল; মেইন এজেন্ট যাচাই+ওয়ার্কলগ সম্পন্ন করল
+
+---
+Task ID: 2-a
+Agent: agent-observability-specialist (+ main-agent verification)
+Task: অডিট §১ — চ্যাট/এজেন্ট আচরণ পর্যবেক্ষণযোগ্য করা (errorCategory/endReason/cache/mode/system-role)
+
+Work Log:
+- llm.ts: toSdkMessages() — Z.ai SDK-পথে প্রথম assistant-বার্তা এখন সত্যিকারের system-রোলে যায় (external-llm.ts-এর সাথে সামঞ্জস্যপূর্ণ, অডিট-নিশ্চিত বাগ)
+- llm.ts: onMeta-কলব্যাক — cache hit/miss/bypass + প্রকৃত provider/model + latency; orchestrator-এ AgentRun.cacheStatus + ধাপ-পেলোডে নথিভুক্ত
+- orchestrator.ts (+৪৭১): categorizeError() — ১৪-শ্রেরির errorCategory (rate_limited/provider_error/invalid_key/timeout/malformed_tool_json/unknown_tool/ffmpeg_error/storage_error/…); প্রতিটি টার্মিনাল-পথ এখন চূড়ান্ত assistant-বার্তা + endReason + স্ট্যাটাস লেখে; MAX_STEPS সৎ-সারাংশসহ
+- chat/route.ts: mode-যাচাই (normal|chat_only|diagnostic) + requestedMode স্থায়িত্ব; chat_only = এক-কল সরাসরি-উত্তর; diagnostic = skipCache:true
+- types.ts (+১৩৯): ChatMode, RunErrorCategory, RunEndReason, RunCacheStatus + বাংলা লেবেল-ম্যাপ + RunEndInfo + VideoProviderStatusView
+- composer.tsx: কমপ্যাক্ট রান-মোড সিলেক্টর (৩ মোড, localStorage-স্থায়ী, টুলটিপসহ); use-agent-run.ts POST body-তে mode পাঠায়
+- মেইন-এজেন্ট যাচাই: chat_only রান → status=completed, endReason=final_answer, requestedMode=chat_only, cacheStatus=miss ✓; diagnostic → cacheStatus=bypass লাইভ ✓; invalid mode → 400 ✓
+
+Stage Summary:
+- অডিট §১-B/C/D/E সমাধান: রান-এন্ডের কারণ, এরর-শ্রেণি, ক্যাশ-অবস্থা, মোড — সব DB-স্থায়ী ও SSE-বাহিত; সিস্টেম-রোল নরমালাইজেশন সব প্রোভাইডার-পথে সামঞ্জস্যপূর্ণ
+
+---
+Task ID: 3-a
+Agent: production-truthfulness-specialist (+ main-agent verification)
+Task: অডিট §২-৩ — প্রোডাকশন-সত্যবাদিতা (confirmation-কার্ড, provider-status, সৎ-ইঞ্জিন-লেবেল, cancel-হার্ডেনিং)
+
+Work Log:
+- production-card.tsx (+৩০৩): awaiting_confirmation এখন অমিস্ত্রয়গম্য অ্যাকশন-কার্ড (অ্যাম্বার, বড় ✓চালু/✗বাতিল), প্রোগ্রেস-প্যানেলে ক্লাউড-ভিডিও provider-status রো (ব্যস্ত/কুলডাউন/মুক্ত + শট-অবস্থা), বাতিল-বাটন + cancelling-স্টেট
+- ai_video.ts (+১৩৮): videoProviderStatus() এক্সপোর্ট + abort/বাতিল-সহযোগিতা; serialize.ts: toProductionView-এ providerStatus সংযুক্ত (ভিডিও-ধরনের সক্রিয় প্রোডাকশনে)
+- সব পাইপলাইনে সৎ প্রতি-শট ইঞ্জিন-চিহ্ন: ShotEngine টাইপ (ai_video/storyboard_fallback/local_procedural) resultJson.shotEngines-এ; motion_video/music_video/short_film-এ ব্যাজ
+- runner.ts (+১৫৪): cancelWatch — ধাপ-চেকপয়েন্ট + 'cancelling' দেখলে সক্রিয় ffmpeg-সন্তান কিল; স্টেল-সুইপ সৎ-বার্তা (সার্ভার-রিস্টার্ট/৬০-মি-সময়সীমা)
+- use-productions.ts (+১৫২): EventSource withStudioToken + onerror-পুনঃসংযোগ/পোলিং-ফলব্যাক
+- availability-matrix/badges: generate_singing + separate_stems স্পষ্ট ⛔ BLOCKED
+- মেইন-এজেন্ট যাচাই (সস্তা E2E): POST /api/productions → 200; GET → 200; SSE events → 200; cancel → 200; revise → 200 (ভিডিও-জেন চালানো হয়নি — ব্যয়-শৃঙ্খলা)
+
+Stage Summary:
+- অডিট §২-A/B/C/D/E + §৩ সমাধান: অনুমোদন-প্রয়োজনীয় অবস্থা চোখে পড়ে, provider-কিউ/কুলডাউন দৃশ্যমান, AI-বনাম-ফলব্যাক সৎ-লেবেল, বাতিল প্রকৃতভাবে ffmpeg-সন্তান মারে
+
+---
+Task ID: 4
+Agent: main (Z.ai Code)
+Task: অডিট §৭ — কোয়ালিটি-গেট (TS-স্ট্রিক্ট, প্যারিটি, TTS-প্রোব, FFmpeg-ডিপ-চেক)
+
+Work Log:
+- next.config.ts: typescript.ignoreBuildErrors সরানো (strict TS এখন বিল্ড-গেট)
+- tsconfig.json exclude: examples/, skills/, upload/, tool-results/, mini-services/, db/, storage/ (রেফারেন্স-ফোল্ডার, অ্যাপ-কোড নয়) → bunx tsc --noEmit = 0 ত্রুটি; package.json-এ typecheck স্ক্রিপ্ট
+- registry.ts: toolParityReport() — TOOLS↔TOOL_CATALOG ড্রিফ্ট-চেক; /api/tools?parity=1 এন্ডপয়েন্ট + system-health-এ registry-parity রো (৪১↔৪১ নির্ভুল)
+- system-info.ts checkTts: ৪০০/1214 বাগ ফিক্স — wav-আগে, mp3-ফলব্যাক (synthesizeSpeech-এর সাথে সামঞ্জস্যপূর্ণ); এখন TTS স্বাস্থ্য 'ok — wav প্রোব সফল'
+- system-info.ts checkFfmpeg: ডিপ-চেক — প্রয়োজনীয় ফিল্টার (zoompan/xfade/afade/amix/concat/scale) + storage-লেখা + ডিস্ক<2GB-সতর্কতা ('v7.1.5 — ফিল্টার ✓ স্টোরেজ ✓')
+- db/custom.db git-untrack + .gitignore db/*.db (1-b এজেন্টের সুপারিশ বাস্তবায়ন)
+- যাচাই: bun run lint = 0 ত্রুটি; bunx tsc = 0 ত্রুটি; /api/system?force=1 → সব স্বাস্থ্য-রো সঠিক
+
+Stage Summary:
+- TS-স্ট্রিক্ট চালু ও নির্মল; প্যারিটি-গেট + স্বাস্থ্য-ডিপ-চেক স্থায়ী; TTS-প্রোব-বাগ (৪০০/1214) সমাধান

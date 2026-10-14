@@ -2,6 +2,7 @@
 // প্রতি কলে idempotent upsert-by-key (সস্তা — SQLite স্থানীয়, ~২৪ সারি)।
 // নতুন ৪-মাত্রার স্ট্যাটাস + পঞ্চম মাত্রা (qualityStatus) + প্রোব-ইতিহাস সহ ফেরত দেয়।
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
 import { MODEL_SEED } from '@/lib/agent/model-registry-data';
 import type { ModelEntryView } from '@/lib/types';
@@ -48,7 +49,10 @@ async function ensureSeeded(): Promise<void> {
   await db.modelEntry.deleteMany({ where: { key: { notIn: seedKeys } } });
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   await ensureSeeded();
   const rows = await db.modelEntry.findMany({ orderBy: { sortOrder: 'asc' } });
   const views: ModelEntryView[] = rows.map(r => {

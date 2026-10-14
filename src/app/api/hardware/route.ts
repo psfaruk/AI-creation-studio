@@ -6,6 +6,7 @@
 // — বারবার কলে পুনঃ-প্রোব হয় না; সমান্তরাল কল একটিই প্রোবে যোগ দেয়।
 
 import { NextResponse } from 'next/server';
+import { requireOwner } from '@/lib/security';
 import { measureHardware } from '@/lib/system-info';
 import { computeHardwareVerdicts } from '@/lib/agent/hardware-gate';
 import type { HardwareManagerResponse, HardwareReport } from '@/lib/types';
@@ -51,7 +52,10 @@ async function probeHardwareCached(): Promise<CachedHardwareProbe> {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireOwner(req);
+  if (!auth.ok) return auth.response;
+
   try {
     const { profile, probedAt } = await probeHardwareCached();
     const assessments = computeHardwareVerdicts(profile);
