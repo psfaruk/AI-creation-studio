@@ -17,6 +17,7 @@ import { db } from '@/lib/db';
 import { saveArtifactFile, readArtifactFile } from '../storage';
 import { toArtifactMeta } from '../serialize';
 import { emitProduction } from './bus';
+import { logProductionMetrics } from '../run-metrics';
 import { cleanupWorkingDir, makeWorkingDir, killProductionFfmpeg, runWithFfmpegTracking } from '@/lib/media/ffmpeg';
 import { validateSpec } from '../capabilities';
 
@@ -511,6 +512,42 @@ async function runProduction(productionId: string): Promise<void> {
     await cleanupWorkingDir(ctx.workingDir);
     emitProduction(productionId, { type: 'production_finished', productionId, status: finalStatus, error: errorMessage?.slice(0, 400) });
     console.log(`[production] ${productionId.slice(-6)} finished: ${finalStatus}`);
+
+    // (Phase-1 অবজারভেবিলিটি) প্রোডাকশন-শেষের এক-লাইন কাঠামোগত মেট্রিকস।
+    // সারি-অপেক্ষা (startedAt−createdAt) ও মোট সময় প্রকৃত সারি থেকে;
+    // ধাপ/আর্টিফ্যাক্ট-গণনা সেরা-প্রচেষ্টায় (ব্যর্থ হলে null — কাল্পনিক নয়)।
+    try {
+      const [finalRow, artifacts, steps] = await Promise.all([
+        db.production.findUnique({
+          where: { id: productionId },
+          select: { createdAt: true, startedAt: true, finishedAt: true, type: true },
+        }),
+        db.artifact.count({ where: { productionId } }),
+        db.productionStep.findMany({ where: { productionId }, select: { status: true } }),
+      ]);
+      const queueWaitMs =
+        finalRow?.startedAt && finalRow.createdAt
+          ? Math.max(0, finalRow.startedAt.getTime() - finalRow.createdAt.getTime())
+          : null;
+      const durationMs =
+        finalRow?.finishedAt && finalRow.startedAt
+          ? finalRow.finishedAt.getTime() - finalRow.startedAt.getTime()
+          : null;
+      logProductionMetrics({
+        productionId,
+        type: finalRow?.type ?? ctx.spec.type,
+        outcome: finalStatus,
+        queueWaitMs,
+        durationMs,
+        stepsDone: steps ? steps.filter(s => s.status === 'done').length : null,
+        stepsFailed: steps ? steps.filter(s => s.status === 'failed').length : null,
+        artifacts,
+        // শ্রেণি-সংকেত মাত্র — কোনো ত্রুটি-টেক্সট নয় (DB-তে সংরক্ষিত)
+        errorCategoryHint: errorMessage ? 'see_error_field' : null,
+      });
+    } catch {
+      // মেট্রিকস-সংগ্রহ ব্যর্থ হলে প্রোডাকশন-ফলাফল অপরিবর্তিত থাকে
+    }
   } finally {
     state.running.delete(productionId);
     setImmediate(drainQueue);
@@ -524,6 +561,25 @@ async function failProduction(productionId: string, message: string): Promise<vo
       data: { status: 'failed', error: message.slice(0, 1000), finishedAt: new Date() },
     });
     emitProduction(productionId, { type: 'production_finished', productionId, status: 'failed', error: message.slice(0, 400) });
+    // (Phase-1 অবজারভেবিলিটি) ব্যর্থ-প্রোডাকশনের মেট্রিকস-লাইন
+    const meta = await db.production.findUnique({
+      where: { id: productionId },
+      select: { createdAt: true, startedAt: true, type: true },
+    });
+    logProductionMetrics({
+      productionId,
+      type: meta?.type ?? 'unknown',
+      outcome: 'failed',
+      queueWaitMs:
+        meta?.startedAt && meta.createdAt
+          ? Math.max(0, meta.startedAt.getTime() - meta.createdAt.getTime())
+          : null,
+      durationMs: null, // প্রাথমিক-ব্যর্থতার পথে নির্ভরযোগ্য সময়-সীমা নেই
+      stepsDone: null,
+      stepsFailed: null,
+      artifacts: null,
+      errorCategoryHint: 'see_error_field',
+    });
   } catch (err) {
     console.error('[production] failProduction error', err);
   }

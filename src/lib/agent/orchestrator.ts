@@ -14,6 +14,7 @@ import type {
   RunErrorCategory,
 } from '@/lib/types';
 import { emit } from './events';
+import { getRunMetrics, noteRetryWait, clearRunMetrics, logRunMetrics } from './run-metrics';
 import { chatComplete, parseToolCall, type ChatCallMeta, type LLMMessage } from './llm';
 import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
 import { isChannelBlocked } from './rate-limit-coordinator';
@@ -401,7 +402,9 @@ async function chatCompleteWithNotes(
       ? { onDelta: callOpts.streamer.onDelta, onAttemptBegin: callOpts.streamer.onAttemptBegin }
       : {}),
     // (অডিট §B5) এক্সটার্নাল-প্রোভাইডারের ৪২৯-পুনঃচেষ্টার দৃশ্যমান অপেক্ষা-নোট
+    // (Phase-1 অবজারভেবিলিটি: প্রতিটি অপেক্ষা রান-স্কোপড অ্যাকিউমুলেটরেও জমা হয়)
     onExternalWait: info => {
+      noteRetryWait(runId, info.waitMs);
       const sec = Math.max(1, Math.round(info.waitMs / 1000));
       emit(runId, {
         type: 'run_note',
@@ -413,6 +416,7 @@ async function chatCompleteWithNotes(
       });
     },
     onRateLimitWait: info => {
+      noteRetryWait(runId, info.delayMs);
       const sec = Math.max(1, Math.round(info.delayMs / 1000));
       emit(runId, {
         type: 'run_note',
@@ -738,6 +742,8 @@ async function executeToolCall(
     },
   });
   stats.toolCalls++;
+  // (Phase-1 অবজারভেবিলিটি) রানের টুল-তালিকা — মেট্রিকস-লাইনে যাবে
+  getRunMetrics(run.id).toolNames.push(toolName);
 
   const stepSeq = nextSeq();
   await db.agentStep.create({
@@ -1443,6 +1449,28 @@ async function finalizeRun(
     status: 'completed',
     ...(finalRun ? runEndPayloadOf(finalRun) : { endReason }),
   });
+
+  // (Phase-1 অবজারভেবিলিটি) রান-শেষের এক-লাইন কাঠামোগত মেট্রিকস —
+  // সব টাইমিং/ফলাফল runId দিয়ে সংযুক্ত; অতিমাপা নয় এমন ক্ষেত্র null।
+  const metricsAcc = getRunMetrics(runId);
+  logRunMetrics({
+    runId,
+    conversationId: run.conversationId,
+    outcome: 'completed',
+    endReason: finalRun?.endReason ?? endReason,
+    errorCategory: finalRun?.errorCategory ?? null,
+    requestedMode: finalRun?.requestedMode ?? null,
+    usedModel: finalRun?.usedModel ?? null,
+    cacheStatus: finalRun?.cacheStatus ?? null,
+    steps: finalRun?.stepCount ?? stats.steps,
+    toolCalls: finalRun?.toolCallCount ?? stats.toolCalls,
+    durationMs: finalRun?.durationMs ?? stats.durationMs,
+    firstTokenMs: finalRun?.firstTokenMs ?? null,
+    retryWaitMs: metricsAcc.retryWaitMs,
+    retryCount: metricsAcc.retryCount,
+    toolNames: metricsAcc.toolNames,
+  });
+  clearRunMetrics(runId);
 }
 
 /** রান ব্যর্থ: run failed + fallback assistant message + events। */
@@ -1526,6 +1554,28 @@ async function failRun(
       ? runEndPayloadOf(finalRun)
       : { errorCategory, endReason }),
   });
+
+  // (Phase-1 অবজারভেবিলিটি) ব্যর্থ রানের মেট্রিকস-লাইন (শ্রেণিবিন্যাস ছাড়া
+  // কোনো ত্রুটি-টেক্সট নয় — ত্রুটির বার্তা DB-তেই থাকে)
+  const metricsAcc = getRunMetrics(runId);
+  logRunMetrics({
+    runId,
+    conversationId: run.conversationId,
+    outcome: 'failed',
+    endReason,
+    errorCategory,
+    requestedMode: finalRun?.requestedMode ?? run.requestedMode ?? null,
+    usedModel: finalRun?.usedModel ?? run.usedModel ?? null,
+    cacheStatus: finalRun?.cacheStatus ?? null,
+    steps: stepCount,
+    toolCalls: toolCallCount,
+    durationMs,
+    firstTokenMs: finalRun?.firstTokenMs ?? null,
+    retryWaitMs: metricsAcc.retryWaitMs,
+    retryCount: metricsAcc.retryCount,
+    toolNames: metricsAcc.toolNames,
+  });
+  clearRunMetrics(runId);
 }
 
 /** ১০ মিনিটের বেশি 'running' থাকা রান → 'interrupted' (GET conversations-এ ডাকা হয়)। */

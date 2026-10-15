@@ -1391,3 +1391,25 @@ Stage Summary:
 - Functional matrix: 7 passed w/ captured evidence, 2 failed w/ evidence (dialogue TTS, chat-refresh), 1 blocked (singing model — honest refusal path verified instead), 4 not-run w/ explicit reasons (budget/fault-injection)
 - Static health fully green (lint/tsc/prisma/ffmpeg); repo lacks any test framework — top process gap
 - Phase 1 priorities: (1) P0-BUG-01 TTS fallback chain fix, (2) P0-BUG-03 chat-run refresh re-attach, (3) P0-BUG-13 concurrency vs video gate, (4) P0-BUG-04 shot-reuse design, (5) P0-BUG-02 film loudnorm, (6) stand up the 6 recommended regression tests before new features
+
+---
+Task ID: P1-main
+Agent: main agent (Z.ai Code)
+Task: Phase 1 — Foundation, Regression Testing, Observability and Tool Inventory (complete phase, tasks 1–8)
+
+Work Log:
+- Task 1 (baseline): read-only inspection — HEAD 4b628fa, tree clean, no user changes to preserve; re-verified P0-BUG-01/03 against current source; DB state (3 runs, 1 production, 8 artifacts, 3 toolCalls) matches Phase-0 inventory.
+- Task 2 (framework): chose bun:test (zero new deps); added `bun run test`; tests/ with in-memory fake Prisma (tests/helpers/fake-db.ts), SSE harness (tests/helpers/sse-harness.ts), tsc shim (tests/bun-test-shim.d.ts), tests/README.md isolation contract.
+- Task 3 (six regression tests): t1 Bengali TTS fallback (REG-1a FAIL = recorded P0-BUG-01 regression; REG-1b passing characterization of the loop-cap defect), t2 refresh/reconnect (server replay PASS; client gap documented), t3 duplicate submission (duplicates possible — documented + expected contract recorded), t4 SSE replay (ordering/cap/grace/dedupe/terminal PASS), t5 instrumental (real-ffmpeg QC, determinism, clamping PASS), t6 429 retry (bounds/budget/serialization PASS). Suite: 37 tests, 36 pass / 1 recorded fail, exit 1, deterministic ×3 runs.
+- Task 4 (observability): NEW src/lib/agent/run-metrics.ts (run-scoped retry accumulator + [run-metrics]/[production-metrics] JSON lines, redaction-safe); wired additively in orchestrator.ts (chatCompleteWithNotes/executeToolCall/finalizeRun/failRun, +50 lines) and production/runner.ts (production end + failProduction, +56 lines); unit-covered in smoke tests; field matrix documented (implemented vs not-measured).
+- Task 5 (latency baseline): extracted real GLM timings (n=3: firstToken 1.2/3.2/4.7s, duration 14.9/25.5/49.1s), production yrz3ymb7 breakdown (24min total; generate_shots 18min dominant; queue 25s; final_mix 130s), local compute measured now (instrumental 0.7–4.9s, ffmpeg QC 0.8s); blocked metrics listed; no fake percentiles.
+- Task 6 (tool inventory): runtime-verified 41 tools (not 42), parity locked by test; evidence classes A/B/C/D per tool; KEEP 36 / INVESTIGATE 5 (text_to_speech, inspect_image, inspect_media, animate_image) / CANDIDATE ADD 1 (search_productions, full proposal) / REMOVE 0; no tool touched.
+- Task 7 (quality): bun run test exit 1 (recorded regression), typecheck exit 0, lint exit 0, prisma validate exit 0, build NOT RUN (sandbox); verified tests write nothing to storage/ or db/.
+- Task 8 (exit report): docs/audit/phase-1/ (README, baseline-report, test-suite, observability, latency-baseline, tool-inventory, quality-checks, phase-1-exit-report). Phase-1 exit status: PASS (with REG-1a intentionally failing as Phase-2 evidence).
+- E2E self-verification (agent-browser): app loads (title renders), security gate as designed, zero console errors, /api/auth/status 200; dev.log clean after HMR of orchestrator/runner changes.
+
+Stage Summary:
+- Artifacts: tests/ (7 files), src/lib/agent/run-metrics.ts, scripts/phase1-inventory.ts, docs/audit/phase-1/ (8 docs), package.json test script, orchestrator/runner observability wiring (+107 lines, 0 deletions).
+- Key results: test framework established with honest failure state (36/1); P0-BUG-01 now machine-verified; duplicate-run gap confirmed by test; SSE/retry/instrumental contracts locked; observability summary lines implemented; latency bottleneck quantified (AI shots ≈75% of film wall time); tool inventory evidence-based.
+- Decisions: bun:test over Vitest (zero deps); REG-1a asserts correct behavior and fails (not weakened); search_productions proposed (not implemented); no removals.
+- Stopped after Phase 1 per instruction — awaiting approval for Phase 2.
