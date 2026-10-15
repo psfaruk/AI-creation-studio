@@ -495,6 +495,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               label: res.engineLabel,
               ...(res.aiModel ? { model: res.aiModel } : {}),
               ...(res.fallbackError ? { error: res.fallbackError.slice(0, 200) } : {}),
+              ...(res.cacheHit ? { cacheHit: true } : {}),
             });
             valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
           } catch (err) {

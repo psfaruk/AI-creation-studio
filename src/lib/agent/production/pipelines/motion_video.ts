@@ -28,7 +28,9 @@ import {
 } from '../../film-helpers';
 import { generateImageBuffer, isRateLimitErrorText } from '../../sdk-helpers';
 import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
-import { cachedSynthesizeSpeech } from '../../tts-cache';
+// Phase-3 Workstream A: ভয়েসওভার এখন শেয়ার্ড ফলব্যাক-চেইনসহ সংশ্লেষিত
+// (আগে cachedSynthesizeSpeech সরাসরি কল হতো — একক-ইঞ্জিন, ফলব্যাকহীন)
+import { synthesizeVoiceoverChunks, type VoiceoverOutcome } from './voiceover';
 import type { ImageSize } from '../../sdk-helpers';
 import type { CameraMove } from '@/lib/types';
 import { mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
@@ -139,6 +141,8 @@ export interface ShotEngineRecord {
   label: string;
   model?: string;
   error?: string;
+  /** Phase-3 C: ক্লিপটি ক্যাশ-হিট/ইন-ফ্লাইট-ডিডুপ থেকে — সৎ চিহ্ন */
+  cacheHit?: boolean;
 }
 
 export interface AiShotResult {
@@ -154,6 +158,8 @@ export interface AiShotResult {
   frameLocal?: boolean;
   aiModel?: string;
   fallbackError?: string;
+  /** Phase-3 C: ক্লিপ ক্যাশ থেকে এসেছে (পূর্বে-তৈরি প্রকৃত AI-আউটপুট) */
+  cacheHit?: boolean;
 }
 
 /**
@@ -205,10 +211,15 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
       );
       return {
         clipPath,
-        engineLabel: `শট ${req.index + 1}: প্রকৃত AI (${clip.model})`,
+        // Phase-3 C: সৎ ক্যাশ-লেবেল — ক্লিপ প্রকৃত AI-আউটপুটই, শুধু একই
+        // অনুরোধের আগের ফল পুনঃব্যবহৃত (নতুন জেনারেশন নয়)
+        engineLabel: clip.fromCache
+          ? `শট ${req.index + 1}: প্রকৃত AI (ক্যাশ-হিট, ${clip.model})`
+          : `শট ${req.index + 1}: প্রকৃত AI (${clip.model})`,
         usedAi: true,
         engine: 'ai_video',
         aiModel: clip.model,
+        ...(clip.fromCache ? { cacheHit: true } : {}),
       };
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
@@ -472,6 +483,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
               label: res.engineLabel,
               ...(res.aiModel ? { model: res.aiModel } : {}),
               ...(res.fallbackError ? { error: res.fallbackError.slice(0, 200) } : {}),
+              ...(res.cacheHit ? { cacheHit: true } : {}),
             });
             valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
           } catch (err) {
@@ -590,6 +602,9 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
   let finalVideo = '';
   let finalDuration = 0;
   let soundDesignLabel = '';
+  // Phase-3 A: সৎ ভয়েসওভার-লেবেল + কাঠামোগত মেটাডেটা (আসল কণ্ঠ/attempts/ফলব্যাক)
+  let voiceoverLabel = '';
+  let voiceoverDetail: VoiceoverOutcome | null = null;
   await ctx.runStep('assemble', 'টাইমলাইন অ্যাসেম্বলি ও সাউন্ড', async (step: StepHandle) => {
     await step.setDetail('ক্লিপ জোড়া লাগানো');
     const silentPath = path.join(wd, 'assembled.mp4');
@@ -637,22 +652,30 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     if (sound === 'narration' && spec.text && spec.text.trim().length > 1) {
       await step.setDetail('ভয়েসওভার তৈরি');
       const chunks = chunkText(spec.text, 950);
-      const voiceFiles: { file: string; startSec: number }[] = [];
-      let cursor = 0;
-      for (let i = 0; i < chunks.length; i++) {
-        const filePath = path.join(wd, `voice-${i}.wav`);
-        try {
-          const speech = await cachedSynthesizeSpeech(chunks[i], spec.voice ?? 'tongtong', 1);
-          await writeFile(filePath, speech.buffer);
-          const info = await mediaInfo(filePath);
-          voiceFiles.push({ file: filePath, startSec: cursor });
-          cursor += info.durationSec + 0.2;
-        } catch (err) {
-          ctx.partialNotes.push(
-            `ভয়েসওভার খণ্ড ${i + 1} ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'})`
-          );
-        }
-      }
+      // Phase-3 Workstream A (P0-BUG-01-এর শেষ কল-সাইট): একক-কণ্ঠের সরাসরি
+      // কলের বদলে শেয়ার্ড synthesizeVerifiedSpeech-চেইন — ইঞ্জিন-সচেতন
+      // স্কিপসহ পূর্ণ প্রোফাইল-ফলব্যাক, ASR-খরচ অপরিবর্তিত (verify:false)।
+      const language = spec.language === 'en' ? 'en' : 'bn';
+      const voiceover = await synthesizeVoiceoverChunks({
+        chunks,
+        language,
+        voiceId: spec.voice,
+        speed: 1,
+        workingDir: wd,
+      });
+      voiceoverDetail = voiceover;
+      for (const f of voiceover.failures) ctx.partialNotes.push(f);
+      const fallbackCount = voiceover.chunks.filter(c => c.attempts > 1).length;
+      voiceoverLabel =
+        voiceover.chunks.length === chunks.length
+          ? `ভয়েসওভার: ${voiceover.chunks.length}/${chunks.length} খণ্ড সফল (কণ্ঠ: ${[
+              ...new Set(voiceover.chunks.map(c => c.voice)),
+            ].join(', ')})${fallbackCount > 0 ? ` — ${fallbackCount}টি খণ্ডে ইঞ্জিন-ফলব্যাক` : ''}`
+          : `ভয়েসওভার: ${voiceover.chunks.length}/${chunks.length} খণ্ড সফল — বাদ পড়া খণ্ডের সৎ নোট দেখুন`;
+      const voiceFiles: { file: string; startSec: number }[] = voiceover.chunks.map(c => ({
+        file: c.file,
+        startSec: c.startSec,
+      }));
       if (voiceFiles.length > 0) {
         await step.setDetail('অডিও মিক্স (ভয়েসওভার + §৮ পরিবেশ-বিছানা, ডাকিংসহ)');
         const bedPath = await renderBed();
@@ -732,6 +755,23 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
         shotEngineLabels,
         shotEngines,
         ...(soundDesignLabel ? { soundDesign: soundDesignLabel } : {}),
+        // Phase-3 A: আসল-কণ্ঠ/ফলব্যাকের সৎ মেটাডেটা (লুকানো ফলব্যাক নয়)
+        ...(voiceoverLabel ? { voiceover: voiceoverLabel } : {}),
+        ...(voiceoverDetail
+          ? {
+              voiceoverDetail: {
+                language: voiceoverDetail.language,
+                requestedVoice: voiceoverDetail.requestedVoice,
+                chunks: voiceoverDetail.chunks.map((c, i) => ({
+                  index: i + 1,
+                  voice: c.voice,
+                  attempts: c.attempts,
+                  fallback: c.notes.filter(n => n.includes('ইঞ্জিন-ফলব্যাক')),
+                })),
+                failures: voiceoverDetail.failures,
+              },
+            }
+          : {}),
         honestLabel,
         lipSync: false, // §৫ — লিপ-সিঙ্ক মডেল নেই, দাবিও নেই
       },
@@ -751,6 +791,7 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
     result.aiShots = aiShots;
     result.aspect = aspect;
     result.sound = sound;
+    if (voiceoverLabel) result.voiceover = voiceoverLabel;
     result.hasAudio = info.hasAudio;
     result.honestLabel = honestLabel;
   }, { timeoutMs: 10 * 60_000 }); // S10

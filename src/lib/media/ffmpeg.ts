@@ -7,7 +7,7 @@
 import { execFile as execFileCb, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { AsyncLocalStorage } from 'async_hooks';
-import { mkdtemp, rm, readdir, stat, mkdir } from 'fs/promises';
+import { mkdtemp, rm, readdir, stat, mkdir, copyFile } from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
@@ -35,6 +35,12 @@ const ffmpegAls = new AsyncLocalStorage<{ productionId: string }>();
  *  সন্তান-প্রক্রিয়া ওই প্রোডাকশনের নামে ট্র্যাক হয় (বাতিলে kill করা যায়)। */
 export function runWithFfmpegTracking<T>(productionId: string, fn: () => Promise<T>): Promise<T> {
   return ffmpegAls.run({ productionId }, fn);
+}
+
+/** Phase-3 D: বর্তমান ট্র্যাকড প্রোডাকশন-আইডি (স্কোপের বাইরে null) —
+ *  ai_video-র ধাপ-মেট্রিকস একই স্কোপ থেকে প্রোডাকশন-পরিচয় পায়। */
+export function currentTrackedProductionId(): string | null {
+  return ffmpegAls.getStore()?.productionId ?? null;
 }
 
 const gFfmpeg = globalThis as unknown as {
@@ -309,6 +315,154 @@ export async function audioQuality(file: string): Promise<AudioQualityReport> {
   }
 
   return report;
+}
+
+// ------------------------------------------------------------
+// লাউডনেস মাপ ও দুই-ধাপ সাম্য (Phase-3 Workstream B — P0-BUG-02)
+// লক্ষ্য: চূড়ান্ত মিক্স ~−16 LUFS integrated / −1.5 dBTP true-peak
+// ------------------------------------------------------------
+
+export interface LoudnessStats {
+  integratedLufs: number | null;
+  /** true-peak (dBTP); ebur128 peak=true প্রিন্ট না করলে null */
+  truePeakDbtp: number | null;
+  lra: number | null;
+}
+
+/** ebur128=peak=true দিয়ে নির্ভুল লাউডনেস-মাপ (শেষ সারসংক্ষেপ থেকে) */
+export async function measureLoudness(file: string, opts?: { timeoutMs?: number }): Promise<LoudnessStats> {
+  const { stderr } = await runFfmpeg(
+    ['-i', file, '-filter_complex', 'ebur128=peak=true', '-f', 'null', '-'],
+    { label: 'ebur128-লাউডনেস মাপ', timeoutMs: opts?.timeoutMs ?? 90_000 }
+  );
+  const last = (re: RegExp): string | null => {
+    const matches = [...stderr.matchAll(re)];
+    const m = matches[matches.length - 1];
+    return m ? m[1] : null;
+  };
+  const i = last(/I:\s*(-?[\d.]+|-inf)\s*LUFS/gi);
+  const lra = last(/LRA:\s*(-?[\d.]+|-inf)\s*LU/gi);
+  // ffmpeg 7.x: সারসংক্ষেপে "True peak:" শিরোনামের নিচের Peak:-লাইনটিই
+  // true-peak — একক-লেখা dBFS হলেও এটি ট্রু-পিক মাপ (TPK-এর সাথে মিলে)।
+  // লাইভ TPK-লাইন সর্বশেষ মান ফলব্যাক।
+  const tpIdx = stderr.lastIndexOf('True peak:');
+  const tpText = tpIdx >= 0 ? stderr.slice(tpIdx) : '';
+  const tpSummary = tpText ? /Peak:\s*(-?[\d.]+|-inf)/i.exec(tpText) : null;
+  const tp = tpSummary ? tpSummary[1] : last(/TPK:\s*(-?[\d.]+|-inf)\s*dBFS/gi);
+  const num = (v: string | null): number | null => {
+    if (v == null || v === '-inf') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return { integratedLufs: num(i), truePeakDbtp: num(tp), lra: num(lra) };
+}
+
+export interface LoudnessNormalization {
+  /** সাম্য প্রয়োগ হয়েছে কি না */
+  applied: boolean;
+  /** applied=false হলে কারণ */
+  reason?: 'silence';
+  before: LoudnessStats;
+  after: LoudnessStats;
+  inputChannels: number;
+  outputChannels: number;
+  durationInSec: number;
+  durationOutSec: number;
+}
+
+/**
+ * দুই-ধাপ loudnorm (EBU R128): (১) বিশ্লেষণ-পাস মাপে input_i/tp/lra/thresh,
+ * (২) প্রয়োগ-পাস measured_* মানসহ linear মোডে স্থির-গেইন সাম্য করে।
+ *
+ * চ্যানেল-নীতি: mono থাকলে mono-ই থাকে, stereo থাকলে stereo — কোনো
+ * একতরফা mono→stereo অনুমান নেই; >২ চ্যানেল স্পষ্ট ত্রুটি (আমাদের মিক্স
+ * সবসময় stereo, তবে হেল্পারটি সাধারণ)। নীরব ইনপুট (I=-inf) সাম্য করা
+ * অসম্ভব — বাইট-হুবহু কপি + applied:false,reason:'silence' (সৎ, ভান নয়)।
+ * ffmpeg-র অশূন্য প্রস্থান কখনো সফলতা ভান করে না (runFfmpeg থ্রো করে)।
+ * loudnorm linear মোড সময় বদলায় না — duration in/out ফেরত দেওয়া হয়।
+ */
+export async function normalizeLoudnessTwoPass(
+  input: string,
+  output: string,
+  opts?: { targetLufs?: number; maxTruePeakDbtp?: number; targetLra?: number; timeoutMs?: number }
+): Promise<LoudnessNormalization> {
+  const targetLufs = opts?.targetLufs ?? -16;
+  const maxTp = opts?.maxTruePeakDbtp ?? -1.5;
+  const targetLra = opts?.targetLra ?? 11;
+  const timeoutMs = opts?.timeoutMs ?? 180_000;
+
+  const inInfo = await mediaInfo(input);
+  if (!inInfo.channels || inInfo.channels < 1) {
+    throw new Error(`লাউডনেস-সাম্য: অডিও-চ্যানেল শনাক্ত হয়নি (${input})`);
+  }
+  if (inInfo.channels > 2) {
+    // >2 চ্যানেল নীরবে ম্যাঙ্গল করা যাবে না — স্পষ্ট ত্রুটি
+    throw new Error(`লাউডনেস-সাম্য: অসমর্থিত চ্যানেল-বিন্যাস (${inInfo.channels} চ্যানেল; mono/stereo ছাড়া বাদ)`);
+  }
+  const before = await measureLoudness(input, { timeoutMs });
+
+  // ধাপ ১ — বিশ্লেষণ: loudnorm-এর নিজস্ব মাপ JSON আকারে stderr-এ ছাপে
+  const analyze = await runFfmpeg(
+    ['-i', input, '-af', `loudnorm=I=${targetLufs}:TP=${maxTp}:LRA=${targetLra}:print_format=json`, '-f', 'null', '-'],
+    { label: 'loudnorm-বিশ্লেষণ', timeoutMs }
+  );
+  const jsonMatch = [...analyze.stderr.matchAll(/\{[^{}]*\}/g)].pop();
+  if (!jsonMatch) {
+    throw new Error('লাউডনেস-সাম্য: loudnorm বিশ্লেষণ-ফল JSON পাওয়া যায়নি');
+  }
+  let parsed: { input_i?: string; input_tp?: string; input_lra?: string; input_thresh?: string; offset?: string };
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    throw new Error('লাউডনেস-সাম্য: loudnorm বিশ্লেষণ-JSON পার্স ব্যর্থ');
+  }
+  if (!parsed.input_i || !parsed.input_tp || !parsed.input_lra || !parsed.input_thresh) {
+    throw new Error('লাউডনেস-সাম্য: loudnorm বিশ্লেষণ-JSON অসম্পূর্ণ');
+  }
+
+  // নীরবতা-সিদ্ধান্ত loudnorm-এর নিজস্ব বিশ্লেষণ-মান থেকেই (EBU R128 ভূমি
+  // −৭০ LUFS; ডিজিটাল-নীরবতায় input_i = "-inf") — measured_I=-inf ফিল্টারে
+  // অবৈধ, তাই সেখানেই সৎ skip। নীরব মিক্স সাম্য-অযোগ্য: হুবহু কপি + কারণ।
+  const measuredI = parsed.input_i === '-inf' ? -Infinity : Number(parsed.input_i);
+  if (!Number.isFinite(measuredI) || measuredI <= -69.5) {
+    await copyFile(input, output);
+    return {
+      applied: false,
+      reason: 'silence',
+      before,
+      after: before,
+      inputChannels: inInfo.channels,
+      outputChannels: inInfo.channels,
+      durationInSec: inInfo.durationSec,
+      durationOutSec: inInfo.durationSec,
+    };
+  }
+
+  // ধাপ ২ — প্রয়োগ: measured_* + linear=true (গতিশীল-পরিসরে স্থির গেইন;
+  // TP-লক্ষ্য loudnorm নিজেই মেনে রাখে) + ইনপুট-রেটে রিস্যাম্পল
+  const outRate = inInfo.sampleRate ?? 44100;
+  const filter =
+    `loudnorm=I=${targetLufs}:TP=${maxTp}:LRA=${targetLra}` +
+    `:measured_I=${parsed.input_i}:measured_TP=${parsed.input_tp}` +
+    `:measured_LRA=${parsed.input_lra}:measured_thresh=${parsed.input_thresh}` +
+    `:offset=${parsed.offset ?? '0'}:linear=true` +
+    `,aresample=${outRate}`;
+  await runFfmpeg(
+    ['-i', input, '-af', filter, '-ac', String(inInfo.channels), '-c:a', 'pcm_s16le', output],
+    { label: 'loudnorm-প্রয়োগ', timeoutMs }
+  );
+
+  const after = await measureLoudness(output, { timeoutMs });
+  const outInfo = await mediaInfo(output);
+  return {
+    applied: true,
+    before,
+    after,
+    inputChannels: inInfo.channels,
+    outputChannels: outInfo.channels ?? inInfo.channels,
+    durationInSec: inInfo.durationSec,
+    durationOutSec: outInfo.durationSec,
+  };
 }
 
 // ------------------------------------------------------------

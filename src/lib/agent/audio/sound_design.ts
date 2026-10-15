@@ -12,11 +12,10 @@
 
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdtemp, rm, writeFile, rename } from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { audioQuality } from '@/lib/media/ffmpeg';
-import { runFfmpeg } from '@/lib/media/ffmpeg';
+import { audioQuality, runFfmpeg, normalizeLoudnessTwoPass, type LoudnessNormalization } from '@/lib/media/ffmpeg';
 import { makeRng, makeBrownNoise, makeLowpass, makeResonator, whiteNoise, softClip, encodeWav, applyFades, normalizePeak } from './pcm';
 
 /** নির্ভুল ebur128 লাউডনেস — চূড়ান্ত সারসংক্ষেপের (শেষ-মিল) মান */
@@ -536,6 +535,11 @@ export interface MixRules {
   /** সংলাপ চলাকালে মিউজিক-ডাকিং */
   duckMusic: boolean;
   limiter: boolean;
+  /** Phase-3 B (P0-BUG-02): স্তর-মিক্সের *পরে* চূড়ান্ত লাউডনেস-সাম্যের
+   *  লক্ষ্য (EBU R128 integrated, LUFS)। undefined = সাম্য বন্ধ (পুরোনো আচরণ) */
+  targetLufs?: number;
+  /** true-peak সীমা (dBTP) — loudnorm TP-লক্ষ্য */
+  maxTruePeakDbtp?: number;
 }
 
 export const DEFAULT_MIX_RULES: MixRules = {
@@ -546,6 +550,10 @@ export const DEFAULT_MIX_RULES: MixRules = {
   narrationDb: -7,
   duckMusic: true,
   limiter: true,
+  // Phase-3 B: স্ট্রিমিং-ডেলিভারি লক্ষ্য ~−16 LUFS / −1.5 dBTP —
+  // yrz3ymb7-এ রেকর্ডকৃত −২৫.৪ LUFS (P0-BUG-02) এই স্তরেই এসে যায়
+  targetLufs: -16,
+  maxTruePeakDbtp: -1.5,
 };
 
 export interface SoundMixReport {
@@ -555,6 +563,14 @@ export interface SoundMixReport {
   peakDb?: number;
   durationSec: number;
   honestLabel: string;
+  /** Phase-3 B: চূড়ান্ত সাম্যের লক্ষ্য (নিয়মে দেওয়া থাকলে) */
+  targetLufs?: number;
+  /** সাম্য প্রয়োগ হয়েছিল কি না (silence/error-এ false) */
+  loudnessApplied?: boolean;
+  /** সাম্যের পরে মাপা integrated loudness */
+  normalizedLufs?: number;
+  /** সাম্যের পরে মাপা true-peak (dBTP) */
+  truePeakDbtp?: number;
 }
 
 /**
@@ -624,9 +640,54 @@ export async function mixSoundLayers(
   chains.push(tail);
 
   const args = ['-hide_banner', '-y', ...inputs, '-filter_complex', chains.join(';'), '-map', '[out]', '-c:a', 'pcm_s16le', outputPath];
-  await execFileAsync('ffmpeg', args, { timeout: 180_000 });
+  // Phase-3 B: runFfmpeg-এ সুইচ (আগে সরাসরি execFileAsync) — একই প্রস্থান-
+  // কোড চুক্তি (অশূন্য → থ্রো), সাথে প্রোডাকশন-ট্র্যাকিং: বাতিলে মিক্স-
+  // প্রক্রিয়াও ৫-সে. kill-watch-এর নাগালে আসে
+  await runFfmpeg(args, { timeoutMs: 180_000, label: '৫-স্তর সাউন্ড-মিক্স' });
 
-  // যাচাই: ক্লিপিং-মুক্ততা + নির্ভুল লাউডনেস পরিমাপ
+  // Phase-3 B (P0-BUG-02): স্তর-মিক্সের *পরে* দুই-ধাপ loudnorm — এখানেই
+  // সাম্য, কারণ সংলাপ+মিউজিক+অ্যাম্বিয়েন্স+ফোলে তখনই "চূড়ান্ত" যখন সব
+  // একসাথে মিশেছে। ব্যর্থতা কখনো সফলতা-ভান করে না: প্রয়োগ-ত্রুটিতে
+  // অ-সাম্যকৃত মিক্সই থাকে + সৎ issue; নীরব মিক্স সাম্য-অযোগ্য = issue।
+  let normalization: LoudnessNormalization | null = null;
+  if (rules.targetLufs != null) {
+    const normTmp = `${outputPath}.norm-tmp.wav`;
+    try {
+      normalization = await normalizeLoudnessTwoPass(outputPath, normTmp, {
+        targetLufs: rules.targetLufs,
+        maxTruePeakDbtp: rules.maxTruePeakDbtp,
+      });
+      await rename(normTmp, outputPath);
+      if (!normalization.applied) {
+        issues.push('মিক্স নীরব — লাউডনেস-সাম্য প্রয়োজ্য হয়নি');
+      } else {
+        if (
+          normalization.after.integratedLufs != null &&
+          Math.abs(normalization.after.integratedLufs - rules.targetLufs) > 1.5
+        ) {
+          issues.push(
+            `লাউডনেস-সাম্যের পরেও বিচ্যুতি (${normalization.after.integratedLufs.toFixed(1)} LUFS — লক্ষ্য ${rules.targetLufs})`
+          );
+        }
+        if (
+          rules.maxTruePeakDbtp != null &&
+          normalization.after.truePeakDbtp != null &&
+          normalization.after.truePeakDbtp > rules.maxTruePeakDbtp + 0.3
+        ) {
+          issues.push(`true-peak সীমা ছাড়িয়েছে (${normalization.after.truePeakDbtp.toFixed(1)} dBTP)`);
+        }
+      }
+    } catch (normErr) {
+      // সৎ ব্যর্থতা: অ-সাম্যকৃত মিক্স থাকবে, রিপোর্ট স্পষ্ট বলবে — ভান নয়
+      issues.push(
+        `লাউডনেস-সাম্য প্রয়োগ ব্যর্থ (${normErr instanceof Error ? normErr.message.slice(0, 140) : 'অজানা'}) — অ-স্বাভাবিক লাউডনেস থাকতে পারে`
+      );
+    } finally {
+      await rm(normTmp, { force: true }).catch(() => {});
+    }
+  }
+
+  // যাচাই: ক্লিপিং-মুক্ততা + নির্ভুল লাউডনেস পরিমাপ (চূড়ান্ত ফাইলে — সাম্যের পরেও)
   const q = await audioQuality(outputPath);
   const lufs = await preciseLufs(outputPath);
   if (q.peakDb != null && q.peakDb > -0.1) issues.push(`মাস্টার পিক খুব উঁচু (${q.peakDb.toFixed(1)} dB)`);
@@ -642,5 +703,13 @@ export async function mixSoundLayers(
     peakDb: q.peakDb,
     durationSec: q.durationSec,
     honestLabel: SOUND_DESIGN_LABEL,
+    ...(rules.targetLufs != null
+      ? {
+          targetLufs: rules.targetLufs,
+          loudnessApplied: normalization?.applied ?? false,
+          normalizedLufs: normalization?.after.integratedLufs ?? undefined,
+          truePeakDbtp: normalization?.after.truePeakDbtp ?? undefined,
+        }
+      : {}),
   };
 }

@@ -1022,6 +1022,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               label: res.engineLabel,
               ...(res.aiModel ? { model: res.aiModel } : {}),
               ...(res.fallbackError ? { error: res.fallbackError.slice(0, 200) } : {}),
+              ...(res.cacheHit ? { cacheHit: true } : {}),
             });
             valid.push({ ...shot, clipPath: res.clipPath, framePath: res.framePath });
           } catch (err) {
@@ -1259,7 +1260,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         mixReport.issues.forEach(i => ctx.partialNotes.push(`সাউন্ড-মিক্স: ${i}`));
       }
       await step.setDetail(
-        `মিক্স সম্পন্ন — ${mixReport.durationSec.toFixed(1)} সে., লাউডনেস ${mixReport.loudnessLufs?.toFixed(1) ?? '?'} LUFS, পিক ${mixReport.peakDb?.toFixed(1) ?? '?'} dB`
+        `মিক্স সম্পন্ন — ${mixReport.durationSec.toFixed(1)} সে., লাউডনেস ${mixReport.loudnessLufs?.toFixed(1) ?? '?'} LUFS${
+          mixReport.targetLufs != null ? ` (লক্ষ্য ${mixReport.targetLufs}, সাম্য ${mixReport.loudnessApplied ? 'প্রয়োগকৃত' : 'প্রয়োগ হয়নি'}, TP ${mixReport.truePeakDbtp?.toFixed(1) ?? '?'} dBTP)` : ''
+        }, পিক ${mixReport.peakDb?.toFixed(1) ?? '?'} dB`
       );
     } else {
       await step.setDetail('কোনো অডিও-স্তর নেই — নীরব চলচ্চিত্র');

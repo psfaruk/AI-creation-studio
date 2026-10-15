@@ -43,9 +43,30 @@ import {
   parseRetryAfterMs,
 } from '../sdk-helpers';
 import { mediaInfo, type MediaInfo } from '@/lib/media/ffmpeg';
+import { currentTrackedProductionId } from '@/lib/media/ffmpeg';
+// Phase-3 D: ধাপ-ভাগ করা ভিডিও-মেট্রিকস — প্রোডাকশন-স্কোপড সঞ্চয়কারীতে
+// (run-metrics.ts-এর LOW-VOLUME/REDACTION নীতির মধ্যেই)
+import {
+  noteVideoStage,
+  noteVideoShotRequested,
+  noteVideoShotOutcome,
+  noteVideoCacheEvent,
+} from '../run-metrics';
 import { writeFile, mkdtemp, rm } from 'fs/promises';
 import path from 'path';
 import os from 'os';
+// Phase-3 C (P0-BUG-04): সফল AI-শটের ক্রস-রান পুনঃব্যবহার — ক্যাশ-কী/
+// স্টোর/লুকআপ/ইন-ফ্লাইট-ডিডুপ/কাউন্টার সব shot_cache-এ (আমদানি-চক্র নেই:
+// যাচাইকারী প্যারামিটার হিসেবে ইনজেক্ট হয়)
+import {
+  SHOT_CACHE_SCHEMA_VERSION,
+  shotCacheFingerprint,
+  shotCacheLookup,
+  shotCacheStore,
+  joinOrStartInFlightShot,
+  noteShotCacheBypass,
+  noteShotCacheMiss,
+} from './shot_cache';
 
 export const AI_VIDEO_MODEL = 'cogvideox-3';
 export const AI_VIDEO_PROVIDER = 'z-ai-web-dev-sdk (ক্লাউড)';
@@ -138,6 +159,18 @@ export interface AiVideoClip {
   request: AiVideoRequest;
   /** §৭.১: ffprobe-যাচাই — ক্লিপে নেটিভ অডিও-স্ট্রিম আছে কি না */
   nativeAudio: boolean;
+  /** Phase-3 C: ক্যাশ-হিট/ইন-ফ্লাইট-ডিডুপ থেকে এসেছে — সৎ লেবেলের জন্য।
+   *  ক্লিপটি প্রকৃত AI-আউটপুটই (একই প্রোভাইডার-অনুরোধের পূর্বের ফল),
+   *  শুধু এবার নতুন করে জেনারেট হয়নি। */
+  fromCache?: boolean;
+}
+
+export interface GenerateVideoClipOpts {
+  onStatus?: (note: string) => void;
+  timeoutMs?: number;
+  isCancelled?: () => boolean | Promise<boolean>;
+  /** Phase-3 C: ক্যাশ-লুকআপ+স্টোর বাইপাস (শুধু টেস্ট/তাজা-ভ্যারিয়েশনের জন্য) */
+  bypassCache?: boolean;
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -497,16 +530,95 @@ export async function validateVideoBuffer(buffer: Buffer, opts?: { expectAudio?:
  * একটি ক্লিপের সম্পূর্ণ চক্র: সাবমিট → (গেটে নথিভুক্ত) পোল → ডাউনলোড → যাচাই।
  * ইন-ফ্লাইট-ট্র্যাকিং: সাবমিটের পরেই পোল-প্রমিশ গেটে বসে যায় — পরের সাবমিট
  * সেটার সমাপ্তির অপেক্ষা করবে (৪২৯-ঝড়ের বদলে সৎ অপেক্ষা)।
+ *
+ * Phase-3 C (P0-BUG-04): সব কল-পথ (সরাসরি পাইপলাইন, প্রি-ওয়ার্ম, মাল্টি-ক্লিপ)
+ * এই এক গেট-ফাংশনের ভেতর দিয়ে যায় — তাই ক্যাশ এখানেই বসানো: (১) ডিস্ক-হিট
+ * হলে প্রোভাইডার-কল পুরো এড়ানো, (২) একই ফিঙ্গারপ্রিন্ট চলমান থাকলে সেই
+ * প্রমিজে যোগ, (৩) মিসে প্রকৃত জেনারেশন + যাচাই-সফল হলে স্টোর।
+ * ক্যাশ-কী = প্রোভাইডার-অনুরোধের সম্পূর্ণ ফিঙ্গারপ্রিন্ট (shot_cache.ts)।
  */
 export async function generateVideoClip(
   req: AiVideoRequest,
-  opts?: { onStatus?: (note: string) => void; timeoutMs?: number; isCancelled?: () => boolean | Promise<boolean> }
+  opts?: GenerateVideoClipOpts
 ): Promise<AiVideoClip> {
   const t0 = Date.now();
+  // Phase-3 D: মেট্রিকস প্রোডাকশন-স্কোপে জমে (চ্যাট-পথে স্কোপ-নেই → নীরব)
+  const prodId = currentTrackedProductionId();
+  noteVideoShotRequested(prodId);
+
+  if (opts?.bypassCache) {
+    noteShotCacheBypass();
+    noteVideoShotOutcome(prodId, 'bypass');
+    return generateVideoClipUncached(req, opts, t0, { store: false, prodId });
+  }
+
+  // ফিঙ্গারপ্রিন্ট = ঠিক যা প্রোভাইডারে যায় (স্লাইস-পরের প্রম্পট, ক্ল্যাম্পকৃত
+  // স্থায়িত্ব, ডিফল্ট-সহ গুণমান) — w/h/fps ইচ্ছাকৃতভাবে বাদ: লোকাল-স্বাভাবিকীকরণ,
+  // হিটে নির্ধারকভাবে পুনঃপ্রয়োগ হয় (shot_cache.ts-এর নীতি-টীকা)
+  const duration = clampDuration(req.durationSec);
+  const fp = shotCacheFingerprint({
+    v: SHOT_CACHE_SCHEMA_VERSION,
+    model: AI_VIDEO_MODEL,
+    prompt: req.prompt.slice(0, 2000).trim(),
+    durationSec: duration,
+    quality: req.quality ?? 'speed',
+    imageUrl: req.imageUrl ?? null,
+    withAudio: req.withAudio === true,
+    size: req.size ?? null,
+  });
+
+  // (১) ডিস্ক-ক্যাশ — পুনঃযাচাইসহ (এন্ট্রি কেবল যাচাই-সফল হলেই ফেরে)
+  const hit = await shotCacheLookup(fp.sha256, {
+    validate: buffer => validateVideoBuffer(buffer, { expectAudio: req.withAudio === true }),
+  }).catch(() => null);
+  if (hit) {
+    opts?.onStatus?.(`ক্যাশ-হিট — একই অনুরোধের আগের ক্লিপ পুনঃব্যবহার (${hit.model}; নতুন জেনারেশন নয়)`);
+    noteVideoShotOutcome(prodId, 'cacheHit');
+    return {
+      buffer: hit.buffer,
+      mimeType: hit.mimeType,
+      taskId: hit.taskId,
+      model: hit.model,
+      generationMs: Date.now() - t0,
+      info: hit.info as MediaInfo,
+      request: { ...req, durationSec: duration },
+      nativeAudio: hit.hasAudio,
+      fromCache: true,
+    };
+  }
+
+  // (২) ইন-ফ্লাইট ডিডুপ + (৩) প্রকৃত জেনারেশন
+  const { promise, joined } = joinOrStartInFlightShot(fp.sha256, () =>
+    generateVideoClipUncached(req, opts, t0, { store: true, fingerprintSha: fp.sha256, prodId })
+  );
+  if (joined) {
+    opts?.onStatus?.('একই শট এখনই চলছে — সেই জেনারেশনের সাথে যোগ (ডুপ্লিকেট সাবমিট নয়)');
+    noteVideoShotOutcome(prodId, 'joined');
+    const clip = await promise;
+    return { ...clip, fromCache: true };
+  }
+  noteShotCacheMiss();
+  noteVideoShotOutcome(prodId, 'generated');
+  return promise;
+}
+
+/** ক্যাশ-ছাড়া মূল চক্র (উপরের র‍্যাপার থেকে) — store:true হলে যাচাই-সফল ক্লিপ জমা হয়।
+ *  Phase-3 D: প্রতিটি ধাপের সময় (submit/poll/download/validate) মাপা হয় —
+ *  প্রোডাকশন-স্কোপ থাকলে মেট্রিকস-সঞ্চয়কারীতে যায়। */
+async function generateVideoClipUncached(
+  req: AiVideoRequest,
+  opts: GenerateVideoClipOpts | undefined,
+  t0: number,
+  cacheOpts: { store: boolean; fingerprintSha?: string; prodId?: string | null }
+): Promise<AiVideoClip> {
+  const prodId = cacheOpts.prodId ?? null;
+  let tStage = Date.now();
   const task = await submitVideoTask(req, { onStatus: opts?.onStatus, isCancelled: opts?.isCancelled });
+  noteVideoStage(prodId, 'submit', Date.now() - tStage);
   opts?.onStatus?.(`টাস্ক জমা হয়েছে (${task.model}, আইডি ${task.taskId.slice(0, 10)}…) — জেনারেশন চলছে…`);
 
   // ইন-ফ্লাইট-নথিভুক্ত পোল — ফল যা-ই হোক, গেট কুলডাউন-সচেতন
+  tStage = Date.now();
   const pollPromise = pollVideoTask(task, opts);
   const s = gate();
   if (!s.inflight) {
@@ -518,16 +630,32 @@ export async function generateVideoClip(
   }
 
   const outcome = await pollPromise;
+  noteVideoStage(prodId, 'poll', Date.now() - tStage);
   if (outcome.status !== 'SUCCESS' || !outcome.url) {
     const reason = outcome.status === 'TIMEOUT' ? 'সময়সীমা অতিক্রম' : 'মডেল ব্যর্থ ঘোষণা করেছে';
     gate().lastError = `${reason} (${task.taskId.slice(0, 10)}…)`;
     throw new Error(`AI ভিডিও-জেনারেশন ব্যর্থ: ${reason}`);
   }
+  tStage = Date.now();
   const buffer = await downloadVideo(outcome.url);
+  noteVideoStage(prodId, 'download', Date.now() - tStage);
   // §৭.১: with_audio চাওয়া হলে অডিও-স্ট্রিমও ffprobe-যাচাই
+  tStage = Date.now();
   const validation = await validateVideoBuffer(buffer, { expectAudio: req.withAudio === true });
+  noteVideoStage(prodId, 'validate', Date.now() - tStage);
   if (!validation.ok) {
     throw new Error(`AI ভিডিও যাচাই ব্যর্থ: ${validation.issues.join('; ')}`);
+  }
+  // Phase-3 C: কেবল সম্পূর্ণ+যাচাইকৃত ক্লিপই ক্যাশে যায় — এখানেই "completed+validated"-শর্ত
+  if (cacheOpts.store && cacheOpts.fingerprintSha) {
+    const stored = await shotCacheStore(cacheOpts.fingerprintSha, {
+      buffer,
+      model: task.model,
+      taskId: task.taskId,
+      mimeType: 'video/mp4',
+      hasAudio: validation.hasAudio,
+    });
+    if (stored) noteVideoCacheEvent(prodId, 'store');
   }
   return {
     buffer,

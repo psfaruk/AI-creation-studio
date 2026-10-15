@@ -17,7 +17,7 @@ import { db } from '@/lib/db';
 import { saveArtifactFile, readArtifactFile } from '../storage';
 import { toArtifactMeta } from '../serialize';
 import { emitProduction } from './bus';
-import { logProductionMetrics } from '../run-metrics';
+import { logProductionMetrics, getProductionMetrics, clearProductionMetrics } from '../run-metrics';
 import { cleanupWorkingDir, makeWorkingDir, killProductionFfmpeg, runWithFfmpegTracking } from '@/lib/media/ffmpeg';
 import { validateSpec } from '../capabilities';
 
@@ -533,6 +533,8 @@ async function runProduction(productionId: string): Promise<void> {
         finalRow?.finishedAt && finalRow.startedAt
           ? finalRow.finishedAt.getTime() - finalRow.startedAt.getTime()
           : null;
+      // Phase-3 D: ভিডিও-ধাপ সঞ্চয়কারী (চ্যাট-ধরনের রানে বা ভিডিও-কল না থাকলে null)
+      const videoAcc = getProductionMetrics(productionId);
       logProductionMetrics({
         productionId,
         type: finalRow?.type ?? ctx.spec.type,
@@ -544,7 +546,25 @@ async function runProduction(productionId: string): Promise<void> {
         artifacts,
         // শ্রেণি-সংকেত মাত্র — কোনো ত্রুটি-টেক্সট নয় (DB-তে সংরক্ষিত)
         errorCategoryHint: errorMessage ? 'see_error_field' : null,
+        ...(videoAcc
+          ? {
+              video: {
+                shotsRequested: videoAcc.shotsRequested,
+                shotsFromCache: videoAcc.shotsFromCache,
+                shotsJoined: videoAcc.shotsJoined,
+                providerSubmits: videoAcc.providerSubmits,
+                shotsBypassed: videoAcc.shotsBypassed,
+                cacheStores: videoAcc.cacheStores,
+                cacheInvalid: videoAcc.cacheInvalid,
+                submitMs: videoAcc.submitMsTotal,
+                pollMs: videoAcc.pollMsTotal,
+                downloadMs: videoAcc.downloadMsTotal,
+                validateMs: videoAcc.validateMsTotal,
+              },
+            }
+          : {}),
       });
+      clearProductionMetrics(productionId);
     } catch {
       // মেট্রিকস-সংগ্রহ ব্যর্থ হলে প্রোডাকশন-ফলাফল অপরিবর্তিত থাকে
     }
@@ -566,6 +586,8 @@ async function failProduction(productionId: string, message: string): Promise<vo
       where: { id: productionId },
       select: { createdAt: true, startedAt: true, type: true },
     });
+    // Phase-3 D: ব্যর্থ-পথেও ভিডিও-ধাপ সঞ্চয়কারীর সৎ সারসংক্ষেপ
+    const videoAcc = getProductionMetrics(productionId);
     logProductionMetrics({
       productionId,
       type: meta?.type ?? 'unknown',
@@ -579,7 +601,25 @@ async function failProduction(productionId: string, message: string): Promise<vo
       stepsFailed: null,
       artifacts: null,
       errorCategoryHint: 'see_error_field',
+      ...(videoAcc
+        ? {
+            video: {
+              shotsRequested: videoAcc.shotsRequested,
+              shotsFromCache: videoAcc.shotsFromCache,
+              shotsJoined: videoAcc.shotsJoined,
+              providerSubmits: videoAcc.providerSubmits,
+              shotsBypassed: videoAcc.shotsBypassed,
+              cacheStores: videoAcc.cacheStores,
+              cacheInvalid: videoAcc.cacheInvalid,
+              submitMs: videoAcc.submitMsTotal,
+              pollMs: videoAcc.pollMsTotal,
+              downloadMs: videoAcc.downloadMsTotal,
+              validateMs: videoAcc.validateMsTotal,
+            },
+          }
+        : {}),
     });
+    clearProductionMetrics(productionId);
   } catch (err) {
     console.error('[production] failProduction error', err);
   }
