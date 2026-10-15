@@ -14,11 +14,19 @@ import type {
   RunErrorCategory,
 } from '@/lib/types';
 import { emit } from './events';
-import { getRunMetrics, noteRetryWait, clearRunMetrics, logRunMetrics } from './run-metrics';
+import {
+  getRunMetrics,
+  noteRetryWait,
+  clearRunMetrics,
+  logRunMetrics,
+  noteIntentClassification,
+  noteIntentPlanningMs,
+} from './run-metrics';
 import { chatComplete, parseToolCall, type ChatCallMeta, type LLMMessage } from './llm';
 import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
 import { isChannelBlocked } from './rate-limit-coordinator';
 import { CHAT_ONLY_DIRECTIVE, SYSTEM_PROMPT } from './prompts';
+import { classifyIntent, specDraftFromIntent, buildIntentHintNote, unsupportedAlternativeText } from './intent/classifier';
 import { describeChatModel, findChatModel, type ChatModelOption } from './chat-models';
 import { validateToolCall, type ToolOutput, type ToolSpec } from './registry';
 import { buildMessageView } from './serialize';
@@ -602,10 +610,12 @@ export function detectProductionIntent(message: string): FallbackIntent | null {
 }
 
 /**
- * S9 ইন্টেন্ট-ফলব্যাক: LLM পুরোপুরি অনুপলব্ধ হলেও মিউজিক-ভিডিও/
- * ফিল্ম-অনুরোধ চিনে সরাসরি প্রোডাকশন-প্রস্তাব তৈরি করা হয় —
- * সৎ লেবেলসহ (নিয়ম-ভিত্তিক পরিকল্পনা, ক্লাউড-ব্লকড হলে লোকাল-ইঞ্জিন)।
- * @returns productionId — সফল হলে; null — ইন্টেন্ট মেলেনি
+ * S9 ইন্টেন্ট-ফলব্যাক: LLM পুরোপুরি অনুপলব্ধ হলেও বড়-কাজের অনুরোধ
+ * চিনে সরাসরি প্রোডাকশন-প্রস্তাব তৈরি করা হয় — সৎ লেবেলসহ (নিয়ম-ভিত্তিক
+ * পরিকল্পনা, ক্লাউড-ব্লকড হলে লোকাল-ইঞ্জিন)। Phase-4 B থেকে এটি
+ * classifyIntent-এর পূর্ণ শ্রেণি-সেট ব্যবহার করে (আগের ৬-প্যাটার্ন
+ * detectProductionIntent-এর সম্প্রসারিত রূপ)।
+ * @returns productionId — সফল হলে; null — ইন্টেন্ট মেলেনি (কলার সৎ-ব্যর্থতা দেখাবে)
  */
 async function tryIntentFallback(
   run: AgentRun,
@@ -614,8 +624,12 @@ async function tryIntentFallback(
   stats: { toolCalls: number }
 ): Promise<string | null> {
   if (stepsDone > 0) return null; // মাঝপথে নয় — শুধু প্রথম-সিদ্ধান্তে অনুপলব্ধ হলে
-  const intent = detectProductionIntent(lastUserMessage);
-  if (!intent) return null;
+  const cloudBlockedFallback =
+    isChannelBlocked('chat') || isChannelBlocked('image') || isChannelBlocked('video');
+  const intent = classifyIntent(lastUserMessage, { cloudBlocked: cloudBlockedFallback });
+  const specDraft = specDraftFromIntent(intent, lastUserMessage);
+  // প্রস্তাবযোগ্য শ্রেণি না হলে (আলাপ/অসমর্থিত/অস্পষ্ট/ছোট-টুল-কাজ) ফলব্যাক নয়
+  if (!specDraft) return null;
 
   emit(run.id, {
     type: 'run_note',
@@ -626,15 +640,15 @@ async function tryIntentFallback(
       'নিয়ম-ভিত্তিক পরিকল্পনায় প্রস্তাব তৈরি করা হচ্ছে…',
   });
 
-  const created = await createProduction(intent.spec, run.conversationId);
+  const created = await createProduction(specDraft, run.conversationId);
   if (!created.ok) return null;
 
   const caps = created.caps;
-  const typeLabel: Record<FallbackIntentType, string> = {
+  const typeLabel: Record<string, string> = {
     music_video: 'মিউজিক ভিডিও',
     short_film: 'শর্ট ফিল্ম',
     motion_video: 'মোশন ভিডিও',
-    audio: 'অডিও (ইন্সট্রুমেন্টাল)',
+    audio: 'অডিও',
     image: 'ছবি',
   };
   const header =
@@ -642,17 +656,20 @@ async function tryIntentFallback(
     `তাই এই প্রস্তাবটি **নিয়ম-ভিত্তিক পরিকল্পনাকারী** দিয়ে তৈরি — AI-সহায়ক সেটিংস-বাছাই নয়।\n\n`;
   const notesLine = caps.notes.length > 0 ? `- নোট: ${caps.notes.slice(0, 3).join(' | ')}\n` : '';
 
-  // (অডিট §B4+§A) প্রকারভেদে সৎ চূড়ান্ত-বার্তা — অডিও/ছবি নতুন;
-  // ৩টি ভিডিও-ধরনের পাঠ আগের মতোই অপরিবর্তিত।
+  // (অডিট §B4+§A) প্রকারভেদে সৎ চূড়ান্ত-বার্তা — Phase-4 B: ভয়েসওভার-অডিওর
+  // আলাদা সৎ-লেবেল (কণ্ঠ-ইঞ্জিন), বাকি পাঠ আগের মতোই।
   let finalText: string;
-  if (intent.type === 'audio') {
+  if (caps.spec.type === 'audio') {
+    const isVoiceover = caps.spec.audioOperation !== 'instrumental';
     const audioSpecBits =
       `🎵 **${typeLabel.audio}**: ${caps.spec.title}\n` +
-      `- ইঞ্জিন: প্রসিডিউরাল সংশ্লেষণ — **পরীক্ষামূলক** (নিউরাল মিউজিক-মডেল নয়, গাওয়া গান নয়)\n` +
+      (isVoiceover
+        ? `- কণ্ঠ: ভাষা-নিয়ন্ত্রক TTS (ASR ব্যাক-চেক + ভয়েস-ফলব্যাক-চেইনসহ)\n`
+        : `- ইঞ্জিন: প্রসিডিউরাল সংশ্লেষণ — **পরীক্ষামূলক** (নিউরাল মিউজিক-মডেল নয়, গাওয়া গান নয়)\n`) +
       `- দৈর্ঘ্য: ${bnNum(caps.spec.durationSec ?? 30)} সেকেন্ড\n` +
-      `- আউটপুট: WAV + MP3 আর্টিফ্যাক্ট হবে\n` +
+      (isVoiceover ? `- আউটপুট: যাচাইকৃত কণ্ঠ-অডিও আর্টিফ্যাক্ট\n` : `- আউটপুট: WAV + MP3 আর্টিফ্যাক্ট হবে\n`) +
       notesLine;
-    if (intent.sungSong) {
+    if (intent.extracted.wantsSungSong) {
       // অডিট-গ্রহণযোগ্যতা-পরীক্ষা ২: গাওয়া-গান চাওয়া হলে সৎ প্রকাশনাই চূড়ান্ত উত্তর —
       // ভুয়া গান কখনোই নয়; সৎ-লেবেল-করা ইন্সট্রুমেন্টাল প্রস্তাব থাকে সত্যিকারের বিকল্প হিসেবে।
       finalText =
@@ -671,7 +688,7 @@ async function tryIntentFallback(
         `\nনিচের কার্ডে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
         `ক্লাউড প্রাপ্যতা ফিরলে পরে আরও উন্নত সংস্করণ চাইলে আবার বলুন।`;
     }
-  } else if (intent.type === 'image') {
+  } else if (caps.spec.type === 'image') {
     finalText =
       header +
       `🖼️ **${typeLabel.image}**: ${caps.spec.title}\n` +
@@ -682,7 +699,7 @@ async function tryIntentFallback(
   } else {
     finalText =
       header +
-      `🎬 **${typeLabel[intent.type]}**: ${caps.spec.title}\n` +
+      `🎬 **${typeLabel[caps.spec.type] ?? 'প্রোডাকশন'}**: ${caps.spec.title}\n` +
       `- মোট দৈর্ঘ্য: ${caps.spec.durationSec ?? '?'} সেকেন্ড\n` +
       `- আনুপাতিক মাধ্যম: ${caps.spec.aspect ?? '16:9'}\n` +
       `- ইঞ্জিন: ${caps.spec.videoEngine === 'cinematic_motion' ? 'স্টোরিবোর্ড+ক্যামেরা-মোশন (ক্লাউড ব্লকড থাকায় লোকাল-বান্ধব)' : 'AI ডিফিউশন'}\n` +
@@ -868,12 +885,16 @@ async function runAgentLoop(runId: string): Promise<void> {
     where: { conversationId: run.conversationId, role: 'user' },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
   });
+  // Phase-4 B: ইন্টেন্ট-শ্রেণিবিভাগনির্ধারণের প্রসঙ্গ — শুধু kind-তালিকা
+  // (কোনো ফাইল-অ্যাক্সেস নয়; classifier মডিউল DB-মুক্ত থাকে)
+  const triggerUploads: { kind: 'image' | 'audio' | 'video' }[] = [];
   if (trigger) {
     const uploads = await db.artifact.findMany({
       where: { messageId: trigger.id, origin: 'user_upload' },
       orderBy: { createdAt: 'asc' },
     });
     for (const upload of uploads) {
+      triggerUploads.push({ kind: upload.kind as 'image' | 'audio' | 'video' });
       // শুধু-আলাপ মোডে কোনো টুলই চলে না — আপলোডের উপস্থিতি জানিয়ে
       // context-এ সৎ নোট যোগ হয় (অডিট §১-A)
       if (chatOnly) {
@@ -991,6 +1012,110 @@ async function runAgentLoop(runId: string): Promise<void> {
     );
     return;
   }
+
+  // ---- ২খ. Phase-4 Workstream B: নিয়ম-ভিত্তিক ইন্টেন্ট-শ্রেণিবিভাগনির্ধারণ ----
+  // রানে ঠিক একবার চলে (নিয়তিবিশিষ্ট, ~µs-খরচ); ফল তিন জায়গায় যায়:
+  //  (ক) AgentStep + মেট্রিকস-সঞ্চয়কারীতে (পর্যবেক্ষণ — কোনো বার্তা-টেক্সট নয়)
+  //  (খ) দ্রুত-পথ: স্পষ্ট বড়-কাজের অনুরোধে LLM রাউন্ড-ট্রিপ ছাড়াই সৎ-লেবেলসহ
+  //      প্রস্তাব-কার্ড (createProduction-এর শেয়ার্ড পথ দিয়েই)
+  //  (গ) হিন্ট-নোট: LLM-কে শ্রেণি/উদ্ধৃত-সংকেত/অনুপস্থিত-তথ্য — প্রস্তাবের
+  //      গুণমান বাড়ায়, ক্ষমতা-সীমা ভাঙার ক্ষমতা দেয় না (validateToolCall অপরিবর্তিত)
+  const cloudBlockedNow =
+    isChannelBlocked('chat') || isChannelBlocked('image') || isChannelBlocked('video');
+  const intentT0 = Date.now();
+  const intent = classifyIntent(trigger?.content ?? '', {
+    uploads: triggerUploads,
+    cloudBlocked: cloudBlockedNow,
+  });
+  const intentDurationMs = Date.now() - intentT0;
+  const intentFastPath =
+    intent.fastPathEligible && !!intent.proposedWorkflow.productionType && !chatOnly;
+  noteIntentClassification(runId, {
+    category: intent.category,
+    confidence: intent.confidence,
+    fastPath: intentFastPath,
+    durationMs: intentDurationMs,
+  });
+  const intentSeq = nextSeq();
+  await db.agentStep.create({
+    data: {
+      runId,
+      seq: intentSeq,
+      kind: 'intent_classification',
+      name: 'intent',
+      payloadJson: safeJson({
+        category: intent.category,
+        confidence: intent.confidence,
+        reason: intent.reason,
+        fastPath: intentFastPath,
+        capabilityStatus: intent.capabilityStatus,
+        missingFields: intent.missingFields.slice(0, 5),
+        durationMs: intentDurationMs,
+      }),
+    },
+  });
+  logStep(runId, intentSeq, 'intent', `${intent.category}${intentFastPath ? ' (fast-path)' : ''}`, intentDurationMs);
+
+  // ---- ২ঘ. Phase-4 B: দ্রুত-পথ — স্পষ্ট বড়-কাজের অনুরোধে সরাসরি সৎ প্রস্তাব ----
+  // সততা: পরিকল্পনাটি নিয়ম-ভিত্তিক — AI-সহায়ক সেটিংস-বাছাই নয়; বার্তায় স্পষ্ট
+  // বলা হয় এবং কার্ডে সব সেটিংস বদলানো যায়। স্পেক তৈরি হয় শেয়ার্ড
+  // createProduction পথ দিয়েই (validateSpec + অটো-ওয়্যার + awaiting_confirmation)।
+  if (intentFastPath) {
+    const specDraft = specDraftFromIntent(intent, trigger?.content ?? '');
+    if (specDraft) {
+      const planT0 = Date.now();
+      const created = await createProduction(specDraft, run.conversationId);
+      noteIntentPlanningMs(runId, Date.now() - planT0);
+      if (created.ok) {
+        const caps = created.caps;
+        const typeLabelFast: Record<string, string> = {
+          music_video: 'মিউজিক ভিডিও',
+          short_film: 'শর্ট ফিল্ম',
+          motion_video: 'মোশন ভিডিও',
+        };
+        const notesLine = caps.notes.length > 0 ? `- নোট: ${caps.notes.slice(0, 3).join(' | ')}\n` : '';
+        const finalText =
+          `🎬 **${typeLabelFast[caps.spec.type] ?? 'প্রোডাকশন'}**: ${caps.spec.title}\n` +
+          `- পরিকল্পনা: **নিয়ম-ভিত্তিক দ্রুত-পরিকল্পনা** — অনুরোধটি স্পষ্ট বলে চেনা গেছে, তাই সরাসরি সেটিংস-কার্ড তৈরি হলো (AI-সহায়ক সেটিংস-বাছাই ছাড়াই; নিচের কার্ডে সবকিছু বদলানো যাবে)\n` +
+          `- মোট দৈর্ঘ্য: ${bnNum(caps.spec.durationSec ?? 0)} সেকেন্ড · অনুপাত: ${caps.spec.aspect ?? '16:9'} · ইঞ্জিন: ${
+            caps.spec.videoEngine === 'cinematic_motion' ? 'স্টোরিবোর্ড+ক্যামেরা-মোশন (লোকাল-বান্ধব)' : 'AI ডিফিউশন (CogVideoX-3)'
+          }\n` +
+          notesLine +
+          `\nনিচের কার্ডে সেটিংস দেখে **নিশ্চিত করুন** চাপলেই তৈরি শুরু হবে। ` +
+          `বাড়তি সৃজনশীল নির্দেশনা (গল্পের খুঁটিনাটি, দৃশ্য-ভাবনা) দিতে চাইলে এখানেই লিখে পাঠান — পরের বার AI-সহায়ক পরিকল্পনায় যোগ হবে।`;
+        emit(runId, {
+          type: 'run_note',
+          runId,
+          level: 'info',
+          note: 'স্পষ্ট অনুরোধ চেনা গেছে — নিয়ম-ভিত্তিক দ্রুত-পরিকল্পনায় সেটিংস-কার্ড তৈরি হচ্ছে (LLM রাউন্ড-ট্রিপ ছাড়াই)…',
+        });
+        await finalizeRun(
+          runId,
+          finalText,
+          {
+            steps: 1,
+            toolCalls: 0,
+            durationMs: Date.now() - startedAt,
+            seq: nextSeq(),
+          },
+          created.productionId
+        );
+        return;
+      }
+      // সৎ রক্ষাকবচ: খসড়া-স্পেক ব্যর্থ হলে (ঘটা উচিত নয়) হিন্ট-পথেই এগোয় —
+      // কখনো ভাঙা প্রস্তাব ব্যবহারকারীর সামনে আনা হয় না।
+      emit(runId, {
+        type: 'run_note',
+        runId,
+        level: 'warn',
+        note: 'দ্রুত-পরিকল্পনার খসড়া যাচাই পার করেনি — স্বাভাবিক AI-সহায়ক পথে এগোনো হচ্ছে…',
+      });
+    }
+  }
+
+  // ---- ২ঙ. Phase-4 B: হিন্ট-নোট — শ্রেণিবিভাগনির্ধারণের ফল LLM-কে প্রসঙ্গে ----
+  // (রেট-লিমিট-ফলব্যাকের আগেই; প্রস্তাব তৈরির প্রথম-শট গুণমান বাড়ায়)
+  context.push({ role: 'user', content: buildIntentHintNote(intent) });
 
   // ---- ৩. execution loop (MAX_STEPS পর্যন্ত) ----
   let llmSteps = 0;
@@ -1255,6 +1380,27 @@ async function runAgentLoop(runId: string): Promise<void> {
       proposedProductionId = fallbackProductionId;
       return; // tryIntentFallback ইতিমধ্যে finalize করেছে
     }
+    // Phase-4 B: অনুরোধটি নিজেই অসমর্থিত-ক্ষমতার (গাওয়া গান/লিপ-সিঙ্ক/স্টেম)
+    // হলে ৪২৯-বার্তা নয় — সৎ-অসমর্থিত চূড়ান্ত উত্তর (কোনো ভান-প্রস্তাব নয়)।
+    if (intent.capabilityStatus === 'unsupported') {
+      const alt = unsupportedAlternativeText(intent);
+      const honestUnsupportedText =
+        `🚫 **এই ধরনের কাজ এখন সমর্থিত নয়** — কোনো নকল/ভান আউটপুট বানানো হবে না।\n\n` +
+        (alt ? `${alt}\n\n` : '') +
+        `(এখনই ক্লাউড LLM-ও রেট-লিমিটেড — ৪২৯, সাময়িক অবস্থা। কয়েক মিনিট পর আবার চাইলে সাধারণ আলাপে বিকল্পগুলো বিস্তারিত জানা যাবে।)`;
+      await finalizeRun(
+        runId,
+        honestUnsupportedText,
+        {
+          steps: 1,
+          toolCalls: stats.toolCalls,
+          durationMs: Date.now() - startedAt,
+          seq: nextSeq(),
+        },
+        null
+      );
+      return;
+    }
     // ইন্টেন্ট মেলেনি — সৎ-ব্যর্থতা (৪২৯ সাময়িক, লাইসেন্স-সমস্যা নয়)
     throw new TemporarilyUnavailableError(
       'LLM (চ্যাট) — রেট-লিমিট-উইন্ডো রিট্রাই-বাজেটও পার করেছে। ' +
@@ -1469,6 +1615,7 @@ async function finalizeRun(
     retryWaitMs: metricsAcc.retryWaitMs,
     retryCount: metricsAcc.retryCount,
     toolNames: metricsAcc.toolNames,
+    intent: metricsAcc.intent ?? null,
   });
   clearRunMetrics(runId);
 }
@@ -1574,6 +1721,7 @@ async function failRun(
     retryWaitMs: metricsAcc.retryWaitMs,
     retryCount: metricsAcc.retryCount,
     toolNames: metricsAcc.toolNames,
+    intent: metricsAcc.intent ?? null,
   });
   clearRunMetrics(runId);
 }

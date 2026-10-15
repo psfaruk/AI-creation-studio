@@ -73,6 +73,23 @@ export interface FakeArtifact {
   metaJson: string | null;
   createdAt: Date;
 }
+/** Phase-4: প্রোডাকশন-রো (confirm/cancel/validate/config-panel রাউট-টেস্টের জন্য) */
+export interface FakeProduction {
+  id: string;
+  conversationId: string;
+  type: string;
+  title: string;
+  status: string;
+  specJson: string;
+  progress: number;
+  currentStepKey: string | null;
+  error: string | null;
+  resultJson: string | null;
+  parentProductionId: string | null;
+  createdAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+}
 
 interface FakeDbState {
   conversations: Map<string, FakeConversation>;
@@ -80,6 +97,7 @@ interface FakeDbState {
   agentRuns: Map<string, FakeAgentRun>;
   toolCalls: Map<string, FakeToolCall>;
   artifacts: Map<string, FakeArtifact>;
+  productions: Map<string, FakeProduction>;
   seq: number;
   /** agentRun.create calls — duplicate-submission evidence */
   agentRunCreateCalls: Array<Record<string, unknown>>;
@@ -95,6 +113,7 @@ export function state(): FakeDbState {
       agentRuns: new Map(),
       toolCalls: new Map(),
       artifacts: new Map(),
+      productions: new Map(),
       seq: 0,
       agentRunCreateCalls: [],
     };
@@ -110,6 +129,7 @@ export function resetFakeDb(): void {
   s.agentRuns.clear();
   s.toolCalls.clear();
   s.artifacts.clear();
+  s.productions.clear();
   s.seq = 0;
   s.agentRunCreateCalls = [];
 }
@@ -206,6 +226,34 @@ export function seedMessage(
     ...overrides,
   };
   state().messages.set(id, row);
+  return row;
+}
+
+/** Phase-4: awaiting_confirmation প্রোডাকশন বপন (confirm-flow টেস্ট) */
+export function seedProduction(
+  conversationId: string,
+  spec: Record<string, unknown>,
+  overrides: Partial<FakeProduction> = {}
+): FakeProduction {
+  const id = overrides.id ?? nextId('prod');
+  const row: FakeProduction = {
+    id,
+    conversationId,
+    type: String(spec.type ?? 'image'),
+    title: String(spec.title ?? 'টেস্ট প্রোডাকশন'),
+    status: 'awaiting_confirmation',
+    specJson: JSON.stringify(spec),
+    progress: 0,
+    currentStepKey: null,
+    error: null,
+    resultJson: null,
+    parentProductionId: null,
+    createdAt: new Date(Date.now() - 30_000),
+    startedAt: null,
+    finishedAt: null,
+    ...overrides,
+  };
+  state().productions.set(id, row);
   return row;
 }
 
@@ -381,6 +429,23 @@ export function createFakeDb() {
         );
         return orderBy ? sortedByCreatedAtAsc(rows) : rows;
       },
+      /** Phase-4: createProduction-এর অটো-ওয়্যার কোয়েরি (সর্বশেষ আপলোড) */
+      findFirst: async ({
+        where,
+        orderBy,
+      }: {
+        where: Record<string, unknown>;
+        orderBy?: { createdAt?: 'asc' | 'desc' };
+      }) => {
+        const rows = [...s().artifacts.values()].filter((row) =>
+          matches(row as unknown as Record<string, unknown>, where)
+        );
+        const dir = orderBy?.createdAt === 'asc' ? 1 : -1;
+        rows.sort((a, b) => (a.createdAt.getTime() - b.createdAt.getTime()) * dir);
+        return rows[0] ?? null;
+      },
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        s().artifacts.get(where.id) ?? null,
       create: async ({ data }: { data: Partial<FakeArtifact> }) => {
         const id = nextId('art');
         const row: FakeArtifact = {
@@ -405,6 +470,59 @@ export function createFakeDb() {
     },
     async $transaction(ops: Array<Promise<unknown>>): Promise<unknown[]> {
       return Promise.all(ops);
+    },
+    // ---- Phase-4: production মডেল (confirm/cancel/config-panel টেস্ট) ----
+    production: {
+      create: async ({ data }: { data: Partial<FakeProduction> }) => {
+        const id = nextId('prod');
+        const row: FakeProduction = {
+          id,
+          conversationId: data.conversationId ?? '',
+          type: data.type ?? 'image',
+          title: data.title ?? 'প্রোডাকশন',
+          status: data.status ?? 'awaiting_confirmation',
+          specJson: data.specJson ?? '{}',
+          progress: 0,
+          currentStepKey: null,
+          error: null,
+          resultJson: null,
+          parentProductionId: data.parentProductionId ?? null,
+          createdAt: new Date(),
+          startedAt: null,
+          finishedAt: null,
+        };
+        s().productions.set(id, row);
+        return row;
+      },
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        s().productions.get(where.id) ?? null,
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        const rows = [...s().productions.values()].filter(row =>
+          matches(row as unknown as Record<string, unknown>, where)
+        );
+        return rows;
+      },
+      count: async ({ where }: { where?: { createdAt?: { gte?: Date } } }) => {
+        let n = 0;
+        for (const row of s().productions.values()) {
+          if (where?.createdAt?.gte && row.createdAt < where.createdAt.gte) continue;
+          n++;
+        }
+        return n;
+      },
+      update: async ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: Partial<FakeProduction>;
+      }) => {
+        const row = s().productions.get(where.id);
+        if (!row) throw new Error('fake production not found');
+        Object.assign(row, data);
+        // include: { steps, artifacts, _count } — রাউট-ভিউ সিরিয়ালাইজারের চুক্তি
+        return { ...row, steps: [], artifacts: [], _count: { artifacts: 0 } };
+      },
     },
   };
 }

@@ -23,6 +23,21 @@ export interface RunMetricsAccumulator {
   retryCount: number;
   /** tool names executed in this run (order preserved) */
   toolNames: string[];
+  /** Phase-4 B: intent-classification result (single, deterministic; enums/counts
+   *  only — never message text). Undefined = classification never ran. */
+  intent?: IntentMetrics;
+}
+
+/** Phase-4 B: শ্রেণিবিভাগনির্ধারণ + দ্রুত-পথ পরিকল্পনার যাচাইকৃত মাপ (REDACTION-নিরাপদ) */
+export interface IntentMetrics {
+  category: string;
+  confidence: string;
+  /** দ্রুত-পথ চলেছে কি না (LLM রাউন্ড-ট্রিপ বাদ) */
+  fastPath: boolean;
+  /** classifyIntent-এর সময় (ms, নিয়ম-ভিত্তিক — µs-স্কেল প্রত্যাশিত) */
+  durationMs: number;
+  /** দ্রুত-পথে createProduction-এর সময় (ms); হিন্ট-পথে null — অ-মাপা কখনো বানানো হয় না */
+  planningMs: number | null;
 }
 
 const g = globalThis as unknown as {
@@ -59,6 +74,22 @@ export function noteRetryWait(runId: string, waitMs: number): void {
 /** Drop the accumulator after the run reached a terminal state. */
 export function clearRunMetrics(runId: string): void {
   accMap().delete(runId);
+}
+
+/** Phase-4 B: রান-শুরুর একবারই চলা নিয়ম-ভিত্তিক শ্রেণিবিভাগনির্ধারণ নথিভুক্ত। */
+export function noteIntentClassification(
+  runId: string,
+  m: { category: string; confidence: string; fastPath: boolean; durationMs: number }
+): void {
+  const acc = getRunMetrics(runId);
+  acc.intent = { ...m, planningMs: null };
+}
+
+/** Phase-4 B: দ্রুত-পথের createProduction-সময় জমা (হিন্ট-পথে কখনো ডাকা হয় না)। */
+export function noteIntentPlanningMs(runId: string, ms: number): void {
+  const acc = getRunMetrics(runId);
+  if (!acc.intent) return; // শ্রেণিবিভাগনির্ধারণ ছাড়া পরিকল্পনা-সময় অর্থহীন — নীরব স্কিপ
+  acc.intent.planningMs = Math.max(0, Math.round(ms));
 }
 
 // ------------------------------------------------------------
@@ -194,7 +225,9 @@ export function logRunMetrics(fields: {
   retryWaitMs: number | null;
   retryCount: number | null;
   toolNames: string[];
-}): void {
+  /** Phase-4 B: intent metrics (null = classification never ran, e.g. chat_only) */
+  intent?: IntentMetrics | null;
+}):void {
   safeJsonLine('[run-metrics]', {
     ...fields,
     toolNames: fields.toolNames.slice(0, 24), // bounded

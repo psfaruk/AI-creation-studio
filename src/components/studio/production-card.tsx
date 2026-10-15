@@ -11,7 +11,7 @@
 //   ফলাফল + সংশোধন/আবার-চালানো
 // ============================================================
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   BadgeCheck,
   Ban,
@@ -53,6 +53,8 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ArtifactList } from '@/components/chat/artifact-view';
 import { toBnDigits } from '@/components/chat/bn-format';
+import { useConfigPanel, useSpecValidation, type SpecValidationLive } from '@/hooks/use-config-panel';
+import { validateFieldsAgainstSchema, type ConfigPanelSchema, type ConfigPanelSongOption } from '@/lib/agent/config-panel';
 import { useProductions } from '@/hooks/use-productions';
 import { toast } from '@/hooks/use-toast';
 import { useUiView } from '@/hooks/use-ui-view';
@@ -439,10 +441,17 @@ function elapsedTextBn(startedAt?: string, finishedAt?: string): string {
 function SpecEditor({
   spec,
   onChange,
+  songs,
+  fieldErrors,
 }: {
   spec: CreativeJobSpec;
   onChange: (next: CreativeJobSpec) => void;
+  /** Phase-4 C: মিউজিক ভিডিওর গান-নির্বাচনের অপশন (কথোপকথনের আপলোড) */
+  songs?: ConfigPanelSongOption[];
+  /** Phase-4 C: ক্ষেত্র-স্তরের যাচাই-ত্রুটি (স্কিমা-সচেতন) */
+  fieldErrors?: { key: string; messageBn: string }[];
 }) {
+  const errFor = (key: string) => fieldErrors?.find(e => e.key === key)?.messageBn;
   // (অডিট §D) "উন্নত সেটিংস" কোলাপ্সিবল — কম-ব্যবহৃত ফিল্ডগুলো ভাঁজ-করা;
   // মূল ফর্মে থাকে: মান/ভাষা/ইঞ্জিন/ফিল্ম-মোড/মুড/অনুপাত/দৈর্ঘ্য/কণ্ঠ
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -567,6 +576,46 @@ function SpecEditor({
               <SelectItem value="story">গল্প</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+      )}
+
+      {/* Phase-4 C (C1): মিউজিক ভিডিওর গান-উৎস নির্বাচন — আপলোড-করা গান
+          (কথোপকথনের অডিও) বা প্রসিডিউরাল ইনস্ট্রুমেন্টাল (সৎ-নোটসহ)।
+          (Radix-চুক্তি: SelectItem-এর value কখনো খালি-স্ট্রিং নয় —
+          "কোনো গান নয়" অবস্থার জন্য সেন্টিনেল মান) */}
+      {spec.type === 'music_video' && (
+        <div className="col-span-2 space-y-1.5">
+          <Label className="text-xs text-muted-foreground">গানের উৎস</Label>
+          <Select
+            value={spec.songArtifactId ?? '__no_song__'}
+            onValueChange={v =>
+              patch(
+                v === '__no_song__'
+                  ? { songArtifactId: undefined, musicSource: 'procedural', sound: undefined }
+                  : { songArtifactId: v, musicSource: 'uploaded_song', sound: 'uploaded_song' }
+              )
+            }
+          >
+            <SelectTrigger className="h-9 bg-background text-sm" aria-label="গানের উৎস">
+              <SelectValue placeholder="প্রসিডিউরাল ইনস্ট্রুমেন্টাল" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__no_song__">প্রসিডিউরাল ইনস্ট্রুমেন্টাল (পরীক্ষামূলক, গাওয়া নয়)</SelectItem>
+              {(songs ?? []).map(s => (
+                <SelectItem key={s.id} value={s.id}>
+                  🎵 {s.fileName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            {(songs ?? []).length === 0
+              ? 'এই কথোপকথনে আপলোড করা গান নেই — চাইলে চ্যাটে গানের অডিও আপলোড করে আবার খুলুন'
+              : 'আপলোড করা গানটিই ভিডিওর সাথে সমলয় হবে'}
+          </p>
+          {errFor('songArtifactId') && (
+            <p className="text-xs text-red-600 dark:text-red-400" role="alert">{errFor('songArtifactId')}</p>
+          )}
         </div>
       )}
 
@@ -697,6 +746,11 @@ function SpecEditor({
                     <SelectItem value="24">২৪ — সিনেম্যাটিক</SelectItem>
                     <SelectItem value="25">২৫</SelectItem>
                     <SelectItem value="30">৩০ — সোশ্যাল</SelectItem>
+                    {/* Phase-4 D: সৎ-নিষ্ক্রিয় অপশন — কারণসহ দৃশ্যমান,
+                        নীরব প্রতিশ্রুতি নয় (৬০FPS পাইপলাইনে নেই) */}
+                    <SelectItem value="60" disabled title="৬০FPS পাইপলাইনে নেই — রেন্ডার ২৪/২৫/৩০-তেই হয়">
+                      ৬০ — অসমর্থিত
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -715,6 +769,10 @@ function SpecEditor({
                   <SelectContent>
                     <SelectItem value="720p">720p (দ্রুত)</SelectItem>
                     <SelectItem value="1080p">1080p (উচ্চ মান)</SelectItem>
+                    {/* Phase-4 D: সৎ-নিষ্ক্রিয় ৪K — কারণসহ */}
+                    <SelectItem value="4k" disabled title="৪K এই পাইপলাইনে নেই — সর্বোচ্চ ১০৮০p">
+                      ৪K — অসমর্থিত
+                    </SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-[11px] leading-snug text-muted-foreground">
@@ -850,6 +908,24 @@ function SpecEditor({
           </div>
         </CollapsibleContent>
       </Collapsible>
+
+      {/* Phase-4 C: ক্ষেত্র-স্তরের যাচাই-ত্রুটির সারাংশ — স্কিমা-সচেতন
+          (নিষ্ক্রিয় অপশন/সীমা-লঙ্ঘন/অজানা মান); চূড়ান্ত রায় confirm-এ সার্ভার */}
+      {(fieldErrors?.length ?? 0) > 0 && (
+        <div
+          className="col-span-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 sm:col-span-3"
+          role="alert"
+        >
+          <p className="text-xs font-medium text-red-600 dark:text-red-400">সেটিংস যাচাই — সংশোধন দরকার:</p>
+          <ul className="mt-1 space-y-0.5">
+            {fieldErrors!.map(e => (
+              <li key={e.key} className="text-xs leading-snug text-red-600/90 dark:text-red-400/90">
+                • {e.messageBn}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -902,6 +978,180 @@ function StepList({ view }: { view: ProductionView }) {
 }
 
 // ------------------------------------------------------------
+// Phase-4 E: পরিকল্পনা-প্রিভিউ (নিশ্চিতকরণের আগে) — কাঠামোগত পরিকল্পনা:
+// কী তৈরি হবে, কর্মপথ-ধাপ, আনুমানিক শট, অডিও-কৌশল, আউটপুট সেটিংস,
+// পরিচিত সীমা ও সময়-অনুমান (স্পষ্টভাবে "ঐতিহাসিক" লেবেলসহ)।
+// পরিকল্পনা-প্রদর্শন ≠ উৎপাদন: এখানে কোনো প্রজন্মই শুরু হয় না।
+// ------------------------------------------------------------
+
+function PlanPreview({
+  spec,
+  songs,
+  schema,
+}: {
+  spec: CreativeJobSpec;
+  songs?: ConfigPanelSongOption[];
+  schema: ConfigPanelSchema | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const isVideo = isVideoType(spec.type);
+  const steps = schema?.plannedSteps ?? [];
+  const shots = schema?.estimatedShots;
+  const limitations = schema?.limitations ?? [];
+
+  const songName =
+    spec.type === 'music_video' && spec.songArtifactId
+      ? (songs ?? []).find(s => s.id === spec.songArtifactId)?.fileName ?? 'আপলোড করা গান'
+      : null;
+  const audioStrategy =
+    spec.type === 'music_video'
+      ? songName
+        ? `আপনার গান (${songName}) — বিট-মার্কারে ভিজ্যুয়াল সমলয়`
+        : 'প্রসিডিউরাল ইনস্ট্রুমেন্টাল স্কোর (নিউরাল মিউজিক-মডেল নয় — সৎ-লেবেল)'
+      : spec.type === 'short_film'
+        ? `সংলাপ-কণ্ঠ (${spec.language === 'en' ? 'ইংরেজি' : 'বাংলা'})${spec.subtitles !== false ? ' + বার্ন-ইন সাবটাইটেল' : ''} + সাউন্ড-ডিজাইন`
+        : spec.type === 'audio'
+          ? spec.audioOperation === 'instrumental'
+            ? 'প্রসিডিউরাল ইনস্ট্রুমেন্টাল সংশ্লেষণ (পরীক্ষামূলক)'
+            : 'ভাষা-নিয়ন্ত্রক TTS + ASR ব্যাক-চেক'
+          : spec.sound === 'none'
+            ? 'নীরব ভিডিও'
+            : 'পরিবেশ-শব্দ/ভয়েসওভার';
+
+  const outputBits: string[] = [];
+  if (spec.aspect) outputBits.push(`অনুপাত ${spec.aspect}`);
+  if (spec.resolution) outputBits.push(spec.resolution);
+  else if (isVideo) outputBits.push(spec.quality === 'draft' ? '৭২০p (draft)' : '১০৮০p');
+  if (spec.fps) outputBits.push(`${spec.fps}fps`);
+  if (spec.format) outputBits.push(spec.format.toUpperCase());
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        className={cn(
+          'flex w-full items-center gap-2 rounded-lg border bg-background px-3 py-2.5 text-xs font-medium text-muted-foreground transition-colors',
+          'hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600/40',
+        )}
+        aria-label={`পরিকল্পনা-প্রিভিউ ${open ? 'লুকান' : 'দেখান'}`}
+      >
+        <PencilRuler className="size-3.5 shrink-0" aria-hidden="true" />
+        📋 পরিকল্পনা-প্রিভিউ — কী কী ধাপে তৈরি হবে
+        <ChevronDown
+          className={cn('ml-auto size-3.5 shrink-0 transition-transform duration-200', open && 'rotate-180')}
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-2.5 rounded-lg border bg-muted/20 px-3 py-3 text-xs leading-relaxed">
+          <p>
+            <span className="font-medium">কী তৈরি হবে:</span> {whatWillBeMade(spec)}
+          </p>
+          {steps.length > 0 && (
+            <div>
+              <p className="font-medium">কর্মপথ (নিশ্চিত করলে এই ধাপগুলোই চলবে):</p>
+              <ol className="mt-1 space-y-0.5 pl-4">
+                {steps.map((s, i) => (
+                  <li key={s.key} className="list-decimal text-muted-foreground">
+                    <span className="text-foreground/90">{s.title}</span>
+                    {i === steps.length - 1 ? ' — এখানেই শেষ' : ''}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {isVideo && shots && shots.engine && (
+            <p>
+              <span className="font-medium">আনুমানিক শট-সংখ্যা:</span> {toBnDigits(shots.min)}–{toBnDigits(shots.max)} টি
+              {shots.engine === 'ai_diffusion'
+                ? ' — প্রতিটি CogVideoX-3 ডিফিউশনে (প্রতি শটে ~২–৪ মিনিট)'
+                : ' — স্টোরিবোর্ড+ক্যামেরা-মোশন ইঞ্জিনে (দ্রুত)'}
+            </p>
+          )}
+          <p>
+            <span className="font-medium">অডিও-কৌশল:</span> {audioStrategy}
+          </p>
+          {outputBits.length > 0 && (
+            <p>
+              <span className="font-medium">আউটপুট সেটিংস:</span> {outputBits.join(' · ')}
+            </p>
+          )}
+          {limitations.length > 0 && (
+            <div>
+              <p className="font-medium">পরিচিত সীমা (সৎ-ঘোষণা):</p>
+              <ul className="mt-1 space-y-0.5 pl-4">
+                {limitations.map(l => (
+                  <li key={l} className="list-disc text-muted-foreground">{l}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="text-muted-foreground">
+            <span className="font-medium">সময়-অনুমান:</span> {honestEtaText(spec)}{' '}
+            <span className="text-muted-foreground/80">(ঐতিহাসিক অনুমান — প্রকৃত সময় ভিন্ন হতে পারে)</span>
+          </p>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** Phase-4 D: লাইভ যাচাই-ফলাফলের কমপ্যাক্ট ব্লক (verdict + সমন্বয়/নোট/ত্রুটি) */
+function ValidationLiveBlock({ live, validating }: { live: SpecValidationLive | null; validating: boolean }) {
+  if (!live && !validating) return null;
+  const meta: Record<SpecValidationLive['verdict'], { label: string; cls: string }> = {
+    supported: { label: '✓ সমর্থিত', cls: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400' },
+    supported_with_limitations: { label: '⚠ সীমাসহ সমর্থিত', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' },
+    unsupported: { label: '✕ অসমর্থিত', cls: 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400' },
+    requires_clarification: { label: '? স্পষ্টীকরণ প্রয়োজন', cls: 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300' },
+    temporarily_unavailable: { label: '⏳ সাময়িকভাবে ব্যস্ত প্রোভাইডার — অপেক্ষাসহ চলবে', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' },
+  };
+  const m = live ? meta[live.verdict] : null;
+  return (
+    <div className="space-y-1.5 rounded-lg border bg-muted/20 px-3 py-2.5 text-xs" role="status" aria-live="polite">
+      <div className="flex flex-wrap items-center gap-2">
+        {validating && !live ? (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> সার্ভারে সেটিংস যাচাই হচ্ছে…
+          </span>
+        ) : m ? (
+          <Badge variant="outline" className={cn('h-auto px-2 py-0.5 text-[11px] leading-snug', m.cls)}>{m.label}</Badge>
+        ) : null}
+        <span className="text-[11px] text-muted-foreground">সার্ভার-যাচাই (নিশ্চিত করার সময় আবার পুনঃযাচাই হয়)</span>
+      </div>
+      {live && live.errors.length > 0 && (
+        <ul className="space-y-0.5">
+          {live.errors.map((e, i) => (
+            <li key={i} className="text-red-600 dark:text-red-400">• {e}</li>
+          ))}
+        </ul>
+      )}
+      {live && live.adjustments.length > 0 && (
+        <div>
+          <p className="font-medium text-muted-foreground">স্বয়ংক্রিয় সমন্বয় হবে:</p>
+          <ul className="mt-0.5 space-y-0.5">
+            {live.adjustments.map((a, i) => (
+              <li key={i} className="text-amber-700 dark:text-amber-400">
+                • {a.field}: {a.from} → {a.to} ({a.reason})
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {live && live.notes.length > 0 && (
+        <details className="text-muted-foreground">
+          <summary className="cursor-pointer select-none">সৎ-নোট ({toBnDigits(live.notes.length)}টি)</summary>
+          <ul className="mt-1 space-y-0.5 pl-4">
+            {live.notes.map((n, i) => (
+              <li key={i} className="list-disc">{n}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
 // মূল কার্ড
 // ------------------------------------------------------------
 
@@ -917,6 +1167,21 @@ export function ProductionCard({ productionId }: { productionId: string }) {
   const [isConfirming, setIsConfirming] = useState(false);
   const [isRevising, setIsRevising] = useState(false);
   const [revisionId, setRevisionId] = useState<string | null>(null);
+  // Phase-4 C+D: সার্ভার-মালিকানাধীন প্যানেল-স্কিমা (ক্ষেত্র/অপশন/সীমা/নিষ্ক্রিয়-
+  // কারণ — capabilities.ts থেকে আসে, ক্লায়েন্ট-হার্ডকোড নয়) + লাইভ স্পেক-যাচাই।
+  // রায় কেবল প্রদর্শনের জন্য — confirm-এ সার্ভার নিজেই পুনঃযাচাই করে।
+  // (হুক-ক্রম: শীঘ্র-ফেরতের আগেই সব হুক — rules-of-hooks)
+  const { schema } = useConfigPanel(view?.spec.type ?? 'image', view?.conversationId);
+  const awaitingSpec =
+    view && view.status === 'awaiting_confirmation' ? (editedSpec ?? view.spec) : null;
+  const { live, validating } = useSpecValidation(awaitingSpec);
+  const fieldErrors = useMemo(
+    () =>
+      schema && awaitingSpec
+        ? validateFieldsAgainstSchema(schema, awaitingSpec as unknown as Record<string, unknown>)
+        : [],
+    [schema, awaitingSpec]
+  );
 
   useEffect(() => {
     void ensureFetched(productionId);
@@ -953,6 +1218,9 @@ export function ProductionCard({ productionId }: { productionId: string }) {
   }
 
   const spec = editedSpec ?? view.spec;
+  const songs = schema?.sourceOptions?.songs;
+  /** লাইভ-যাচাই অসমর্থিত বললে নিশ্চিত-বাটন বন্ধ (সার্ভার-পুনঃযাচাইও ৪২২ দিত) */
+  const liveBlocksConfirm = live?.verdict === 'unsupported';
   // (অডিট §A3) ব্যর্থ হলে কত সময় লেগেছিল — startedAt+finishedAt দুটোই থাকলে
   const failedElapsedText =
     view.status === 'failed' ? elapsedTextBn(view.startedAt, view.finishedAt) : '';
@@ -1029,14 +1297,15 @@ export function ProductionCard({ productionId }: { productionId: string }) {
                   <span className="font-medium">কী তৈরি হবে:</span> {whatWillBeMade(spec)}
                 </p>
                 <p>
-                  <span className="font-medium">সময়:</span> {honestEtaText(spec)}
+                  <span className="font-medium">সময় (ঐতিহাসিক অনুমান):</span> {honestEtaText(spec)}
                 </p>
               </div>
               <div className="mt-3.5 flex flex-wrap gap-2">
                 <Button
                   size="lg"
                   onClick={() => void handleConfirm()}
-                  disabled={isConfirming}
+                  disabled={isConfirming || liveBlocksConfirm}
+                  title={liveBlocksConfirm ? 'সার্ভার-যাচাই অসমর্থিত বলেছে — নিচের ত্রুটিগুলো ঠিক করুন' : undefined}
                   className="min-h-11 bg-emerald-600 px-5 text-base font-semibold text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700"
                 >
                   {isConfirming ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <BadgeCheck className="size-5" aria-hidden="true" />}
@@ -1060,7 +1329,18 @@ export function ProductionCard({ productionId }: { productionId: string }) {
                 </Badge>
               ))}
             </div>
-            <SpecEditor spec={spec} onChange={next => setEditedSpec(next)} />
+            {/* Phase-4 E: পরিকল্পনা-প্রিভিউ — কর্মপথ/শট-আনুমান/অডিও-কৌশল/সীমা।
+                প্রদর্শন প্রজন্ম নয়: নিশ্চিত করার আগে কোনো ব্যয়বহুল কাজ শুরু হয় না */}
+            <PlanPreview spec={spec} songs={songs} schema={schema} />
+            {/* Phase-4 D: লাইভ সার্ভার-যাচাই (ডিবাউন্সড) — verdict +
+                সমন্বয়/নোট/ত্রুটি; ক্লায়েন্ট-দাবি কখনো রায় বদলায় না */}
+            <ValidationLiveBlock live={live} validating={validating} />
+            <SpecEditor
+              spec={spec}
+              onChange={next => setEditedSpec(next)}
+              songs={songs}
+              fieldErrors={fieldErrors}
+            />
             {isVideoType(spec.type) && (
               <AmberNote text={VIDEO_ENGINE_NOTES[spec.videoEngine ?? 'ai_diffusion']} />
             )}
