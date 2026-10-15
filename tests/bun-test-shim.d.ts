@@ -20,6 +20,9 @@ declare module 'bun:test' {
     toBeLessThan(expected: number): void;
     toBeLessThanOrEqual(expected: number): void;
     toBeInstanceOf(constructor: new (...args: never[]) => unknown): void;
+    /** REG-1g: rejection + error-message assertions */
+    rejects: Matcher<T>;
+    toThrow(expected?: string | RegExp | Error): void;
     not: Matcher<T>;
   }
 

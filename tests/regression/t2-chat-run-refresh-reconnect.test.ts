@@ -168,18 +168,17 @@ describe('REG-2: chat run refresh & reconnect (server-side recovery)', () => {
     5_000
   );
 
-  test('REG-2d [documented gap]: the client hook keeps run state in memory only — no persistence key exists (P0-BUG-03 client half)', async () => {
-    // Server-side recovery works (REG-2a..2c). The client half of the
-    // contract — persisting activeRunId so the reloaded page re-attaches
-    // — does not exist yet. We assert the observable server-side
-    // precondition that WOULD make client recovery possible: a run that
-    // is still running keeps its identity queryable.
+  test('REG-2d [post-fix precondition]: a still-RUNNING run keeps its identity queryable — the surface the refreshed client re-attaches to (P0-BUG-03 client half fixed in Phase 2)', async () => {
+    // Server-side recovery works (REG-2a..2c). The Phase-2 fix added the
+    // client half: use-agent-run persists the active run identity
+    // (src/hooks/active-run-persistence.ts — unit-locked by REG-7) and
+    // re-attaches on mount. Here we assert the observable server-side
+    // precondition that makes client recovery possible: a run that is
+    // still running keeps its identity queryable, and the replayed
+    // stream (above) delivers its in-flight world.
     const run = state().agentRuns.get(runId)!;
     const found = await fakeDb.agentRun.findUnique({ where: { id: run.id } });
     expect(found?.id).toBe(runId);
     expect(found?.status).toBe('running');
-    // The client-side re-attach (localStorage/DB-backed activeRunId +
-    // EventSource re-open on mount) is the P0-BUG-03 remediation —
-    // tracked in the Phase-1 report as a CONFIRMED gap, not fixed here.
   });
 });

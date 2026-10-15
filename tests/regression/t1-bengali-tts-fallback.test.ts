@@ -22,10 +22,12 @@
 // verdict — the bn profile documents them as the emergency
 // fallback ("শুধু Edge-নিউরাল অচল থাকলে জরুরি-ফলব্যাক").
 //
-// Current behavior (bug): the per-voice call is not wrapped in
-// try/catch, so the first Edge 403 escapes the loop; additionally
-// the loop cap attempts>=Math.min(2, voices.length) makes z-ai
-// voices unreachable even when errors are caught.
+// Post-fix contract (Phase 2 — P0-BUG-01 FIXED): the per-voice call
+// is wrapped in try/catch, a hard engine failure (Edge 403) marks
+// that engine dead and skips its remaining voices, the loop walks
+// the whole profile chain, and total engine exhaustion rejects
+// honestly. The pre-fix state (uncaught throw + Math.min(2,…) cap)
+// is preserved in git history (the phase-1 commit) as evidence.
 // ============================================================
 
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
@@ -49,6 +51,8 @@ const zaiCalls: MockCall[] = [];
 
 /** Mock behavior switch for Edge voices (read at call time). */
 let edgeMode: 'throw403' | 'shortWav' = 'throw403';
+/** Mock behavior switch for z-ai voices (read at call time) — REG-1g. */
+let zaiMode: 'ok' | 'throw' = 'ok';
 
 /** 0.2s stereo silence — verifiable but far too short (verdict: fail) */
 let shortWav: Buffer;
@@ -77,6 +81,9 @@ mock.module('@/lib/agent/tts-cache', () => {
         return { buffer: shortWav, mimeType: 'audio/wav', ext: 'wav' };
       }
       zaiCalls.push({ voice, text });
+      if (zaiMode === 'throw') {
+        throw new Error('z-ai TTS ব্যর্থ: সাময়িকভাবে অনুপলব্ধ (রেট-লিমিট)');
+      }
       return { buffer: okWav, mimeType: 'audio/wav', ext: 'wav' };
     },
     ttsCacheStats: () => ({ hits: 0, misses: 0, inFlight: 0 }),
@@ -116,58 +123,63 @@ beforeEach(() => {
   edgeCalls.length = 0;
   zaiCalls.length = 0;
   edgeMode = 'throw403';
+  zaiMode = 'ok';
 });
 
 describe('REG-1: Bengali TTS fallback when Edge returns 403', () => {
   test(
-    'REG-1a [EXPECTED BEHAVIOR — currently FAILS: P0-BUG-01]: fallback chain engages z-ai voices after Edge 403',
+    'REG-1a [EXPECTED BEHAVIOR — P0-BUG-01 fixed in Phase 2]: fallback chain engages z-ai voices after Edge 403',
     async () => {
-      // Contract: the z-ai fallback voices (jam/douji) are documented
-      // as the emergency fallback for Bengali. When every Edge voice
-      // 403s, synthesizeVerifiedSpeech must continue down the chain
-      // and return audio from a z-ai voice with an honest verdict.
-      //
-      // While P0-BUG-01 exists this call rejects with the raw Edge
-      // 403 error (no try/catch around the per-voice call), so this
-      // assertion fails — that failure IS the recorded regression.
+      // Contract: when every Edge voice 403s, the chain must reach the
+      // z-ai fallback voices (jam/douji) and return audio with an honest
+      // 'warn' verdict. Engine-aware skip: the remaining Edge voices
+      // (Pradeep, Tanishaa) are never wasted on the dead engine.
       const result = await synthesizeVerifiedSpeech(BN_SPEC, { verify: true });
 
-      // If the fallback worked, the result must come from a z-ai voice
-      expect(['jam', 'douji']).toContain(result.voice as string);
-      // and at least one z-ai synthesis must actually have happened
-      expect(zaiCalls.length).toBeGreaterThan(0);
+      // the result comes from the first z-ai fallback voice
+      expect(result.voice).toBe('jam');
+      // exactly ONE Edge attempt (the 403 that killed the engine) — the
+      // other two Edge voices were skipped engine-aware, not retried
+      expect(edgeCalls.map((c) => c.voice)).toEqual(['bn-BD-NabanitaNeural']);
+      // exactly one z-ai synthesis actually happened
+      expect(zaiCalls.map((c) => c.voice)).toEqual(['jam']);
+      // attempts counts real synthesis tries only (skipped voices excluded)
+      expect(result.attempts).toBe(2);
       // honest verdict for a non-Bengali-trained voice is 'warn', not 'pass'
       expect(result.verification.verdict).toBe('warn');
+      // the result honestly notes that an engine fallback occurred
+      expect(result.verification.notes.some((n) => n.includes('ইঞ্জিন-ফলব্যাক'))).toBe(true);
     },
     20_000
   );
 
   test(
-    'REG-1b [CHARACTERIZATION of structural defect #2 — passes until P0-BUG-01 is fixed]: ' +
-      'even with successful-but-failing-verification Edge audio, the loop cap stops at 2 attempts and z-ai is never tried',
+    'REG-1b [NEW CONTRACT after the P0-BUG-01 fix]: verification-failing Edge audio walks the WHOLE chain — all 3 Edge voices tried, then z-ai returns with a warn verdict',
     async () => {
-      // Isolates defect #2 from the bug register: no throw happens —
-      // every Edge voice *succeeds* but returns audio that FAILS
-      // verification (0.2s, far below expected ~3.4s). The loop should
-      // walk the whole profile chain (3 Edge fails → jam → douji) and
-      // end with a warn-verdict z-ai result, but the cap
-      // attempts >= Math.min(2, voices.length) stops after 2 Edge
-      // voices. This test locks in the current (buggy) behavior as
-      // evidence; when P0-BUG-01 is fixed it must be updated to the
-      // expected contract (z-ai reached, warn verdict, attempts >= 4).
+      // Isolates the former defect #2: no throw happens — every Edge
+      // voice *succeeds* but returns audio that FAILS verification
+      // (0.2s, far below expected ~4.5s). The fixed contract walks the
+      // whole profile chain (3 Edge fails → jam) and ends with a
+      // warn-verdict z-ai result. (The old Math.min(2, 5)=2 cap stopped
+      // after 2 Edge voices and z-ai was structurally unreachable —
+      // locked in as evidence by the pre-fix version of this test,
+      // preserved in the phase-1 commit.)
       edgeMode = 'shortWav';
 
       const result = await synthesizeVerifiedSpeech(BN_SPEC, { verify: true });
 
-      // Current (buggy) behavior, locked in as evidence:
-      expect(result.attempts).toBe(2); // loop cap Math.min(2, 5) = 2
-      expect(result.verification.verdict).toBe('fail'); // both Edge attempts failed verification
+      // the whole Edge section was tried, in chain order
       expect(edgeCalls.map((c) => c.voice)).toEqual([
         'bn-BD-NabanitaNeural',
         'bn-BD-PradeepNeural',
+        'bn-IN-TanishaaNeural',
       ]);
-      // z-ai fallback was never reached despite 3 voices remaining in the chain
-      expect(zaiCalls.length).toBe(0);
+      // z-ai fallback reached and accepted
+      expect(zaiCalls.map((c) => c.voice)).toEqual(['jam']);
+      expect(result.voice).toBe('jam');
+      // 3 Edge attempts + 1 z-ai attempt — the cap no longer truncates
+      expect(result.attempts).toBe(4);
+      expect(result.verification.verdict).toBe('warn');
     },
     20_000
   );
@@ -194,4 +206,43 @@ describe('REG-1: Bengali TTS fallback when Edge returns 403', () => {
     expect(det.language).toBe('bn');
     expect(det.bnRatio).toBeGreaterThanOrEqual(0.7);
   });
+
+  test(
+    'REG-1f [unverified path — used by pipeline lines 2+ (P0-BUG-01 fix #3)]: verify:false also gets the fallback chain',
+    async () => {
+      // short_film dialogue lines 2+/audio chunks 2+ synthesize with
+      // verify:false for cost control — that path must ALSO survive an
+      // Edge 403 (z-ai fallback) instead of losing the line outright.
+      const result = await synthesizeVerifiedSpeech(BN_SPEC, { verify: false });
+
+      expect(result.voice).toBe('jam');
+      // engine-aware skip applies on the unverified path too
+      expect(edgeCalls.map((c) => c.voice)).toEqual(['bn-BD-NabanitaNeural']);
+      expect(zaiCalls.map((c) => c.voice)).toEqual(['jam']);
+      expect(result.attempts).toBe(2);
+      expect(result.verification.verdict).toBe('warn');
+      // honest unverified-note + honest fallback note
+      expect(result.verification.notes.some((n) => n.includes('যাচাই বন্ধ ছিল'))).toBe(true);
+      expect(result.verification.notes.some((n) => n.includes('ইঞ্জিন-ফলব্যাক'))).toBe(true);
+    },
+    20_000
+  );
+
+  test(
+    'REG-1g [exhaustion honesty]: when BOTH engines fail, the call rejects with an honest error — never a fake success',
+    async () => {
+      // Each engine is tried once and marked dead; with no engine left
+      // the function must reject (documenting both engine failures)
+      // rather than fabricate a result.
+      zaiMode = 'throw';
+
+      await expect(synthesizeVerifiedSpeech(BN_SPEC, { verify: true })).rejects.toThrow(
+        /সব TTS ইঞ্জিন অচল/
+      );
+      // exactly one call per engine — no retry storm on dead engines
+      expect(edgeCalls.length).toBe(1);
+      expect(zaiCalls.length).toBe(1);
+    },
+    20_000
+  );
 });

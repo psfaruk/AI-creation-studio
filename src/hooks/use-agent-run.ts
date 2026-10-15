@@ -16,6 +16,13 @@ import { useCallback, useEffect, useRef } from 'react';
 import { withStudioToken } from '@/components/auth/security-gate';
 import { GENERIC_ERROR, useChatStore } from '@/hooks/use-chat-store';
 import { toast } from '@/hooks/use-toast';
+import {
+  clearActiveRun,
+  readActiveRun,
+  saveActiveRun,
+  shouldReattach,
+  type PersistedActiveRun,
+} from '@/hooks/active-run-persistence';
 import type {
   ChatMessage,
   ChatRequest,
@@ -93,6 +100,11 @@ export function useAgentRun() {
         if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
           stopRunWatchers();
           useChatStore.getState().setIsRunActive(false);
+          // P0-BUG-03 fix: পোলিং-ফলব্যাকেও টার্মিনাল — persist করা এন্ট্রি পরিষ্কার
+          const persisted = readActiveRun();
+          if (persisted && persisted.conversationId === conversationId) {
+            clearActiveRun(persisted.runId);
+          }
           toast({ title: GENERIC_ERROR, variant: 'destructive' });
           return;
         }
@@ -119,6 +131,11 @@ export function useAgentRun() {
           finishedRef.current = true;
           stopRunWatchers();
           store.setIsRunActive(false);
+          // P0-BUG-03 fix: পোলিং-ফলব্যাকেও টার্মিনাল — persist করা এন্ট্রি পরিষ্কার
+          const persisted = readActiveRun();
+          if (persisted && persisted.conversationId === conversationId) {
+            clearActiveRun(persisted.runId);
+          }
           if (store.activeId === conversationId) {
             store.replaceMessage(pendingId, assistant);
           }
@@ -263,6 +280,8 @@ export function useAgentRun() {
           }
           case 'run_finished': {
             finishedRef.current = true;
+            // P0-BUG-03 fix: টার্মিনাল অবস্থা — persist করা রান-পরিচয় আর দরকার নেই
+            clearActiveRun(runId);
             stopDrain(); // রান শেষ — অবশিষ্ট ড্রেন বাতিল (সার্ভার-সত্য আসছে)
             stopRunWatchers();
             const s = useChatStore.getState();
@@ -350,6 +369,47 @@ export function useAgentRun() {
     [startPolling, stopDrain, stopRunWatchers],
   );
 
+  /**
+   * P0-BUG-03 fix (Phase 2): চলমান রানে (পুনঃ)সংযোগ — pending বাবল বসিয়ে
+   * SSE-স্ট্রিম খোলে। রান ইতিমধ্যে শেষ হয়ে থাকলে সার্ভারের pure-DB
+   * রিপ্লেই টার্মিনাল ইভেন্ট পাঠিয়ে দেয় (run_finished → এন্ট্রি পরিষ্কার
+   * + isRunActive false) — REG-2/REG-4-এ প্রমাণিত চুক্তি।
+   */
+  const attachToActiveRun = useCallback(
+    (entry: PersistedActiveRun) => {
+      const store = useChatStore.getState();
+      const pendingId = `pending-${entry.runId}`;
+      if (!store.messages.some((m) => m.id === pendingId)) {
+        store.appendMessage({
+          id: pendingId,
+          role: 'assistant',
+          content: '',
+          createdAt: new Date().toISOString(),
+          activities: [],
+        });
+      }
+      store.setIsRunActive(true);
+      saveActiveRun(entry);
+      openStream(entry.runId, entry.conversationId, entry.userMessageId, pendingId);
+    },
+    [openStream]
+  );
+
+  // P0-BUG-03 fix (Phase 2): রিফ্রেশ/রিলোডের পরে চলমান রানে পুনঃসংযোগ —
+  // persist করা activeRunId বর্তমান কথোপকথনের হলে এবং বাসি না হলে।
+  // প্রতি রানে একবারই চেষ্টা (লুপ-প্রতিরোধ); isRunActive চালু থাকলে বাদ।
+  const activeId = useChatStore((s) => s.activeId);
+  const reattachAttemptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeId) return;
+    if (useChatStore.getState().isRunActive) return; // ইতিমধ্যে কোনো রান-ওয়াচ চালু
+    const entry = readActiveRun();
+    if (!entry || !shouldReattach(entry, activeId)) return;
+    if (reattachAttemptedRef.current.has(entry.runId)) return;
+    reattachAttemptedRef.current.add(entry.runId);
+    attachToActiveRun(entry);
+  }, [activeId, attachToActiveRun]);
+
   const send = useCallback(async (contentOverride?: string, opts?: { skipAttachments?: boolean }) => {
     const store = useChatStore.getState();
     if (store.isRunActive) return;
@@ -389,6 +449,42 @@ export function useAgentRun() {
       // নয়: HTTP status + সার্ভারের সুরক্ষিত বার্তা (data.error) দেখানো হয়।
       // সার্ভার-বার্তাগুলি ইতিমধ্যে স্যানিটাইজড (কোনো stack-trace/কী নয়)।
       if (!res.ok) {
+        // P0-BUG-03/REG-3 fix (Phase 2): 409 = এই কথোপকথনে একটি রান এখনো
+        // চলছে — ব্যর্থতা নয়, চলমান রানে পুনঃসংযোগ। গার্ড ইউজার-বার্তা
+        // তৈরির আগেই আটকেছে, তাই লেখাটি পাঠানো হয়নি — ড্রাফটে ফেরত।
+        if (res.status === 409) {
+          let activeRunId = '';
+          let convId = conversationIdAtSend;
+          try {
+            const body409 = (await res.json()) as { activeRunId?: unknown; conversationId?: unknown };
+            if (typeof body409?.activeRunId === 'string') activeRunId = body409.activeRunId;
+            if (typeof body409?.conversationId === 'string') convId = body409.conversationId;
+          } catch {
+            // বডি নেই — নিচের সৎ-টোস্ট পথ
+          }
+          const st = useChatStore.getState();
+          st.removeMessage(optimisticId);
+          st.setDraft(content); // বার্তা জমা হয়নি — লেখা অক্ষত ফেরত
+          st.addAttachments(attachments);
+          if (activeRunId) {
+            // পোলিং-ফলব্যাকের জন্য: এই কথোপকথনের সর্বশেষ user-বার্তাটিই
+            // চলমান রানের সম্ভাব্য প্রম্পট
+            const lastUser = [...st.messages].reverse().find((m) => m.role === 'user');
+            attachToActiveRun({
+              runId: activeRunId,
+              conversationId: convId,
+              userMessageId: lastUser?.id ?? '',
+              savedAt: Date.now(),
+            });
+            return;
+          }
+          st.setIsRunActive(false);
+          toast({
+            title: 'আগের উত্তরটি এখনো তৈরি হচ্ছে',
+            description: 'সম্পূর্ণ হওয়া পর্যন্ত অপেক্ষা করুন — আপনার লেখা অক্ষত আছে, পরে আবার পাঠাতে পারবেন।',
+          });
+          return;
+        }
         let serverMessage: string | null = null;
         try {
           const errBody = (await res.json()) as { error?: unknown } | null;
@@ -411,6 +507,13 @@ export function useAgentRun() {
       const st = useChatStore.getState();
       // নতুন কথোপকথন হলে active হিসেবে সেট করো
       if (!st.activeId) st.setActiveId(data.conversationId);
+      // P0-BUG-03 fix: রান-পরিচয় persist — রিফ্রেশের পরে পুনঃসংযোগের জন্য
+      saveActiveRun({
+        runId: data.runId,
+        conversationId: data.conversationId,
+        userMessageId: data.userMessage.id,
+        savedAt: Date.now(),
+      });
       // (অডিট §B1) viewOk সবসময় সদ্য-সেট হওয়া সত্যকারের activeId দিয়ে বোঝাও —
       // নতুন কথোপকথনের প্রথম বার্তায় সাময়িক-স্ন্যাপশট (st) এখনো null দেখায়,
       // ফলে pending-বাবল আসত না এবং ব্যবহারকারী দীর্ঘ নীরবতা দেখতেন।
@@ -454,7 +557,7 @@ export function useAgentRun() {
         variant: 'destructive',
       });
     }
-  }, [openStream]);
+  }, [openStream, attachToActiveRun]);
 
   /**
    * রিলোড — এই assistant-বার্তার আগের user-বার্তাটি আবার পাঠায়

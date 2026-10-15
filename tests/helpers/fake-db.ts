@@ -318,6 +318,22 @@ export function createFakeDb() {
       },
       findUnique: async ({ where }: { where: { id: string } }) =>
         s().agentRuns.get(where.id) ?? null,
+      /** P0-BUG-03/REG-3 guard — active-run lookup (supports startedAt orderBy) */
+      findFirst: async ({
+        where,
+        orderBy,
+      }: {
+        where: Record<string, unknown>;
+        orderBy?: { startedAt?: 'asc' | 'desc' };
+      }) => {
+        const rows = [...s().agentRuns.values()].filter((row) =>
+          matches(row as unknown as Record<string, unknown>, where)
+        );
+        // orderBy না দিলে সাম্প্রতিক-প্রথম (গার্ডের কাছে দরকারিটা সাম্প্রতিকটাই)
+        const dir = orderBy?.startedAt === 'asc' ? 1 : -1;
+        rows.sort((a, b) => (a.startedAt.getTime() - b.startedAt.getTime()) * dir);
+        return rows[0] ?? null;
+      },
       update: async ({ where, data }: { where: { id: string }; data: Partial<FakeAgentRun> }) => {
         const row = s().agentRuns.get(where.id);
         if (!row) throw new Error('fake agentRun not found');

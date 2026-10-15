@@ -18,7 +18,8 @@ import { readFile, writeFile } from 'fs/promises';
 import type { VoicePreset } from '@/lib/types';
 import { runFfmpeg, mediaInfo, audioQuality } from '@/lib/media/ffmpeg';
 import type { PipelineContext, PipelineFn, PipelineResult, StepHandle } from '../runner';
-import { cachedSynthesizeSpeech } from '../../tts-cache';
+// (P0-BUG-01 fix #3: খণ্ড ২+ সহ সব TTS-কল synthesizeVerifiedSpeech-এর
+// ইঞ্জিন-ফলব্যাক-চেইনেদ্বারা হয় — সরাসরি একক-ইঞ্জিন কল আর নেই)
 import { isEdgeVoice } from '../../audio/edge_tts';
 import {
   synthesizeVerifiedSpeech,
@@ -220,7 +221,20 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
           const text = rest[i];
           const idx = i + 1;
           try {
-            const out = await cachedSynthesizeSpeech(text, usedVoice, 1);
+            // P0-BUG-01 fix #3: খণ্ড ২+ এখন ফলব্যাক-চেইনসহ (verify:false — খরচ
+            // অপরিবর্তিত, কিন্তু একক-ইঞ্জিন ব্যর্থতায় খণ্ড হারায় না)
+            const out = await synthesizeVerifiedSpeech(
+              {
+                task: 'speech',
+                language: prep.language,
+                script: text,
+                voiceId: usedVoice,
+                outputFormat: 'wav',
+                sampleRate: 24000,
+                speed: 1,
+              },
+              { verify: false }
+            );
             const file = path.join(ctx.workingDir, `chunk-${String(idx + 1).padStart(2, '0')}.${out.ext}`);
             await writeFile(file, out.buffer);
             const info = await mediaInfo(file);

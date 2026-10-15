@@ -384,7 +384,22 @@ export async function synthesizeVerifiedSpeech(
   let attempts = 0;
   let lastResult: SynthesizedSpeech | null = null;
 
+  // P0-BUG-01 সমাধান (Phase 2, REG-1a/1b): (ক) প্রথম Edge 403-ই uncaught-
+  // throw হিসেবে পুরো ফাংশন ভেঙে ফেলত — এখন প্রতি-কণ্ঠ কল try/catch-এ;
+  // (খ) Math.min(2, voices.length) ক্যাপে z-ai জরুরি-ফলব্যাক কণ্ঠগুলো
+  // structurally অগম্য ছিল — এখন পুরো প্রোফাইল-চেইন চলে। সাথে ইঞ্জিন-সচেতন
+  // স্কিপ: এক ইঞ্জিন হার্ড-ফেল করলে (যেমন Edge 403) সেই ইঞ্জিনের বাকি
+  // কণ্ঠগুলো নষ্ট কল ছাড়াই বাদ পড়ে সরাসরি পরের ইঞ্জিনে (z-ai) যাওয়া হয়।
+  const deadEngines = new Set<'edge' | 'zai'>();
+  const engineFailures: string[] = [];
+  const engineOf = (voice: string): 'edge' | 'zai' => (isEdgeVoice(voice) ? 'edge' : 'zai');
+  /** বর্তমান ফলাফলের আগে যে-ইঞ্জিন-ব্যর্থতাগুলো ঘটেছে — সৎ নোট আকারে */
+  const fallbackNotes = (): string[] =>
+    engineFailures.map(f => `ইঞ্জিন-ফলব্যাক ব্যবহার হয়েছে — আগের ইঞ্জিন ব্যর্থ (${f})`);
+
   for (const voice of [primaryVoice, ...profile.voices.filter(v => v !== primaryVoice)]) {
+    if (deadEngines.has(engineOf(voice))) continue; // অচল ইঞ্জিন — কণ্ঠ বাদ
+
     attempts++;
     // §৪: বাংলা হলে টেক্সট-নর্মালাইজেশন — সংখ্যা/তারিখ/সময় শব্দে।
     // Edge-নিউরাল কণ্ঠে ইংরেজি-ধ্বন্যাত্মক রূপ বাদ (ওরা মিশ্র লেখা সঠিকভাবেই পড়ে);
@@ -398,9 +413,22 @@ export async function synthesizeVerifiedSpeech(
       ? `টেক্সট-নর্মালাইজেশন প্রযোজ্ত (${bnNorm.adjustments.length}টি সমন্বয়: ${bnNorm.adjustments.slice(0, 3).join('; ')}${bnNorm.adjustments.length > 3 ? '…' : ''})`
       : null;
     // §১১: cachedSynthesizeSpeech — একই (কণ্ঠ+গতি+টেক্সট)-এ পুনরাবৃত্ত কল ডিস্ক-ক্যাশে/ডিডুপ
-    const speech = await cachedSynthesizeSpeech(speakScript, voice, spec.speed ?? 1);
+    let speech: Awaited<ReturnType<typeof cachedSynthesizeSpeech>>;
+    try {
+      speech = await cachedSynthesizeSpeech(speakScript, voice, spec.speed ?? 1);
+    } catch (err) {
+      // P0-BUG-01 fix #1: ইঞ্জিন-স্তরের ব্যর্থতা চেইন ভাঙে না — ইঞ্জিন অচল
+      // ঘোষিত, ব্যর্থতার সৎ বিবরণ জমা, পরের কণ্ঠ/ইঞ্জিনে এগোনো হয়
+      deadEngines.add(engineOf(voice));
+      engineFailures.push(
+        `${engineOf(voice) === 'edge' ? EDGE_TTS_LABEL : 'z-ai TTS'}: ${
+          err instanceof Error ? err.message : String(err)
+        }`.slice(0, 160)
+      );
+      continue;
+    }
     if (!verify) {
-      const quickNotes = ['যাচাই বন্ধ ছিল — প্রিভিউ শুনে নিশ্চিত করুন।'];
+      const quickNotes = ['যাচাই বন্ধ ছিল — প্রিভিউ শুনে নিশ্চিত করুন।', ...fallbackNotes()];
       if (normNote) quickNotes.push(normNote);
       return {
         buffer: speech.buffer,
@@ -426,12 +454,21 @@ export async function synthesizeVerifiedSpeech(
     // estimateSpeechSec-ভিত্তিক যাচাইও নর্মালাইজড টেক্সটে (দৈর্ঘ্য-প্রত্যাশা যথার্থ থাকে)
     const verification = await verifySpeechBuffer(speech.buffer, speech.ext, { ...spec, voiceId: voice, script: speakScript }, voice);
     if (normNote) verification.notes.push(normNote);
+    for (const note of fallbackNotes()) verification.notes.push(note);
     lastResult = { buffer: speech.buffer, mimeType: speech.mimeType, ext: speech.ext, voice, verification, attempts };
     if (verification.verdict !== 'fail') return lastResult;
-    if (attempts >= Math.min(2, profile.voices.length)) break;
+    // P0-BUG-01 fix #2: ক্যাপ আর নেই — পুরো চেইন (bn: ৫ কণ্ঠ, en: ৭) পর্যন্ত
+    // চেষ্টা চলে; তালিকা ছোট ও বাউন্ডেড, তাই সর্বোচ্চ-প্রচেষ্টা সীমিতই থাকে
   }
 
-  if (!lastResult) throw new Error('কণ্ঠ সংশ্লেষণ ব্যর্থ হয়েছে');
+  if (!lastResult) {
+    // সব ইঞ্জিন হার্ড-ফেল — সৎ ব্যর্থতা, কোনো ভান-সাফল্য নয় (REG-1g)
+    throw new Error(
+      engineFailures.length > 0
+        ? `কণ্ঠ সংশ্লেষণ ব্যর্থ — সব TTS ইঞ্জিন অচল (${engineFailures.join(' | ').slice(0, 240)})`
+        : 'কণ্ঠ সংশ্লেষণ ব্যর্থ হয়েছে'
+    );
+  }
   return lastResult;
 }
 

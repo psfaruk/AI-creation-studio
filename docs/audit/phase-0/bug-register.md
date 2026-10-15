@@ -6,6 +6,8 @@ Every finding has a unique ID, affected paths, severity, reproduction, expected 
 
 ## P0-BUG-01 — Bengali dialogue/voiceover TTS totally fails when Edge TTS 403s; z-ai fallback never engages
 
+> **Status update (Phase 2, round 1): FIXED & test-locked.** All three root-cause defects fixed in `language_controller.ts` (per-voice try/catch + engine-aware skip + full-chain walk — REG-1a/1b/1f/1g) and in the pipelines (short_film dialogue lines 2+/narration + audio chunks 2+ now route through `synthesizeVerifiedSpeech` with `verify:false` — REG-1f). `bun run test` green. Live-provider re-validation (Edge-down window) still pending — budget-gated.
+
 - **Feature:** Voiceover + short-film dialogue
 - **Paths:** `src/lib/agent/audio/language_controller.ts` (`synthesizeVerifiedSpeech`, ~:363-455; `LANGUAGE_PROFILES` :62-77) · `src/lib/agent/tts-cache.ts` (`synthRaw` :128-134) · `src/lib/agent/production/pipelines/short_film.ts` (speech step :682-848) · `src/lib/agent/production/pipelines/audio.ts` (:174-247)
 - **Severity:** **High** — primary Bengali speech path degrades to silent film + subtitles whenever Edge TTS is unavailable (an external, rate/clock-sensitive free service).
@@ -35,6 +37,8 @@ Every finding has a unique ID, affected paths, severity, reproduction, expected 
 - **Regression plan:** assert film output 14–18 LUFS in the short-film E2E.
 
 ## P0-BUG-03 — Chat run progress is lost on browser refresh; parallel run becomes possible
+
+> **Status update (Phase 2, round 1): FIXED & test-locked.** Client half: run identity persisted (`src/hooks/active-run-persistence.ts`) + mount/409 re-attach in `use-agent-run.ts` (REG-7 + REG-2d). Server half: active-run guard in `/api/chat` — 409 + `activeRunId`, per-conversation, cleared on terminal state (REG-3a–e). Browser-level E2E of the re-attach still pending (no RTL/DOM harness in the suite — source-verified + typechecked).
 
 - **Feature:** Chat progress persistence
 - **Paths:** `src/hooks/use-agent-run.ts` (memory-only run state) · `src/hooks/use-conversations.ts` · `src/app/api/runs/[id]/events/route.ts` (already supports pure-DB replay)

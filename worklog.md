@@ -1413,3 +1413,47 @@ Stage Summary:
 - Key results: test framework established with honest failure state (36/1); P0-BUG-01 now machine-verified; duplicate-run gap confirmed by test; SSE/retry/instrumental contracts locked; observability summary lines implemented; latency bottleneck quantified (AI shots ≈75% of film wall time); tool inventory evidence-based.
 - Decisions: bun:test over Vitest (zero deps); REG-1a asserts correct behavior and fails (not weakened); search_productions proposed (not implemented); no removals.
 - Stopped after Phase 1 per instruction — awaiting approval for Phase 2.
+
+---
+Task ID: P1-verify
+Agent: main agent (Z.ai Code) — Phase-1 final verification & exit-status reconciliation
+Task: পরীক্ষা-only pass — regression ফলাফল পুনরায় চালানো, exit status সংশোধন, git integrity, checks/documentation সামঞ্জস্য, tool inventory যাচাই (কোনো fix/commit/push/Phase-2 নয়)
+
+Work Log:
+- bun run test ×2: exit 1; 37 tests / 7 files; 36 pass / 1 fail (REG-1a); 650 expect(); ~9.7-9.8s — deterministic
+- REG-1a প্রমাণ-শৃঙ্খল: mock (t1:75) → uncaught await (language_controller.ts:401) → test reject (t1:133); loop-এ কোনো try/catch নেই (লাইন 387-432 পড়ে নিশ্চিত); bn profile = 5 কণ্ঠ (3 Edge + jam + douji); মক-বার্তা Phase-0 production yrz3ymb7-এর ত্রুটির হুবহু অনুলিপি
+- REG-1b: characterization test — বর্তমান ত্রুটিপূর্ণ আচরণ (attempts=2, z-ai unreachable) assert করে বলে পাস; এটি দলিলিকরণ, সমাধান নয়; লাইন 431-এ Math.min(2, voices.length) cap অপরিবর্তিত
+- REG-3 contract: বর্তমান আচরণ = দ্বিতীয় submission 200 + নতুন runId (route:202 agentRun.create unconditional; use-agent-run.ts:53 memory-only guard; localStorage-এ conversation/model/mode থাকে কিন্তু runId নয়); প্রত্যাশিত = running অবস্থায় 409/dedupe পর্যন্ত terminal state — Phase 1-এ implement করা হয়নি
+- Isolation প্রমাণ: db/custom.db md5 টেস্ট-রানের আগে-পরে অভিন্ন (9271b874…); কোনো টেস্ট z-ai-web-dev-sdk import করে না; http:// শুধু in-memory new Request() (sse-harness:32, t3:55); ffmpeg temp ফাইল os.tmpdir()-এ; storage/ অপরিবৃত্ত
+- Checks পুনরায়: typecheck exit 0, lint exit 0, prisma validate exit 0 ("valid 🚀"), build NOT RUN (sandbox)
+- Tool inventory: scripts/phase1-inventory.ts রান-এ 41 tools (8+11+10+10+2), parity ok, 0 missing/duplicate; smoke parity-test পাস; search_productions যোগ করা হয়নি — প্রমাণ: search_conversations (registry:361) শুধু db.message সার্চ করে, কোনো tool db.production.* কোয়েরি করে না
+- Latency doc যাচাই (read-only DB): 3 AgentRun (49096/25529/14882 ms; firstToken 3201/1196/4702) ✓; yrz3ymb7 queue 25.1s, total 1436.2s, 8 step-টাইমিং হুবহু মিলেছে; toolCalls = plan_music/generate_instrumental/propose_job; artifacts=8 ✓
+- Git integrity: history f5fe336→4b628fa (Phase-0 docs + worklog + ৩টি mode-only: prepare-standalone.mjs, security-gate.tsx, studio-home.tsx 644→755, 0 লাইন পরিবর্তন) → 6f528cf (Phase-1: 25 ফাইল, +2651/−0); mode bits HEAD-এ 755 বজায়; user modification হারায়নি (tree clean, সব additive)
+
+Stage Summary:
+- আবিষ্কৃত অসামঞ্জস্য (material): phase-1-exit-report.md §1/§2 দাবি করে "no commit made — awaiting approval", কিন্তু বাস্তবে HEAD=6f528cf (09:15:01-এ Phase-1 commit, message=UUID, worklog/report-এ unlogged, unpushed) — reporting-integrity blocker
+- মাইনর: baseline-report.md §7 4b628fa-কে "worklog-only" বলেছে — বাস্তবে 12 ফাইল (8 Phase-0 docs + worklog + 3 mode-only)
+- সংশোধিত exit status: PASS WITH BLOCKER (Phase-1 deliverables সম্পূর্ণ ও সত্যবাদিত; কিন্তু suite exit 1 = REG-1a/P0-BUG-01 application regression চালু আছে + exit-report git-state দাবি ভুল — সবুজ পাইপলাইন/push-পূর্ব সমাধান প্রয়োজন)
+- Push নিরাপত্তা: বিষয়বস্তুগতভাবে নিরাপদ (additive-only, সব গেট পাস, DB/storage/mode/user-data অক্ষত) — কিন্তু exit-report সংশোধন + commit-message সিদ্ধান্তের আগে নয়; ব্যবহারকারীর নির্দেশে এখন push করা হয়নি
+- Phase-2 অগ্রাধিকার: (1) P0-BUG-01 fix → REG-1a→PASS + REG-1b নতুন contract-এ আপডেট; (2) exit-report git-state সংশোধন; (3) REG-3 idempotency 409-guard + P0-BUG-03 client re-attach
+
+---
+Task ID: P2-1
+Agent: main agent (Z.ai Code)
+Task: Phase 2 round 1 — git/report integrity, P0-BUG-01 TTS fallback fix, REG-3 idempotency guard, P0-BUG-03 client re-attach (approved scope only; no push, no other features)
+
+Work Log:
+- Git integrity: environment auto-committer আবিষ্কার (reflog: a23370d "311b0d82-…" UUID-commit) — non-destructive mixed reset দিয়ে পরিষ্কার করে Phase-1 commit amend (6f528cf → 8c472fb): অর্থপূর্ণ message + exit-report §1/§2 (মিথ্যা "no commit made" দাবি সংশোধন) + exit status PASS→PASS WITH BLOCKER + baseline-report §2/§7 ("worklog-only" ভুল) — unpushed বলে নিরাপদ; hash mapping এই worklog-এ নথিভুক্ত
+- P0-BUG-01 (language_controller.ts): per-voice try/catch + engine-aware skip (Edge 403 → অচল ইঞ্জিনের বাকি কণ্ঠ বাদ) + Math.min(2,…) cap অপসারণ (পুরো প্রোফাইল-চেইন) + সৎ ফলব্যাক-নোট + সব-ইঞ্জিন-মৃত্যুতে সৎ rejection
+- P0-BUG-01 defect #3 (pipelines): short_film সংলাপ-লাইন ২+/বর্ণনা + audio খণ্ড ২+ এখন synthesizeVerifiedSpeech(verify:false) — ASR-খরচ অপরিবর্তিত, ফলব্যাক-চেইন যোগ; short_film-এ চরিত্র→প্রকৃত-কণ্ঠ (effectiveVoice) ট্র্যাকিং; motion_video:645 scope-বাইরে (bug-register path-তালিকায় নেই) — ফলো-আপ নোট
+- Tests: t1 পুনর্লিখন (REG-1a প্রকৃত expected behavior: jam, ১টি Edge কল, attempts=2, warn, ফলব্যাক-নোট; REG-1b নতুন chain-contract: ৩ Edge verification-fail → jam, attempts=4; নতুন REG-1f verify:false-পথ, REG-1g exhaustion-সততা)
+- REG-3 guard (/api/chat): চলমান রানে ৪০৯+activeRunId — user-message তৈরির আগে, per-conversation, terminal-এ মুক্ত; fake-db-তে agentRun.findFirst যোগ; t3 পুনর্লিখন (3a–e: 409/no-second-run/no-stray-message/terminal-clear/per-conversation)
+- P0-BUG-03 client: নতুন React-free src/hooks/active-run-persistence.ts (save/read/clear, ১২-মিনিট stale cutoff বনাম ১০-মিনিট server sweep, two-tab-safe conditional clear) + use-agent-run.ts wiring (send-এ save, run_finished/পোলিং-terminal-এ clear, mount/কথোপকথন-পরিবর্তনে একবার-চেষ্টা re-attach, 409-এ draft ফেরত + চলমান রানে attach); t7 নতুন (৬ persistence unit), t2 REG-2d post-fix precondition-এ আপডেট
+- Docs: tests/README.md (নতুন verdicts + REG-7), bug-register P0-BUG-01/03 FIXED & test-locked status, docs/audit/phase-2/fix-round-1-report.md (নতুন); bun-test-shim.d.ts-এ rejects/toThrow matcher
+- যাচাই: bun run test = ৪৭/৪৭ pass, exit 0 (আগে ৩৬/৩৭, exit 1); typecheck 0; lint 0; prisma validate 0; dev.log HMR-পরে পরিষ্কার; db/custom.md5 অপরিবর্তিত (9271b874…) — isolation বহাল
+
+Stage Summary:
+- REG-1a এখন প্রকৃত expected behavior পরীক্ষা করে ও PASS; REG-1b নতুন fallback contract আটকেছে; suite প্রথমবার সম্পূর্ণ সবুজ (exit 0)
+- P0-BUG-01 (৩টি defect-ই) ও P0-BUG-03 (server guard + client re-attach) FIXED; bug-register-এ status আপডেট
+- Blocker যা রয়ে গেল: Build=NOT RUN (sandbox), live Edge-403 window যাচাই=BLOCKED (budget), browser E2E re-attach=BLOCKED (DOM harness নেই), motion_video TTS single-engine pattern=follow-up, P0-BUG-02/04 অপরিবর্তিত
+- Commit করা হয়েছে স্থানীয়ভাবে (push নয়); Phase-2 অন্য কিছু শুরু করা হয়নি — post-fix report দিয়ে অনুমোদনের অপেক্ষা

@@ -151,6 +151,26 @@ export async function POST(req: Request) {
     conversation = await db.conversation.create({ data: {} });
   }
 
+  // P0-BUG-03/REG-3 সমাধান (Phase 2): এই কথোপকথনে এখনো একটি রান `running`
+  // থাকলে নতুন জমা প্রত্যাখ্যান (409) — ডুপ্লিকেট সমান্তরাল রান নয়।
+  // বডিতে activeRunId দেওয়া হয় যেন ক্লায়েন্ট নতুন রান না খুলে চলমান
+  // রানেই পুনঃসংযোগ করতে পারে (use-agent-run-এর রি-অ্যাটাচ পথ)।
+  // গার্ড ইউজার-বার্তা তৈরির আগেই — প্রত্যাখ্যাত জমা কথোপকথন দূষিত করে না।
+  const activeRun = await db.agentRun.findFirst({
+    where: { conversationId: conversation.id, status: 'running' },
+    orderBy: { startedAt: 'desc' },
+  });
+  if (activeRun) {
+    return NextResponse.json(
+      {
+        error: 'এই কথোপকথনে একটি উত্তর এখনো তৈরি হচ্ছে — সেটি সম্পূর্ণ হওয়া পর্যন্ত অপেক্ষা করুন',
+        activeRunId: activeRun.id,
+        conversationId: conversation.id,
+      },
+      { status: 409 }
+    );
+  }
+
   // ইউজার বার্তা তৈরি
   const userMessage = await db.message.create({
     data: { conversationId: conversation.id, role: 'user', content },

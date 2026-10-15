@@ -42,7 +42,8 @@ import {
 } from '../../film-helpers';
 import { generateImageBuffer, editImageBuffer, chatJson, visionCompare, isRateLimitErrorText } from '../../sdk-helpers';
 import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
-import { cachedSynthesizeSpeech } from '../../tts-cache';
+// (P0-BUG-01 fix #3: সংলাপ/বর্ণনার সব TTS-কল এখন synthesizeVerifiedSpeech-এর
+// ইঞ্জিন-ফলব্যাক-চেইনেদ্বারা হয় — সরাসরি একক-ইঞ্জিন কল আর নেই)
 import type { TtsVoice } from '../../sdk-helpers';
 import type { CameraMove, FilmMode } from '@/lib/types';
 import { ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
@@ -699,7 +700,12 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       if (narrationText.trim()) {
         const voice = resolveVoice(language, spec.voice);
         try {
-          const speech = await cachedSynthesizeSpeech(narrationText, voice, 1);
+          // P0-BUG-01 fix #3: বর্ণনা-ট্র্যাকও ইঞ্জিন-ফলব্যাক-চেইনসহ (verify:false —
+          // ASR-খরচ ছাড়াই Edge অচল থাকলে z-ai-তে চলে যায়)
+          const speech = await synthesizeVerifiedSpeech(
+            { task: 'speech', language, script: narrationText, voiceId: voice, outputFormat: 'wav', sampleRate: 24000, speed: 1 },
+            { verify: false }
+          );
           const p = path.join(wd, 'narration.wav');
           await writeFile(p, speech.buffer);
           const info = await mediaInfo(p);
@@ -733,14 +739,19 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       return;
     }
 
-    // প্রতি কণ্ঠে প্রথম লাইন ভাষা-নিয়ন্ত্রকে যাচাই-সহ; বাকিগুলো সরল TTS (খরচ-নিয়ন্ত্রণ)
+    // প্রতি কণ্ঠে প্রথম লাইন ভাষা-নিয়ন্ত্রকে যাচাই-সহ; বাকিগুলো ফলব্যাক-চেইনসহ
+    // সরল সংশ্লেষণ (verify:false — খরচ-নিয়ন্ত্রণ অপরিবর্তিত, ইঞ্জিন-রক্ষণ যোগ)
     const verifiedVoices = new Set<string>();
     const warnedVoices = new Set<string>();
+    // P0-BUG-01 fix #3: চরিত্র → প্রকৃত ব্যবহৃত কণ্ঠ (ফলব্যাকে আলাদা হতে পারে) —
+    // পরবর্তী লাইনগুলো সেই কণ্ঠেই চলে, অচল ইঞ্জিনে বারবার নয়
+    const effectiveVoice = new Map<string, string>();
     let done = 0;
     for (let i = 0; i < allLines.length; i++) {
       await ctx.checkCancelled();
       const d = allLines[i];
       const voice = characterVoices[d.character] ?? resolveVoice(language, spec.voice);
+      const useVoice = effectiveVoice.get(d.character) ?? voice;
       const isFirstOfVoice = !verifiedVoices.has(voice);
       await step.setDetail(
         `${i + 1}/${allLines.length} লাইন — ${d.character}${isFirstOfVoice ? ' (ভাষা-নিয়ন্ত্রকে যাচাই-সহ)' : ''}`
@@ -766,10 +777,25 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           ext = out.ext;
           verification = out.verification;
           verifiedVoices.add(voice);
+          effectiveVoice.set(d.character, out.voice);
         } else {
-          const out = await cachedSynthesizeSpeech(d.line, voice, 1);
+          // P0-BUG-01 fix #3: সরাসরি একক-ইঞ্জিন কল নয় — Edge 403-এ পুরো লাইন
+          // হারত; এখন একই ফলব্যাক-চেইন, শুধু ASR-যাচাই ছাড়া (খরচ-নিয়ন্ত্রণ)
+          const out = await synthesizeVerifiedSpeech(
+            {
+              task: 'speech',
+              language,
+              script: d.line,
+              voiceId: useVoice,
+              outputFormat: 'wav',
+              sampleRate: 24000,
+              speed: 1,
+            },
+            { verify: false }
+          );
           buffer = out.buffer;
           ext = out.ext;
+          effectiveVoice.set(d.character, out.voice);
         }
       } catch (err) {
         ctx.partialNotes.push(
