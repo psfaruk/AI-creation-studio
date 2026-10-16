@@ -62,6 +62,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     current = {};
   }
   const merged = { ...current, ...overrides, type: production.type };
+  // (Phase-4 review-fix) JSON "কী মুছে ফেলা" প্রকাশ করতে পারে না — undefined-
+  // কী সিরিয়ালাইজেই বাদ পড়ে। তাই ওভাররাইডে স্পষ্ট null মানে "সংরক্ষিত মান
+  // মুছে ফেলো" (যেমন: মিউজিক-ভিডিও কার্ডে গান-নির্বাচন বাতিল)। merge-এর
+  // পরে null-কীগুলো ফেলে দিলে validateSpec সেটিকে অনুপস্থিতই দেখে —
+  // ডিফল্ট/শাখা-যুক্তিসহ সে ক্ষেত্রের স্বাভাবিক আচরণ চলে।
+  for (const k of Object.keys(merged)) {
+    if (merged[k] === null) delete merged[k];
+  }
 
   const validation = validateSpec(merged);
   if (!validation.ok || !validation.validated) {

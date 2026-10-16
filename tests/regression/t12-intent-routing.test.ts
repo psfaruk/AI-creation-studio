@@ -36,6 +36,12 @@ mock.module('@/lib/agent/tts-cache', () => ({
     throw new Error('engine mock — must not be called by classification tests');
   },
 }));
+// (review-fix) isRateLimitErrorText এখানে মক করা যাবে না — sdk-helpers ওটি
+// retry.ts থেকে পুনঃ-রপ্তানি করে, আর Bun-এর mock.module পুনঃ-রপ্তানিত বাইন্ডিংও
+// ওভাররাইট করে দেয় — ফলে পরবর্তী ফাইলে (t6) সত্যিকারের retry-মডিউলও মক-রেজেক্স
+// দেখে ফেলত (REG-6j নিয়ত ব্যর্থ)। t1/t8-এর মতোই শুধু sdk-helpers-এর নিজস্ব
+// ফাংশন মক হয়; এই টেস্ট-গ্রাফ (createProduction → language_controller) কখনোই
+// sdk-helpers.isRateLimitErrorText ব্যবহার করে না।
 mock.module('@/lib/agent/sdk-helpers', () => ({
   transcribeBuffer: async () => {
     throw new Error('engine mock — must not be called by classification tests');
@@ -46,7 +52,6 @@ mock.module('@/lib/agent/sdk-helpers', () => ({
   imageSearchSdkFirst: async () => {
     throw new Error('engine mock');
   },
-  isRateLimitErrorText: (t: string) => /429|rate/i.test(t),
 }));
 
 // REAL modules — imported after the mocks

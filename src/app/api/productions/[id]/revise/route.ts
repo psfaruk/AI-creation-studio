@@ -34,6 +34,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     current = {};
   }
   const merged = { ...current, ...overrides, type: parent.type };
+  // (Phase-4 review-fix) confirm-রুটের সাথে একই "null = কী মুছে ফেলো" চুক্তি —
+  // JSON-এ undefined-কী বাদ পড়ে বলে স্পষ্ট null-ই একমাত্র মুছুনি-সংকেত।
+  for (const k of Object.keys(merged)) {
+    if (merged[k] === null) delete merged[k];
+  }
 
   const validation = validateSpec(merged);
   if (!validation.ok || !validation.validated) {

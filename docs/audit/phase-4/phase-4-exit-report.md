@@ -5,7 +5,9 @@
 
 ## 1. Exit status: **PASS WITH DOCUMENTED NOT-RUNS**
 
-All four workstreams implemented on the existing architecture (extend, not replace). Suite **118/118** (75 inherited unchanged + 43 new), typecheck/lint/prisma-validate exit 0, `git diff --check` clean, dev server compiles and serves the new routes (200s in dev.log). Evidence for every acceptance criterion that can be produced without live budget; the rest are explicitly NOT RUN (§5).
+All four workstreams implemented on the existing architecture (extend, not replace). Suite **119/119 after the final review round** (75 inherited unchanged + 44 Phase-4 tests incl. review-added REG-14l), typecheck/lint/prisma-validate exit 0, `git diff --check` clean, dev server compiles and serves the new routes (200s in dev.log). Evidence for every acceptance criterion that can be produced without live budget; the rest are explicitly NOT RUN (§5).
+
+> **Final-review addendum:** the independent review found the implementation report's “118/118” claim **not reproducible** (REG-6j failed deterministically — t12's mock had replaced a re-exported `retry` binding; fixed at root) and one real contract defect (song deselect was silently ignored at confirm — fixed with an explicit `null`-clear contract on client + confirm/revise routes, locked by REG-14l). Both fixes re-verified: suite 119/119, typecheck/lint/prisma 0, budget-free browser re-pass clean. Details: `test-results.md` §1/§3, `worklog.md` P4-2.
 
 ## 2. Deliverables
 
@@ -14,7 +16,7 @@ All four workstreams implemented on the existing architecture (extend, not repla
 | **B** — intent-aware routing | NEW `src/lib/agent/intent/{types,classifier}.ts` (12-category deterministic classifier, normalized intent object, spec drafts, LLM hint note); orchestrator wiring (classification step + metrics, **fast path** with zero LLM calls, hint path, upgraded rate-limit fallback + honest unsupported finals) | REG-12 (17/17) | intent-routing-design.md |
 | **C** — chat-native config panel | `production-card.tsx` upgrades: song selector, disabled-with-reason options (60fps/4K), field-level validation, plan preview (steps/shots/audio-strategy/limitations/historical ETA), confirm guard; NEW `src/hooks/use-config-panel.ts` | REG-13 (9/9) | configuration-ui-design.md |
 | **D** — capability-aware validation | NEW `src/lib/agent/config-panel.ts` (schema builder from `capabilities.ts` — single source of truth) + NEW routes `GET /api/productions/config-panel`, `POST /api/productions/validate` (structured verdicts, provider snapshot without error text) | REG-13/14 | capability-validation.md |
-| **E+F** — plan & real execution | Plan states surfaced on the existing status machine; confirmation → existing confirm route (server revalidation, 409s, exactly-once start) → real pipelines; Phase-2/3 reconnection & metrics preserved | REG-14 (11/11) | execution-and-progress.md |
+| **E+F** — plan & real execution | Plan states surfaced on the existing status machine; confirmation → existing confirm route (server revalidation, 409s, exactly-once start) → real pipelines; Phase-2/3 reconnection & metrics preserved | REG-14 (12/12 incl. review-added 14l song-deselect null-clear) | execution-and-progress.md |
 | **G** — latency/efficiency | Classification once per run (ms-scale, REG-15f); fast path removes the LLM round-trip entirely; additive intent metrics with redaction (REG-15, 6/6) | REG-15 | test-results.md |
 
 **Files changed**: 5 modified (`+604/−23`: production-card, orchestrator, run-metrics, tests/README, fake-db — the 23 deletions are the replaced `detectProductionIntent` call-site inside `tryIntentFallback` and the two `logRunMetrics` call shapes gaining the `intent` field) + 12 new paths (2 API routes, intent module, config-panel module, hook, 4 test files, docs/audit/phase-4/). No new dependencies. **No schema changes.**
@@ -50,9 +52,10 @@ All four workstreams implemented on the existing architecture (extend, not repla
 
 ## 6. Remaining defects & follow-ups
 
-- None known in the delivered scope; the one mid-development finding (REG-14i's initial expectation) was corrected in the **test** after re-deriving the actual §15 contract (server transparently adjusts unsupported overrides and persists the adjusted spec — behavior unchanged from baseline).
-- Follow-up candidates (out of scope): model-assisted classification refinement behind the deterministic guard; multi-output image production if a capability for it ever lands; browser E2E harness.
+- None known open in the delivered scope after the final review round. Review-round findings (both fixed at root and regression-locked): (1) t12 mock leak breaking REG-6j in full-suite order — re-exported `isRateLimitErrorText` removed from the `sdk-helpers` mock; (2) song deselect silently ignored at confirm (JSON drops `undefined` keys, so the stored `songArtifactId` survived the merge and `validateSpec` forced `uploaded_song` back — preview said procedural, the run kept the song) — fixed with an explicit `null`-clear wire contract (client selector + confirm/revise merge strip), locked by REG-14l and re-verified empirically.
+- Earlier mid-development finding (REG-14i's initial expectation) was corrected in the **test** after re-deriving the actual §15 contract (server transparently adjusts unsupported overrides and persists the adjusted spec — behavior unchanged from baseline).
+- Follow-up candidates (out of scope): model-assisted classification refinement behind the deterministic guard; multi-output image production if a capability for it ever lands; browser E2E harness; `useConfigPanel`'s pre-load default (`type=image`) causes one harmless extra schema fetch per card while the view loads (observed in the review network log — cosmetic only).
 
 ## 7. Stopped here
 
-Per the delivery rules: **no commit, no push, no Phase 5, no provider budget spent.** Git state: 5 modified + 12 new untracked paths, `git diff --check` clean, HEAD still `8ce272c`. Awaiting explicit user approval for commit/push.
+Per the delivery rules: **no commit, no push, no Phase 5, no provider budget spent.** Git state at review close: the environment auto-committed the Phase-4 work as one commit (`310c712`, UUID message) on top of the Phase-3 baseline `8ce272c` (origin/main unchanged); the final review fixes live as working-tree changes on top (confirm/revise null-strip, production-card null-signal, t12 mock fix, REG-14l, docs) plus benign mode-bit noise (100644→100755, zero content delta) from the environment. `git diff --check` clean. Awaiting explicit user approval for commit/push.

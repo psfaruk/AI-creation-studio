@@ -459,7 +459,15 @@ function SpecEditor({
   const [customStyleMode, setCustomStyleMode] = useState(false);
 
   const isVideo = isVideoType(spec.type);
-  const patch = (p: Partial<CreativeJobSpec>) => onChange({ ...spec, ...p });
+  // (Phase-4 review-fix) null = স্পষ্ট "মান মুছে ফেলো" সংকেত — JSON.stringify-এ
+  // undefined-কী বাদ পড়ে যায়, ফলে আগের ডিসিলেক্ট-এডিট নীরবে হারিয়ে যেত
+  // (সংরক্ষিত songArtifactId টিকে থাকত)। null ওয়্যারে বর্তমান থাকে এবং
+  // সার্ভারের confirm/revise-মার্জ ওটিকে কী-মুছুনি হিসেবেই দেখে।
+  type SpecPatch = Partial<Omit<CreativeJobSpec, 'songArtifactId' | 'sound'>> & {
+    songArtifactId?: string | null;
+    sound?: CreativeJobSpec['sound'] | null;
+  };
+  const patch = (p: SpecPatch) => onChange({ ...spec, ...p } as CreativeJobSpec);
 
   const showsLanguage = isVideo || spec.type === 'audio';
   const showsVideoEngine = isVideo;
@@ -591,7 +599,10 @@ function SpecEditor({
             onValueChange={v =>
               patch(
                 v === '__no_song__'
-                  ? { songArtifactId: undefined, musicSource: 'procedural', sound: undefined }
+                  ? // (review-fix) null-সংকেত: ডিসিলেক্ট সংরক্ষিত গান-আইডি মুছে দেয় —
+                    // undefined হলে JSON-এ কী-ই যেত না, সার্ভার-মার্জ পুরোনো
+                    // গানটিই ফিরিয়ে আনত (এডিট নীরবে অগ্রাহ্য হত)।
+                    { songArtifactId: null, musicSource: 'procedural', sound: null }
                   : { songArtifactId: v, musicSource: 'uploaded_song', sound: 'uploaded_song' }
               )
             }

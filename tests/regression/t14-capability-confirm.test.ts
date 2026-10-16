@@ -27,7 +27,8 @@
 //    text (no lastError leak).
 //  - Confirm: only awaiting_confirmation → queued + startProduction
 //    exactly once; invalid overrides → 422 + no start; duplicates →
-//    409; cancel → no start; server ALWAYS revalidates.
+//    409; cancel → no start; server ALWAYS revalidates; explicit null
+//    override = "clear the stored field" (song deselect honored).
 // ============================================================
 
 import { describe, expect, test, beforeEach, mock } from 'bun:test';
@@ -284,5 +285,51 @@ describe('REG-14: confirmation flow (Phase-4 E)', () => {
     });
     expect(confirmAfter.status).toBe(409); // বাতিল-প্রস্তাব আর নিশ্চিতযোগ্য নয়
     expect(startProductionCalls).toEqual([]);
+  });
+
+  test('REG-14l: song deselect (explicit null override) clears the stored song — edit is honored, not silently reverted', async () => {
+    // (Phase-4 review-fix) চুক্তি: JSON-এ undefined-কী বাদ পড়ে, তাই "মুছে ফেলো"-
+    // সংকেত স্পষ্ট null। সংরক্ষিত স্পেকে অটো-ওয়্যার করা গান থাকলে ডিসিলেক্ট-
+    // এডিট (songArtifactId: null + musicSource: 'procedural') অবশ্যই গানটি
+    // সরিয়ে প্রসিডিউরাল স্কোরে যাবে — পূর্বে undefined-কী নীরবে হারিয়ে যেত
+    // এবং চূড়ান্ত রান পুরোনো গানটিই ব্যবহার করত (প্রিভিউ/প্রকৃত অমিল)।
+    const conv = seedConversation('conv-14l');
+    const prod = seedProduction(conv.id, {
+      type: 'music_video',
+      title: 'গান দিয়ে মিউজিক ভিডিও',
+      durationSec: 40,
+      aspect: '9:16',
+      quality: 'standard',
+      videoEngine: 'ai_diffusion',
+      language: 'bn',
+      // createProduction-এর অটো-ওয়্যার ফলাফলের আদলে সংরক্ষিত অবস্থা:
+      songArtifactId: 'art-song-14l',
+      musicSource: 'uploaded_song',
+      sound: 'uploaded_song',
+    });
+
+    const res = await confirmPOST(
+      jsonRequest(
+        `http://localhost/api/productions/${prod.id}/confirm`,
+        { spec: { songArtifactId: null, musicSource: 'procedural', sound: null } },
+        IP(27)
+      ),
+      { params: Promise.resolve({ id: prod.id }) }
+    );
+    expect(res.status).toBe(200);
+    expect(startProductionCalls).toEqual([prod.id]);
+
+    const row = state().productions.get(prod.id)!;
+    expect(row.status).toBe('queued');
+    const spec = JSON.parse(row.specJson);
+    // এডিট সম্মানিত: গান-আর্টিফ্যাক্ট চলে গেছে, প্রসিডিউরাল স্কোর বসেছে
+    expect(spec.songArtifactId).toBeUndefined();
+    expect(spec.musicSource).toBe('procedural');
+    // গান-নেই মিউজিক-ভিডিওর স্বাভাবিক রূপ: sound অসংরক্ষিত (validateSpec-ডিফল্ট)
+    expect(spec.sound).toBeUndefined();
+    // প্রতিক্রিয়া-বডির স্পেকও একই (কার্ড এটিই দেখাবে)
+    const body = await res.json();
+    expect(body.spec.songArtifactId).toBeUndefined();
+    expect(body.spec.musicSource).toBe('procedural');
   });
 });
