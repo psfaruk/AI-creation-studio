@@ -49,7 +49,11 @@ import type { CameraMove, FilmMode } from '@/lib/types';
 import { ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
 import { AI_VIDEO_MODEL } from '../../video/ai_video';
-import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec, prewarmVideoClip, videoGenerationEtaNote, type ShotEngineRecord } from './motion_video';
+import { generateAiShot, toDataUrl, aiClipDurationSec, prewarmVideoClip, videoGenerationEtaNote, type ShotEngineRecord } from './motion_video';
+import type { CinematicPlan, CinematicShot } from '../../cinematic/types';
+import { planShortFilmShots, summarizePlan } from '../../cinematic/planner';
+import { buildCinematicVideoPrompt, buildCinematicImagePrompt } from '../../cinematic/prompt';
+import { notePlanMetrics } from '../../run-metrics';
 import {
   synthesizeVerifiedSpeech,
   resolveVoice,
@@ -92,6 +96,8 @@ interface Scene {
   timeOfDay: string;
   characters: string[];
   action: string;
+  /** Phase-5: ইংরেজি দৃশ্যমান-বর্ণনা (জেনারেশন-প্রম্পটের ভাষা) */
+  visualEn: string;
   actingNotes: string;
   cameraWork: string;
   ambientSound: string;
@@ -121,6 +127,8 @@ interface FilmShot {
   durationSec: number;
   characters: string[];
   acting?: ActingDirection;
+  /** Phase-5: নির্ধারক কভারেজ-পরিকল্পনার শট (প্রম্পটের একক উৎস) */
+  cinematic?: CinematicShot;
   framePath?: string;
   clipPath?: string;
 }
@@ -140,7 +148,6 @@ interface BibleEntry {
   reused: boolean;
 }
 
-const MOVES: CameraMove[] = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'];
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 const FILM_MODE_DIRECTION: Record<FilmMode, string> = {
@@ -175,6 +182,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   let logline = '';
   let scenes: Scene[] = [];
   let shots: FilmShot[] = [];
+  /** Phase-5: যাচাইকৃত সিনেম্যাটিক কভারেজ-পরিকল্পনা (artifact + final_mix) */
+  let plan: CinematicPlan | null = null;
   const characterVoices: Record<string, SpeechVoice> = {};
   const characterAppearance: Record<string, string> = {};
   await ctx.runStep('script_breakdown', 'চিত্রনাট্য ও দৃশ্য-বিভাজন (৮-স্তর §৭)', async (step: StepHandle) => {
@@ -190,6 +199,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         timeOfDay: string;
         characters: string[];
         action: string;
+        visualEn?: string;
         actingNotes?: string;
         cameraWork?: string;
         ambientSound?: string;
@@ -209,6 +219,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           timeOfDay: string;
           characters: string[];
           action: string;
+          visualEn?: string;
           actingNotes?: string;
           cameraWork?: string;
           ambientSound?: string;
@@ -226,12 +237,13 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           `ভাষার নিয়ম (বাধ্যতামূলক): চিত্রনাট্যের সব মানব-পাঠ্য অংশ — title, logline, location, timeOfDay, action, actingNotes, dialogues-র text, emotion — অবশ্যই ${language === 'bn' ? 'বাংলা লিপিতে (বাংলা ভাষায়)' : 'ইংরেজিতে (English)'} লিখবে। ${language === 'bn' ? 'ইংরেজি বাক্য বা রোমান বানানের বাংলা নিষিদ্ধ।' : 'Do NOT write Bengali script anywhere in human-readable fields.'}\n` +
           '৩–৬টি দৃশ্য, চরিত্র সর্বোচ্চ ৩জন। প্রতিটি দৃশ্যে সম্পূর্ণ ফিল্ড দাও:\n' +
           '  location, timeOfDay (সকাল/দুপুর/সন্ধ্যা/রাত…-ধরন), characters (উপস্থিত চরিত্রের নাম-অ্যারে),\n' +
-          '  action (দৃশ্যে কী ঘটে), actingNotes (অভিনয়-নির্দেশনা), cameraWork (ক্যামেরা-ধরন),\n' +
+          '  action (দৃশ্যে কী ঘটে), visualEn (ইংরেজিতে দৃশ্যমান-বর্ণনা — ভিডিও-জেনারেশন প্রম্পটে যাবে: পরিবেশ, চরিত্রের অবস্থান/ভঙ্গি, আলো),\n' +
+          '  actingNotes (অভিনয়-নির্দেশনা), cameraWork (ক্যামেরা-ধরন),\n' +
           '  ambientSound (পরিবেশ-শব্দের ইঙ্গিত), musicCue (মিউজিক-মুড-ইঙ্গিত), estimatedSec,\n' +
           '  dialogues: [{character, text, emotion}]\n' +
           'প্রতিটি চরিত্রের appearancePrompt ইংরেজিতে বিস্তারিত (বয়স, মুখ, চুল, পোশাক), voice এর একটি: "bn-BD-NabanitaNeural"|"bn-BD-PradeepNeural"|"en-US-AriaNeural"|"en-US-GuyNeural"|"jam"|"douji"।\n' +
           'dialogues-র character অবশ্যই চরিত্র-তালিকার নাম হবে।\n' +
-          'শুধু JSON: {"title":"...","logline":"...","characters":[{"name":"...","appearancePrompt":"...","voice":"bn-BD-NabanitaNeural"}],"scenes":[{"location":"...","timeOfDay":"...","characters":["নাম"],"action":"...","actingNotes":"...","cameraWork":"...","ambientSound":"...","musicCue":"...","estimatedSec":10,"dialogues":[{"character":"...","text":"...","emotion":"..."}]}]}',
+          'শুধু JSON: {"title":"...","logline":"...","characters":[{"name":"...","appearancePrompt":"...","voice":"bn-BD-NabanitaNeural"}],"scenes":[{"location":"...","timeOfDay":"...","characters":["নাম"],"action":"...","visualEn":"...","actingNotes":"...","cameraWork":"...","ambientSound":"...","musicCue":"...","estimatedSec":10,"dialogues":[{"character":"...","text":"...","emotion":"..."}]}]}',
       },
       { role: 'user', content: `গল্প: ${spec.story ?? spec.idea ?? spec.title}`.slice(0, 4000) },
       ]));
@@ -287,6 +299,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       timeOfDay: String(s?.timeOfDay ?? 'দিন').slice(0, 40),
       characters: (Array.isArray(s?.characters) ? s.characters : []).map(c => String(c).slice(0, 60)).slice(0, 3),
       action: String(s?.action ?? '').slice(0, 600),
+      // Phase-5: ইংরেজি দৃশ্যমান-বর্ণনা — প্রজন্ম-প্রম্পটের ভাষা-চুক্তি
+      // (Phase-4-এর LLM#2 যেমন ইংরেজি description লিখত, তার উত্তরসূরি)
+      visualEn: String(s?.visualEn ?? '').slice(0, 600),
       actingNotes: String(s?.actingNotes ?? '').slice(0, 300),
       cameraWork: String(s?.cameraWork ?? '').slice(0, 200),
       ambientSound: String(s?.ambientSound ?? '').slice(0, 120),
@@ -352,79 +367,60 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       }
     }
 
-    // শট-বিভাজন (একই ধাপে দ্বিতীয় LLM-কল — দৃশ্য থেকে শট-তালিকা)
+    // ------------------------------------------------------------
+    // Phase-5: শট-বিভাজন — দ্বিতীয় LLM-কলের বদলে নির্ধারক কভারেজ-
+    // পরিকল্পক (cinematic/planner)। দৃশ্যের উদ্দেশ্য থেকে কভারেজ:
+    // এস্টাব্লিশিং জিওগ্রাফি → অ্যাকশন → সংলাপ OTS/রিঅ্যাকশন → ডিটেইল →
+    // সমাপনি। প্রতি রানে একটি LLM রাউন্ড-ট্রিপ সাশ্রয়; কাঠামো নির্ধারক।
+    // ------------------------------------------------------------
     const maxShotCount = maxShots('short_film', spec.quality, engine);
-    // AI-পথে CogVideoX-3-এর ১০-সে. ক্লিপই একক (২০২৬-১০-১৩)
-    const segCap = engine === 'ai_diffusion' ? 10 : 7;
-    const count = Math.max(3, Math.min(maxShotCount, Math.ceil(durationSec / segCap)));
-    // S11: শট-বিভাজন-LLM ব্যর্থ (৪২৯-সহ) হলে sd=null — নিচের প্রতি-দৃশ্যে-এক-শট
-    // সৎ ফলব্যাক পথ চালু থাকে; ধাপ মরবে না।
-    let sd: {
-      shots: { sceneIndex: number; description: string; label?: string; cameraMove: string; durationSec: number; characters?: string[] }[];
-    } | null = null;
-    try {
-      ({ data: sd } = await chatJson<{
-        shots: { sceneIndex: number; description: string; label?: string; cameraMove: string; durationSec: number; characters?: string[] }[];
-      }>([
-      {
-        role: 'assistant',
-        content:
-          'তুমি চিত্রনাট্য থেকে শট-তালিকা বানাও (shot breakdown)।\n' +
-          `ঠিক ${count}টি শট (সর্বোচ্চ ${maxShotCount}), প্রতিটি ${engine === 'ai_diffusion' ? '৮–১০' : '৩–৭'} সেকেন্ড, যোগফল ≈ ${durationSec} সেকেন্ড।\n` +
-          `প্রতিটি দৃশ্য কমপক্ষে একটি শট পাবে। description ইংরেজিতে (দৃশ্যমান বিষয়: পরিবেশ, চরিত্রের অবস্থান/ভঙ্গি, আলো — ভিডিও/ইমেজ-জেনারেশনের জন্য), label ${language === 'bn' ? 'বাংলায়' : 'ইংরেজিতে'}।\n` +
-          'cameraMove: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static"। দৃশ্যে উপস্থিত চরিত্রের নাম characters-এ।\n' +
-          'শুধু JSON: {"shots":[{"sceneIndex":1,"description":"...","label":"...","cameraMove":"zoom_in","durationSec":5,"characters":["নাম"]}]}',
-      },
-      {
-        role: 'user',
-        content:
-          `চিত্রনাট্য (${durationSec} সেকেন্ড, ${count}টি শট):\n` +
-          scenes
-            .map(
-              s =>
-                `দৃশ্য ${s.index} (${s.location}, ${s.timeOfDay}): ${s.action} [অভিনয়: ${s.actingNotes}] [সংলাপ: ${
-                  s.dialogue.map(d => `${d.character}: ${d.line}`).join(' | ') || 'নেই'
-                }]`
-            )
-            .join('\n'),
-      },
-      ]));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      ctx.partialNotes.push(
-        isRateLimitErrorText(msg)
-          ? 'শট-বিভাজন LLM রেট-লিমিটেড — প্রতি দৃশ্যে একটি করে শট (AI-বিভাজন নয়)।'
-          : `শট-বিভাজন ব্যর্থ (${msg.slice(0, 120)}) — প্রতি দৃশ্যে একটি করে শট।`
-      );
-      sd = null;
-    }
-    const rawShots = Array.isArray(sd?.shots) ? sd.shots : [];
-    shots = rawShots
-      .filter(s => String(s?.description ?? '').trim())
-      .slice(0, maxShotCount)
-      .map((s, i) => ({
-        sceneIndex: Number(s?.sceneIndex) || scenes[0]?.index || 1,
-        description: String(s.description).slice(0, 900),
-        label: String(s?.label ?? '').slice(0, 120) || `শট ${i + 1}`,
-        cameraMove: (MOVES.includes(String(s?.cameraMove) as CameraMove) ? s.cameraMove : MOVES[i % MOVES.length]) as CameraMove,
-        durationSec: Math.max(3, Math.min(segCap, Number(s?.durationSec) || 5)),
-        characters: (Array.isArray(s?.characters) ? s.characters : []).map(c => String(c).slice(0, 60)).slice(0, 3),
-      }));
-    if (shots.length === 0) {
-      // সৎ ফলব্যাক — প্রতি দৃশ্যে একটি শট
-      shots = scenes.slice(0, maxShotCount).map((s, i) => ({
-        sceneIndex: s.index,
-        description: `${s.location}, ${s.timeOfDay}. ${s.action}`,
-        label: `দৃশ্য ${s.index}`,
-        cameraMove: MOVES[i % MOVES.length],
-        durationSec: Math.min(segCap, Math.max(3, s.estimatedSec)),
+    const planStart = Date.now();
+    plan = planShortFilmShots({
+      engine,
+      limit: maxShotCount,
+      durationSec,
+      scenes: scenes.map(s => ({
+        index: s.index,
+        location: s.location,
+        timeOfDay: s.timeOfDay,
         characters: s.characters,
-      }));
-      ctx.partialNotes.push('LLM শট-বিভাজন দেয়নি — প্রতি দৃশ্যে একটি করে শট রাখা হয়েছে।');
+        action: s.action,
+        visualEn: s.visualEn,
+        estimatedSec: s.estimatedSec,
+        dialogueCount: s.dialogue.length,
+      })),
+    });
+    notePlanMetrics(ctx.productionId, {
+      planMs: Date.now() - planStart,
+      plannedShots: plan.shots.length,
+      planAdjustments: plan.adjustments.length,
+    });
+    if (plan.adjustments.length > 0) {
+      ctx.partialNotes.push(
+        `শট-পরিকল্পনায় ${plan.adjustments.length}টি সৎ-সমন্বয় (ক্যামেরা-ডাউনগ্রেড) — shot-plan.json artifact-এ বিস্তারিত।`
+      );
     }
+    ctx.partialNotes.push('শট-বিভাজন নির্ধারক কভারেজ-পরিকল্পক থেকে (দ্বিতীয় LLM-কল বাদ — সময় সাশ্রয়, কাঠামো নির্ধারক)।');
+    // সৎ-বাজেট-নোট: দৃশ্য-সংখ্যা ইঞ্জিনের শট-বাজেট (maxShots) ছাড়িয়ে গেলে
+    // শেষের দৃশ্যগুলি কভার-পায় না (Phase-4-এর slice-সামঞ্জস্য) — চিত্রনাট্য-
+    // artifact-ে দৃশ্যগুলি থেকে যায়, ব্যবহারকারী জানেন।
+    if (plan.shots.length < scenes.length) {
+      ctx.partialNotes.push(
+        `${scenes.length}টি দৃশ্য কিন্তু ইঞ্জিন-বাজেটে ${plan.shots.length}টি শট — শেষের ${scenes.length - plan.shots.length}টি দৃশ্য ভিডিও-কভারেজ পায়নি (চিত্রনাট্য artifact-ে সম্পূর্ণ)।`
+      );
+    }
+    shots = plan.shots.map(cs => ({
+      sceneIndex: Number(cs.sceneId.slice(2)) || 1,
+      description: cs.actionEn,
+      label: cs.labelBn,
+      cameraMove: cs.fallbackMove,
+      durationSec: cs.targetDurationSec,
+      characters: cs.character ? [cs.character] : [],
+      cinematic: cs,
+    }));
     normalizeShotDurations(shots, durationSec);
     await step.setDetail(
-      `"${title}" — ${scenes.length}টি দৃশ্য, ${shots.length}টি শট, ${Object.keys(characterVoices).length}টি চরিত্র (মোড: ${filmMode})`
+      `"${title}" — ${scenes.length}টি দৃশ্য, ${shots.length}টি শট (নির্ধারক কভারেজ), ${Object.keys(characterVoices).length}টি চরিত্র (মোড: ${filmMode})`
     );
 
     // চিত্রনাট্য artifact — ব্যবহারকারীর পাঠযোগ্য দলিল
@@ -455,6 +451,23 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       fileName: 'screenplay.txt',
       metaJson: { pipeline: 'short_film', scenes: scenes.length, shots: shots.length, filmMode },
     });
+    // Phase-5: পরিকল্পনা artifact — পুরো যাচাইকৃত plan (typed, versioned)
+    if (plan) {
+      await ctx.registerArtifact({
+        buffer: Buffer.from(JSON.stringify(plan, null, 2), 'utf-8'),
+        kind: 'text',
+        mimeType: 'application/json',
+        fileName: 'shot-plan.json',
+        metaJson: {
+          pipeline: 'short_film',
+          kind: 'cinematic_plan',
+          version: plan.version,
+          shots: plan.shots.length,
+          beatSource: plan.beatSource,
+          adjustments: plan.adjustments.length,
+        },
+      });
+    }
   }, { timeoutMs: 6 * 60_000 }); // S10: LLM-ধাপ সুরক্ষা-জাল
 
   // ------------------------------------------------------- ২ character_bible
@@ -633,6 +646,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         bodyHands: String(d.bodyHands ?? '').slice(0, 120),
         facialExpression: String(d.facialExpression ?? '').slice(0, 120),
         speaks: d.speaks === true,
+        // Phase-5 (D3 সমাধান): cameraMotion স্পষ্টভাবে পরিকল্পনা-কেবল —
+        // প্রম্পটে কভারেজ-পরিকল্পনার movement-ই যায় (buildCinematicVideoPrompt),
+        // এই ক্ষেত্র কেবল নথিভুক্ত/প্রদর্শনের জন্য।
         cameraMotion: String(d.cameraMotion ?? '').slice(0, 120) || shot.cameraMove,
       };
       if (d.who || d.action) matched++;
@@ -665,7 +681,25 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     const firstPortrait = first.characters.map(n => bible.find(b => b.name === n)).find(Boolean)?.portraitDataUrl;
     prewarmVideoClip(
       {
-        prompt: buildAiVideoPrompt(first.description, spec.style, first.cameraMove, firstActing || undefined),
+        prompt: buildCinematicVideoPrompt(
+          shots[0].cinematic ?? {
+            shotId: 'S01',
+            sceneId: 'SC1',
+            order: 0,
+            subject: 'scene',
+            size: 'wide',
+            angle: 'eye_level',
+            movement: 'static',
+            fallbackMove: first.cameraMove,
+            // এই প্রি-ওয়ার্ম-শাখা কেবল ai_diffusion-ইঞ্জিনে চলে — ডেলিভারি প্রম্পট-নির্দেশিত
+            delivery: 'prompt_guided',
+            actionEn: first.description,
+            labelBn: first.label,
+            targetDurationSec: first.durationSec,
+          },
+          spec.style,
+          firstActing || undefined
+        ),
         durationSec: aiClipDurationSec(first.durationSec),
         quality: 'speed' as const,
         ...(firstPortrait ? { imageUrl: firstPortrait } : {}),
@@ -976,7 +1010,27 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           try {
             const res = await generateAiShot({
               index: i,
-              prompt: buildAiVideoPrompt(shot.description, spec.style, shot.cameraMove, actingText || undefined),
+              // Phase-5: প্রম্পট কভারেজ-পরিকল্পনার শট থেকে (acting-টেক্সট extra হিসেবে)
+              prompt: shot.cinematic
+                ? buildCinematicVideoPrompt(shot.cinematic, spec.style, actingText || undefined)
+                : buildCinematicVideoPrompt(
+                    {
+                      shotId: `S${String(i + 1).padStart(2, '0')}`,
+                      sceneId: `SC${shot.sceneIndex}`,
+                      order: i,
+                      subject: 'scene',
+                      size: 'wide',
+                      angle: 'eye_level',
+                      movement: 'static',
+                      fallbackMove: shot.cameraMove,
+                      delivery: 'prompt_guided',
+                      actionEn: shot.description,
+                      labelBn: shot.label,
+                      targetDurationSec: shot.durationSec,
+                    },
+                    spec.style,
+                    actingText || undefined
+                  ),
               neededSec: shot.durationSec,
               fps,
               width: dims.w,
@@ -986,7 +1040,9 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               imageUrl: matching?.portraitDataUrl,
               // §১০ আইডেম্পোটেন্সি: এই প্রোডাকশনের এই শট = একই request_id
               requestKey: `sf-${ctx.productionId}-shot-${i + 1}`,
-              fallbackImagePrompt: imagePromptForShot(shot, spec.style),
+              fallbackImagePrompt: shot.cinematic
+                ? buildCinematicImagePrompt(shot.cinematic, spec.style)
+                : imagePromptForShot(shot, spec.style),
               fallbackGenSize: genSize,
               fallbackReferenceUrl: matching?.portraitDataUrl,
               fallbackMove: shot.cameraMove,
@@ -1007,6 +1063,14 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
                   shot: i + 1,
                   of: shots.length,
                   sceneIndex: shot.sceneIndex,
+                  ...(shot.cinematic
+                    ? {
+                        shotId: shot.cinematic.shotId,
+                        size: shot.cinematic.size,
+                        movement: shot.cinematic.movement,
+                        delivery: shot.cinematic.delivery,
+                      }
+                    : {}),
                   cameraMove: shot.cameraMove,
                   label: shot.label,
                   note: res.frameLocal
@@ -1042,12 +1106,19 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               return (
                 await editImageBuffer(
                   matching.portraitDataUrl,
-                  `Same person (identical face, hair, outfit) now in: ${shot.description}. Keep the character consistent with the reference portrait.`,
+                  `Same person (identical face, hair, outfit) now in: ${shot.cinematic?.actionEn ?? shot.description}. Keep the character consistent with the reference portrait.`,
                   genSize
                 )
               ).buffer;
             }
-            return (await generateImageBuffer(imagePromptForShot(shot, spec.style), genSize)).buffer;
+            return (
+              await generateImageBuffer(
+                shot.cinematic
+                  ? buildCinematicImagePrompt(shot.cinematic, spec.style)
+                  : imagePromptForShot(shot, spec.style),
+                genSize
+              )
+            ).buffer;
           };
           try {
             buffer = await tryGen();
@@ -1095,6 +1166,14 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               shot: i + 1,
               of: shots.length,
               sceneIndex: shot.sceneIndex,
+              ...(shot.cinematic
+                ? {
+                    shotId: shot.cinematic.shotId,
+                    size: shot.cinematic.size,
+                    movement: shot.cinematic.movement,
+                    delivery: shot.cinematic.delivery,
+                  }
+                : {}),
               cameraMove: shot.cameraMove,
               label: shot.label,
               ...(frameIsLocal
@@ -1472,6 +1551,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           : null,
         avSyncOk,
         honestLabel,
+        // Phase-5: যাচাইকৃত সিনেম্যাটিক পরিকল্পনার সৎ সারসংক্ষেপ (গণনা/এনাম-কেবল)
+        ...(plan ? { cinematicPlan: summarizePlan(plan, engine) } : {}),
         lipSync: false, // §৫ — কথা-বলা শটে মুখের নড়াচড়ার দাবি নয়
       },
     });
@@ -1496,6 +1577,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     result.continuityWarnings = continuityWarnings;
     result.subtitles = !!srtContent;
     result.honestLabel = honestLabel;
+    // Phase-5: পরিকল্পনার সারসংক্ষেপ resultJson-এও (কার্ড/রিপোর্টের জন্য)
+    if (plan) result.cinematicPlan = summarizePlan(plan, engine);
     result.technicalReport = {
       hasVideo: vInfo.hasVideo,
       hasAudio: vInfo.hasAudio,

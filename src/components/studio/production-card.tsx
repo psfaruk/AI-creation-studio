@@ -53,7 +53,13 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ArtifactList } from '@/components/chat/artifact-view';
 import { toBnDigits } from '@/components/chat/bn-format';
-import { useConfigPanel, useSpecValidation, type SpecValidationLive } from '@/hooks/use-config-panel';
+import {
+  useConfigPanel,
+  useShotPlanPreview,
+  useSpecValidation,
+  type ShotPlanPreviewLive,
+  type SpecValidationLive,
+} from '@/hooks/use-config-panel';
 import { validateFieldsAgainstSchema, type ConfigPanelSchema, type ConfigPanelSongOption } from '@/lib/agent/config-panel';
 import { useProductions } from '@/hooks/use-productions';
 import { toast } from '@/hooks/use-toast';
@@ -68,6 +74,19 @@ import type {
   VideoEngine,
   VoicePreset,
 } from '@/lib/types';
+import type {
+  MovementDelivery,
+  PlanMovement,
+  ShotSize,
+} from '@/lib/agent/cinematic/types';
+import {
+  BEAT_SOURCE_LABELS_BN,
+  MOVEMENT_DELIVERY_LABELS_BN,
+  PLAN_MOVEMENTS,
+  PLAN_MOVEMENT_LABELS_BN,
+  SHOT_SIZES,
+  SHOT_SIZE_LABELS_BN,
+} from '@/lib/agent/cinematic/types';
 import { cn } from '@/lib/utils';
 
 // ------------------------------------------------------------
@@ -162,6 +181,13 @@ interface ParsedResult {
   honestLabel?: string;
   musicEngine?: string | null;
   musicSource?: string;
+  /** Phase-5: সিনেম্যাটিক পরিকল্পনার সারসংক্ষেপ (মিউজিক-ভিডিও/শর্টফিল্ম) */
+  cinematicPlan?: {
+    shotCount: number;
+    totalPlannedSec: number;
+    beatSource: string;
+    deliveryCounts: Record<string, number>;
+  };
 }
 
 /** ফলাফল-বিভাগে দেখানোর সৎ ইঞ্জিন-ব্যাজগুলো */
@@ -1106,6 +1132,252 @@ function PlanPreview({
   );
 }
 
+/** Phase-5 §5: মুভমেন্ট-ডেলিভারির সৎ ব্যাজ (লোকাল-মোশন/প্রম্পট-নির্দেশিত/সৎ-বিকল্পে নামানো)।
+ *  P5-5b কপি-ঐক্য: downgraded_to_local-এর জন্য কার্ডজুড়ে একটিই ক্যানোনিক্যাল
+ *  বাক্য "সৎ-বিকল্পে নামানো" (গণনা-সারি ও ফলাফল-সারির সঙ্গে অভিন্ন) —
+ *  "সৎ" শব্দটি বাক্যের ভেতরেই থাকায় আলাদা "(সৎ)" সাফিক্সের দরকার নেই। */
+const DELIVERY_BADGE_LABELS_BN: Record<MovementDelivery, string> = {
+  ...MOVEMENT_DELIVERY_LABELS_BN,
+  downgraded_to_local: 'সৎ-বিকল্পে নামানো',
+};
+
+function DeliveryBadge({ delivery }: { delivery: MovementDelivery }) {
+  const cls: Record<MovementDelivery, string> = {
+    local_motion: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+    prompt_guided: 'border-stone-400/40 bg-stone-400/10 text-stone-600 dark:text-stone-300',
+    downgraded_to_local: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  };
+  return (
+    <Badge
+      variant="outline"
+      className={cn('h-auto shrink-0 px-1.5 py-0.5 text-[10px] leading-snug', cls[delivery])}
+      title={DELIVERY_BADGE_LABELS_BN[delivery]}
+    >
+      {DELIVERY_BADGE_LABELS_BN[delivery]}
+    </Badge>
+  );
+}
+
+const THIN_SCROLL =
+  'pr-1 [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent';
+
+/** সৎ-সমন্বয়ের তালিকা একবারে যতটি দেখানো হয় — বেশি হলে সৎ কাটা-লেবেল বসে (P5-5b) */
+const VISIBLE_ADJUSTMENTS = 8;
+
+// ------------------------------------------------------------
+// Phase-5 §7: শট-পরিকল্পনা-প্রিভিউ — নিশ্চিতকরণের আগে সার্ভারে
+// নির্ধারকভাবে বানানো পরিকল্পনা (শূন্য-ব্যয় — কোনো প্রজন্ম নয়)।
+// মিউজিক-ভিডিওতে প্রতি-শট সাইজ/মুভমেন্ট সম্পাদনাযোগ্য — সম্পাদনা
+// spec.cinematicOverrides হয়ে যায়, সার্ভারে পুনঃপরিকল্পনা + পুনঃযাচাই
+// হয় (confirm §15-এর একই পথ)। শর্টফিল্মে কাঠামোগত কঙ্কাল — রিভিউ-কেবল।
+// ------------------------------------------------------------
+
+function ShotPlanPreview({
+  spec,
+  conversationId,
+  onChange,
+}: {
+  spec: CreativeJobSpec;
+  conversationId?: string;
+  onChange: (next: CreativeJobSpec) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { shotPlan, loadingPlan } = useShotPlanPreview(spec, conversationId);
+  const isMv = spec.type === 'music_video';
+
+  if (!loadingPlan && !shotPlan) return null;
+
+  /** প্রতি-শট সম্পাদনা → spec.cinematicOverrides (সার্ভারেই পুনঃযাচাই) */
+  const applyShotEdit = (index: number, patch: { size?: ShotSize; movement?: PlanMovement }) => {
+    const shot = shotPlan?.plan.shots[index];
+    if (!shot) return;
+    const others = (spec.cinematicOverrides?.shots ?? []).filter(o => o.index !== index);
+    const entry: { index: number; size?: ShotSize; movement?: PlanMovement } = {
+      index,
+      // প্রিভিউ-পরিকল্পনার বর্তমান মানই ভিত্তি; নতুন নির্বাচন তার উপরে বসে
+      size: patch.size ?? shot.size,
+      movement: patch.movement ?? shot.movement,
+    };
+    const shots = [...others, entry].sort((a, b) => a.index - b.index);
+    onChange({ ...spec, cinematicOverrides: { shots } });
+  };
+
+  const dc = shotPlan?.summary.deliveryCounts;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        className={cn(
+          'flex w-full items-center gap-2 rounded-lg border bg-background px-3 py-2.5 text-xs font-medium text-muted-foreground transition-colors',
+          'hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600/40',
+        )}
+        aria-label={`শট-পরিকল্পনা ${open ? 'লুকান' : 'দেখান'}`}
+      >
+        <Clapperboard className="size-3.5 shrink-0" aria-hidden="true" />
+        🎬 শট-পরিকল্পনা — {isMv ? 'ক্যামেরা-নির্দেশনাসহ (সম্পাদনাযোগ্য)' : 'কাঠামো (রিভিউ-কেবল)'}
+        <ChevronDown
+          className={cn('ml-auto size-3.5 shrink-0 transition-transform duration-200', open && 'rotate-180')}
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-2.5 rounded-lg border bg-muted/20 px-3 py-3 text-xs leading-relaxed">
+          {loadingPlan && !shotPlan ? (
+            <p className="flex items-center gap-1.5 text-muted-foreground" role="status">
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> শট-পরিকল্পনা হিসাব হচ্ছে (নির্ধারক, ব্যয়-মুক্ত)…
+            </p>
+          ) : shotPlan ? (
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="secondary" className="text-[11px] font-normal">
+                  {toBnDigits(shotPlan.summary.shotCount)}টি শট
+                </Badge>
+                <Badge variant="secondary" className="text-[11px] font-normal">
+                  মোট ≈{toBnDigits(Math.round(shotPlan.summary.totalPlannedSec))} সে.
+                </Badge>
+                <Badge variant="outline" className="text-[11px] font-normal">
+                  কাট-উৎস: {shotPlan.beatSourceLabel}
+                </Badge>
+              </div>
+              {dc && (
+                <p className="text-muted-foreground">
+                  <span className="font-medium">ক্যামেরা-ডেলিভারি:</span> {toBnDigits(dc.local_motion ?? 0)}টি লোকাল
+                  ক্যামেরা-মোশন (নিশ্চিত) · {toBnDigits(dc.prompt_guided ?? 0)}টি প্রম্পট-নির্দেশিত ·{' '}
+                  {toBnDigits(dc.downgraded_to_local ?? 0)}টি সৎ-বিকল্পে নামানো
+                </p>
+              )}
+              {shotPlan.analysisLabel && (
+                <p className="text-muted-foreground">অডিও-বিশ্লেষণ: {shotPlan.analysisLabel}</p>
+              )}
+              <div>
+                <p className="font-medium">শট-তালিকা (ক্রমে):</p>
+                <ul className={cn('mt-1 max-h-72 space-y-1.5 overflow-y-auto', THIN_SCROLL)} aria-label="শট-তালিকা">
+                  {shotPlan.plan.shots.map((s, i) => (
+                    <li key={s.shotId} className="rounded-md border bg-background/60 px-2.5 py-2">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-mono text-[11px] font-semibold text-muted-foreground">{s.shotId}</span>
+                        {/* P5-5b: হেডার বর্তমান শট-অবস্থা (size) থেকেই গৃহীত —
+                            ফ্রেমিং-ওভাররাইডের পরেও সদ্য-মান দেখায়; labelBn
+                            পরিকল্পক-লেখা ও ওভাররাইড-পূর্ববর্তী। শর্টফিল্মে
+                            labelBn-এ দৃশ্য-উদ্দেশ্য থাকে — সহায়ক প্রসঙ্গ হিসেবে
+                            মৃদু রঙে রয়ে যায় (নন-হেডার ব্যবহার)। */}
+                        <span className="min-w-0 flex-1 truncate">
+                          শট {toBnDigits(s.order + 1)} — {SHOT_SIZE_LABELS_BN[s.size]}
+                          {!isMv && <span className="text-muted-foreground"> · {s.labelBn}</span>}
+                        </span>
+                        <DeliveryBadge delivery={s.delivery} />
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                        <span>{SHOT_SIZE_LABELS_BN[s.size]}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{PLAN_MOVEMENT_LABELS_BN[s.movement]}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="tabular-nums">{toBnDigits(s.targetDurationSec.toFixed(1))} সে.</span>
+                        {s.startSec != null && s.endSec != null && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="tabular-nums">
+                              কাট {toBnDigits(s.startSec.toFixed(1))}–{toBnDigits(s.endSec.toFixed(1))} সে.
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      {isMv && (
+                        <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                          <div>
+                            <label className="sr-only" htmlFor={`shot-size-${s.shotId}`}>
+                              {s.shotId} ফ্রেমিং বদলান
+                            </label>
+                            <Select value={s.size} onValueChange={v => applyShotEdit(i, { size: v as ShotSize })}>
+                              <SelectTrigger
+                                id={`shot-size-${s.shotId}`}
+                                className="h-8 bg-background text-[11px]"
+                                aria-label={`${s.shotId} ফ্রেমিং`}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {SHOT_SIZES.map(sz => (
+                                  <SelectItem key={sz} value={sz} className="text-xs">
+                                    {SHOT_SIZE_LABELS_BN[sz]}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div>
+                            <label className="sr-only" htmlFor={`shot-move-${s.shotId}`}>
+                              {s.shotId} ক্যামেরা-মুভমেন্ট বদলান
+                            </label>
+                            <Select
+                              value={s.movement}
+                              onValueChange={v => applyShotEdit(i, { movement: v as PlanMovement })}
+                            >
+                              <SelectTrigger
+                                id={`shot-move-${s.shotId}`}
+                                className="h-8 bg-background text-[11px]"
+                                aria-label={`${s.shotId} ক্যামেরা-মুভমেন্ট`}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {PLAN_MOVEMENTS.map(mv => (
+                                  <SelectItem key={mv} value={mv} className="text-xs">
+                                    {PLAN_MOVEMENT_LABELS_BN[mv]}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {shotPlan.plan.adjustments.length > 0 && (
+                <div>
+                  <p className="font-medium">
+                    সৎ-সমন্বয় ({toBnDigits(shotPlan.plan.adjustments.length)}টি — সৎ-বিকল্পে নামানো/আপনার সম্পাদনা):
+                  </p>
+                  <ul className={cn('mt-1 max-h-24 space-y-0.5 overflow-y-auto pl-4', THIN_SCROLL)}>
+                    {shotPlan.plan.adjustments.slice(0, VISIBLE_ADJUSTMENTS).map((a, i) => (
+                      <li key={`${a.field}-${i}`} className="list-disc text-muted-foreground">
+                        {a.field}: {a.from} → {a.to} ({a.reason})
+                      </li>
+                    ))}
+                  </ul>
+                  {/* P5-5b: কাটা তালিকা সৎভাবে লেবেল-করা — মোট সংখ্যা শিরোনামেই আছে */}
+                  {shotPlan.plan.adjustments.length > VISIBLE_ADJUSTMENTS && (
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      … প্রথম {toBnDigits(VISIBLE_ADJUSTMENTS)}টি দেখানো হচ্ছে
+                    </p>
+                  )}
+                </div>
+              )}
+              <div>
+                <p className="font-medium">পরিচিত সীমা (সৎ-ঘোষণা):</p>
+                <ul className="mt-1 space-y-0.5 pl-4">
+                  {shotPlan.summary.limitations.map(l => (
+                    <li key={l} className="list-disc text-muted-foreground">
+                      {l}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-muted-foreground">
+                {isMv
+                  ? 'সম্পাদনা করলে পরিকল্পনা সার্ভারে পুনঃহিসাব ও পুনঃযাচাই হয় — এখানে কোনো প্রজন্ম শুরু হয় না; “✓ চালু করুন” চাপলেই চূড়ান্ত।'
+                  : 'চূড়ান্ত দৃশ্য ও শট-তালিকা জেনারেশন-সময়ে চিত্রনাট্য থেকে তৈরি হবে — এটি কাঠামোগত প্রিভিউ, তাই প্রতি-শট সম্পাদনা নেই।'}
+              </p>
+            </>
+          ) : null}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 /** Phase-4 D: লাইভ যাচাই-ফলাফলের কমপ্যাক্ট ব্লক (verdict + সমন্বয়/নোট/ত্রুটি) */
 function ValidationLiveBlock({ live, validating }: { live: SpecValidationLive | null; validating: boolean }) {
   if (!live && !validating) return null;
@@ -1343,6 +1615,15 @@ export function ProductionCard({ productionId }: { productionId: string }) {
             {/* Phase-4 E: পরিকল্পনা-প্রিভিউ — কর্মপথ/শট-আনুমান/অডিও-কৌশল/সীমা।
                 প্রদর্শন প্রজন্ম নয়: নিশ্চিত করার আগে কোনো ব্যয়বহুল কাজ শুরু হয় না */}
             <PlanPreview spec={spec} songs={songs} schema={schema} />
+            {/* Phase-5 §7: সিনেম্যাটিক শট-পরিকল্পনা — নির্ধারক, ব্যয়-মুক্ত,
+                সার্ভার-গণনাকৃত; মিউজিক-ভিডিওতে প্রতি-শট সম্পাদনা → ওভাররাইড */}
+            {(spec.type === 'music_video' || spec.type === 'short_film') && (
+              <ShotPlanPreview
+                spec={spec}
+                conversationId={view.conversationId}
+                onChange={next => setEditedSpec(next)}
+              />
+            )}
             {/* Phase-4 D: লাইভ সার্ভার-যাচাই (ডিবাউন্সড) — verdict +
                 সমন্বয়/নোট/ত্রুটি; ক্লায়েন্ট-দাবি কখনো রায় বদলায় না */}
             <ValidationLiveBlock live={live} validating={validating} />
@@ -1439,6 +1720,18 @@ export function ProductionCard({ productionId }: { productionId: string }) {
             )}
             {resultSummary?.quality && (
               <p className="text-xs text-muted-foreground">{resultSummary.quality}</p>
+            )}
+            {/* Phase-5: চূড়ান্ত ফলাফলে সিনেম্যাটিক পরিকল্পনার সৎ সারসংক্ষেপ */}
+            {resultSummary?.cinematicPlan && (
+              <p className="text-xs text-muted-foreground">
+                <span className="font-medium">শট-পরিকল্পনা:</span>{' '}
+                {toBnDigits(resultSummary.cinematicPlan.shotCount)}টি শট · কাট-উৎস:{' '}
+                {BEAT_SOURCE_LABELS_BN[resultSummary.cinematicPlan.beatSource as keyof typeof BEAT_SOURCE_LABELS_BN] ??
+                  resultSummary.cinematicPlan.beatSource}{' '}
+                · ডেলিভারি: {toBnDigits(resultSummary.cinematicPlan.deliveryCounts?.local_motion ?? 0)} লোকাল /{' '}
+                {toBnDigits(resultSummary.cinematicPlan.deliveryCounts?.prompt_guided ?? 0)} প্রম্পট-নির্দেশিত /{' '}
+                {toBnDigits(resultSummary.cinematicPlan.deliveryCounts?.downgraded_to_local ?? 0)} সৎ-বিকল্পে নামানো
+              </p>
             )}
             {view.artifacts.length > 0 && <ArtifactList artifacts={view.artifacts} />}
             {(isDone || view.status === 'failed' || view.status === 'cancelled') && (

@@ -546,6 +546,17 @@ async function runProduction(productionId: string): Promise<void> {
         artifacts,
         // শ্রেণি-সংকেত মাত্র — কোনো ত্রুটি-টেক্সট নয় (DB-তে সংরক্ষিত)
         errorCategoryHint: errorMessage ? 'see_error_field' : null,
+        // Phase-5: সিনেম্যাটিক পরিকল্পনা-মেট্রিকস (পরিকল্পক চলেনি → planMs=-1 →
+        // প্ল্যান-ব্লকই লাগে না; মানগুলো সংখ্যা-কেবল — REDACTION)
+        ...(videoAcc && videoAcc.planMs >= 0
+          ? {
+              plan: {
+                planMs: videoAcc.planMs,
+                plannedShots: videoAcc.plannedShots,
+                planAdjustments: videoAcc.planAdjustments,
+              },
+            }
+          : {}),
         ...(videoAcc
           ? {
               video: {
@@ -601,6 +612,16 @@ async function failProduction(productionId: string, message: string): Promise<vo
       stepsFailed: null,
       artifacts: null,
       errorCategoryHint: 'see_error_field',
+      // Phase-5: ব্যর্থ-পথেও পরিকল্পনা-মেট্রিকসের সৎ সারসংক্ষেপ
+      ...(videoAcc && videoAcc.planMs >= 0
+        ? {
+            plan: {
+              planMs: videoAcc.planMs,
+              plannedShots: videoAcc.plannedShots,
+              planAdjustments: videoAcc.planAdjustments,
+            },
+          }
+        : {}),
       ...(videoAcc
         ? {
             video: {

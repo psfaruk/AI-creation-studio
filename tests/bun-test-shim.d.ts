@@ -28,6 +28,8 @@ declare module 'bun:test' {
     toBeInstanceOf(constructor: new (...args: never[]) => unknown): void;
     /** REG-10h: হেক্স-নাম-প্যাটার্ন যাচাই */
     toMatch(pattern: RegExp | string): void;
+    /** REG-17: আর্টিফ্যাক্ট-metaJson-এর আংশিক-বস্তু যাচাই */
+    toMatchObject(expected: Record<string, unknown>): void;
     /** REG-1g: rejection + error-message assertions */
     rejects: Matcher<T>;
     toThrow(expected?: string | RegExp | Error): void;

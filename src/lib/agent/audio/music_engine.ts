@@ -777,20 +777,48 @@ const SR = 44100;
 
 type BarRole = 'intro' | 'verse' | 'chorus' | 'outro';
 
-export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<InstrumentalResult> {
-  const cfg = MOOD_CONFIGS[spec.mood];
-  const rng = makeRng(spec.seed ?? Date.now() % 100000);
+// ------------------------------------------------------------
+// Phase-5 — প্রসিডিউরাল গানের নির্ধারক গ্রিড (একক সত্যের উৎস)।
+// বিট/সেকশন-কাঠামো কেবল (মুড, BPM, দৈর্ঘ্য) থেকে নির্ধারক — rng/অডিও
+// সংশ্লেষণ নির্ভর নয়। পাইপলাইন (synthesizeInstrumental-এর ভেতরে) ও
+// নিশ্চিতকরণ-পূর্ব প্ল্যান-প্রিভিউ একই ফাংশন ডাকে — প্রিভিউ আর রানের
+// কাট-গ্রিড কখনো আলাদা হতে পারে না (আলাদা হলে সেটি বাগ)।
+// ------------------------------------------------------------
 
+export interface ProceduralSongGrid {
+  durationSec: number;
+  tempoBpm: number;
+  beatSec: number;
+  barSec: number;
+  totalBars: number;
+  roles: BarRole[];
+  beatsSec: number[];
+  sections: MusicSection[];
+}
+
+/** বার-ভূমিকা → শক্তিস্তর (music_video-র সেকশন-ম্যাপের একক উৎস) */
+export function barRoleEnergy(name: string): 'quiet' | 'medium' | 'loud' {
+  if (name === 'chorus') return 'loud';
+  if (name === 'intro' || name === 'outro') return 'quiet';
+  return 'medium';
+}
+
+/**
+ * প্রসিডিউরাল ইনস্ট্রুমেন্টালের বিট-গ্রিড/সেকশন-কাঠামো — অডিও ছাড়াই
+ * (সস্তা, নির্ধারক)। synthesizeInstrumental-ও ঠিক এই ফাংশনের ফলই ব্যবহার করে।
+ */
+export function proceduralSongGrid(spec: {
+  mood: MusicMood;
+  durationSec: number;
+  tempoBpm?: number;
+}): ProceduralSongGrid {
+  const cfg = MOOD_CONFIGS[spec.mood];
   const durationSec = Math.max(8, Math.min(120, Math.round(spec.durationSec)));
   let bpm = spec.tempoBpm ?? cfg.bpmRange[2];
   bpm = Math.max(cfg.bpmRange[0], Math.min(cfg.bpmRange[1], Math.round(bpm)));
   const beatSec = 60 / bpm;
   const barSec = beatSec * 4;
   const totalBars = Math.max(4, Math.ceil(durationSec / barSec));
-
-  const n = Math.ceil(durationSec * SR);
-  const L = new Float32Array(n);
-  const R = new Float32Array(n);
 
   const beatsSec: number[] = [];
   for (let t = 0; t < durationSec; t += beatSec) beatsSec.push(Math.round(t * 100) / 100);
@@ -827,6 +855,47 @@ export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<Instru
     if (last && last.name === name && last.endSec === s) last.endSec = e;
     else sections.push({ name, startSec: s, endSec: e });
   }
+
+  return { durationSec, tempoBpm: bpm, beatSec, barSec, totalBars, roles, beatsSec, sections };
+}
+
+/**
+ * মিউজিক-ভিডিও পাইপলাইনের মুড-নির্ণয়ের একক উৎস — প্রিভিউ ও রান একই
+ * ক্রমে (mood-ক্ষেত্র → মোট-টেক্সট → 'romantic') মুড বের করে।
+ */
+export function resolveInstrumentalMood(fields: {
+  mood?: string;
+  idea?: string;
+  title?: string;
+  genre?: string;
+}): MusicMood {
+  const moodText = `${fields.mood ?? ''} ${fields.idea ?? ''} ${fields.title ?? ''} ${fields.genre ?? ''}`;
+  return detectMoodFromText(String(fields.mood ?? '')) ?? detectMoodFromText(moodText) ?? 'romantic';
+}
+
+export async function synthesizeInstrumental(spec: MusicJobSpec): Promise<InstrumentalResult> {
+  const cfg = MOOD_CONFIGS[spec.mood];
+  const rng = makeRng(spec.seed ?? Date.now() % 100000);
+
+  const grid = proceduralSongGrid(spec);
+  const durationSec = grid.durationSec;
+  const bpm = grid.tempoBpm;
+  const beatSec = grid.beatSec;
+  const barSec = grid.barSec;
+  const totalBars = grid.totalBars;
+  const roles = grid.roles;
+  const beatsSec = grid.beatsSec;
+  const sections = grid.sections;
+  // গ্রিডের roles-থেকে বার-ভাগ (সূত্র-নকল নয় — কাঠামো থেকেই উদ্ভূত,
+  // proceduralSongGrid-এর সাথে কখনো আলাদা হতে পারে না)
+  const introEnd = roles.findIndex(r => r !== 'intro');
+  const introBars = introEnd === -1 ? roles.length : introEnd;
+  const mainBars = roles.filter(r => r === 'verse' || r === 'chorus').length;
+  const outroBars = Math.max(0, totalBars - introBars - mainBars);
+
+  const n = Math.ceil(durationSec * SR);
+  const L = new Float32Array(n);
+  const R = new Float32Array(n);
 
   const penta = cfg.minor ? PENTA_MINOR : PENTA_MAJOR;
 

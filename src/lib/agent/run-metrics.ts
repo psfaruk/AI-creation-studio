@@ -103,6 +103,14 @@ export function noteIntentPlanningMs(runId: string, ms: number): void {
 // ------------------------------------------------------------
 
 export interface ProductionMetricsAcc {
+  /** Phase-5: নির্ধারক সিনেম্যাটিক পরিকল্পক-কলের প্রকৃত সময় (ms)।
+   * -1 = পরিকল্পক-পথ চলেনি (চ্যাট/motion_video)। সঞ্চয়কারীর অভিন্ন-নীতি:
+   * প্রতিটি ক্ষেত্র সংখ্যা (REDACTION — REG-11b-র "কেবল সংখ্যা" চুক্তি)। */
+  planMs: number;
+  /** Phase-5: পরিকল্পিত শট-সংখ্যা (-1 = পরিকল্পক চলেনি) */
+  plannedShots: number;
+  /** Phase-5: পরিকল্পনার সৎ-সমন্বয়-নোটের সংখ্যা (-1 = পরিকল্পক চলেনি) */
+  planAdjustments: number;
   /** generateVideoClip-এ প্রবেশ করা মোট শট-কল */
   shotsRequested: number;
   /** ডিস্ক-ক্যাশ থেকে ফেরা (প্রোভাইডার-কল এড়ানো) */
@@ -139,6 +147,7 @@ export function getProductionMetrics(productionId: string | null | undefined): P
   let acc = prodAccMap().get(productionId);
   if (!acc) {
     acc = {
+      planMs: -1, plannedShots: -1, planAdjustments: -1,
       shotsRequested: 0, shotsFromCache: 0, shotsJoined: 0, providerSubmits: 0,
       shotsBypassed: 0, cacheStores: 0, cacheInvalid: 0,
       submitMsTotal: 0, pollMsTotal: 0, downloadMsTotal: 0, validateMsTotal: 0,
@@ -195,6 +204,21 @@ export function noteVideoCacheEvent(productionId: string | null | undefined, kin
   else acc.cacheInvalid++;
 }
 
+/**
+ * Phase-5: নির্ধারক সিনেম্যাটিক পরিকল্পকের প্রকৃত মাপ জমা (এক প্রোডাকশনে
+ * একবারই চলে — প্রথম জমাই চূড়ান্ত)। গণনা/সময়-কেবল — কোনো প্রম্পট-টেক্সট নয়।
+ */
+export function notePlanMetrics(
+  productionId: string | null | undefined,
+  m: { planMs: number; plannedShots: number; planAdjustments: number }
+): void {
+  const acc = getProductionMetrics(productionId);
+  if (!acc) return;
+  acc.planMs = Math.max(0, Math.round(m.planMs));
+  acc.plannedShots = m.plannedShots;
+  acc.planAdjustments = m.planAdjustments;
+}
+
 /** প্রোডাকশন-সমাপ্তিতে সঞ্চয়কারী ফেলে দাও (মেমরি-স্বাস্থ্য) */
 export function clearProductionMetrics(productionId: string): void {
   prodAccMap().delete(productionId);
@@ -246,6 +270,13 @@ export function logProductionMetrics(fields: {
   stepsFailed: number | null;
   artifacts: number | null;
   errorCategoryHint: string | null;
+  /** Phase-5: সিনেম্যাটিক পরিকল্পনা-মেট্রিকস (null/অনুপস্থিত = পরিকল্পক-পথ
+   * চলেনি — চ্যাট/motion_video)। মানগুলি সংখ্যা-কেবল (REDACTION)। */
+  plan?: {
+    planMs: number;
+    plannedShots: number;
+    planAdjustments: number;
+  } | null;
   /** Phase-3 D: ভিডিও-ধাপ মেট্রিকস (সঞ্চয়কারী না থাকলে null — চ্যাট-পথ) */
   video?: {
     shotsRequested: number;

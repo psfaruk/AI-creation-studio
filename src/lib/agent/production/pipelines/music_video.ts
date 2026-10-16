@@ -25,7 +25,6 @@ import {
   kenBurnsClip,
   concatClips,
   muxAudio,
-  imagePromptForShot,
   portraitPrompt,
   sanitize,
   segmentDialogueToCues,
@@ -34,7 +33,11 @@ import {
 } from '../../film-helpers';
 import { generateImageBuffer, editImageBuffer, chatJson, isRateLimitErrorText } from '../../sdk-helpers';
 import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
-import type { CameraMove } from '@/lib/types';
+import type { CinematicPlan, CinematicShot, PlanBeatSource } from '../../cinematic/types';
+import { SHOT_SIZE_LABELS_BN } from '../../cinematic/types';
+import { applyOverrides, planMusicVideo, summarizePlan } from '../../cinematic/planner';
+import { buildCinematicVideoPrompt, buildCinematicImagePrompt } from '../../cinematic/prompt';
+import { notePlanMetrics } from '../../run-metrics';
 import { audioQuality, ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
 import {
@@ -42,30 +45,24 @@ import {
   prewarmVideoClip,
   videoGenerationEtaNote,
 } from '../../video/ai_video';
-import { generateAiShot, buildAiVideoPrompt, toDataUrl, aiClipDurationSec, type ShotEngineRecord } from './motion_video';
+import { generateAiShot, toDataUrl, aiClipDurationSec, type ShotEngineRecord } from './motion_video';
 import {
   synthesizeInstrumental,
   analyzeAudioEnergy,
-  detectMoodFromText,
   moodLabel,
   MUSIC_ENGINE_LABEL,
+  barRoleEnergy,
+  resolveInstrumentalMood,
   type MusicMood,
 } from '../../audio/music_engine';
 import { resolveVoice } from '../../audio/language_controller';
 import { db } from '@/lib/db';
 
-type MvShotType = 'performance' | 'close_up' | 'wide' | 'establishing';
-
 interface MvShot {
-  /** ইংরেজি জেনারেশন-বর্ণনা */
-  description: string;
-  /** বাংলা লেবেল */
-  label: string;
-  shotType: MvShotType;
-  cameraMove: CameraMove;
-  startSec: number;
-  endSec: number;
-  durationSec: number;
+  /** Phase-5: যাচাইকৃত সিনেম্যাটিক পরিকল্পনার শট — প্রম্পট/মেটাডেটার
+   * একক সত্যের উৎস (size/movement/delivery/framing সব এখানে) */
+  cinematic: CinematicShot;
+  /** LLM-নামানো চরিত্র (i2v-পোর্ট্রেট ম্যাচের জন্য) থাকলে */
   character?: string | null;
   framePath?: string;
   clipPath?: string;
@@ -78,15 +75,6 @@ interface MvCharacter {
   portraitDataUrl?: string;
   reused?: boolean;
 }
-
-const SHOT_TYPE_HINT: Record<MvShotType, string> = {
-  performance: 'performing musician singing into camera, expressive gestures, stage presence',
-  close_up: 'intimate close-up shot, expressive face detail',
-  wide: 'wide atmospheric shot, environment and scale',
-  establishing: 'establishing shot of the location, sweeping view',
-};
-
-const MOVES: CameraMove[] = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'];
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
@@ -115,11 +103,14 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
   let songBpm = 0;
   let musicSourceLabel = '';
   let analysisLabel = '';
+  /** Phase-5: আপলোড-গানের পথ চলেছে কি না (প্রসিডিউরাল নয়) — বিট-উৎসের সৎ লেবেলের ভিত্তি */
+  let uploadedSong = false;
   await ctx.runStep('song_input', 'গান ইনপুট ও বিট-বিশ্লেষণ', async (step: StepHandle) => {
     const desired = spec.durationSec && spec.durationSec > 0 ? spec.durationSec : 60;
     if (spec.songArtifactId) {
       songPath = await ctx.resolveArtifactFile(spec.songArtifactId);
       songArtifactId = spec.songArtifactId;
+      uploadedSong = true;
       const info = await mediaInfo(songPath);
       if (!info.hasAudio) throw new Error('আপলোড করা গানে অডিও স্ট্রিম পাওয়া যায়নি');
       songDuration = info.durationSec;
@@ -141,10 +132,15 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       await step.setDetail('গান ছাড়া নীরব মিউজিক-ভিডিও');
       notes.push('গান নেই — নীরব টাইমলাইন (musicSource: none)।');
     } else {
-      // §৩ — প্রসিডিউরাল ইনস্ট্রুমেন্টাল (সৎ লেবেলসহ)
-      const moodText = `${spec.mood ?? ''} ${spec.idea ?? ''} ${spec.title ?? ''} ${spec.genre ?? ''}`;
-      const mood: MusicMood =
-        detectMoodFromText(String(spec.mood ?? '')) ?? detectMoodFromText(moodText) ?? 'romantic';
+      // §৩ — প্রসিডিউরাল ইনস্ট্রুমেন্টাল (সৎ লেবেলসহ)।
+      // মুড-নির্ণয় ও বিট-গ্রিড এখন একক উৎস থেকে (resolveInstrumentalMood /
+      // proceduralSongGrid) — নিশ্চিতকরণ-পূর্ব প্ল্যান-প্রিভিউ একই গ্রিড দেখায়।
+      const mood: MusicMood = resolveInstrumentalMood({
+        mood: spec.mood,
+        idea: spec.idea,
+        title: spec.title,
+        genre: spec.genre,
+      });
       const dur = Math.max(8, Math.min(120, desired));
       await step.setDetail(`${moodLabel(mood)} মুডে প্রসিডিউরাল ইনস্ট্রুমেন্টাল (${dur} সে.) সংশ্লেষণ…`);
       const inst = await synthesizeInstrumental({ mood, durationSec: dur, tempoBpm: spec.tempoBpm, genre: spec.genre });
@@ -172,7 +168,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       songArtifactId = art.id;
       songDuration = inst.meta.durationSec;
       beatsSec = inst.meta.beatsSec;
-      sections = inst.meta.sections.map(s => ({ name: s.name, startSec: s.startSec, endSec: s.endSec, energy: sectionEnergy(s.name) }));
+      sections = inst.meta.sections.map(s => ({ name: s.name, startSec: s.startSec, endSec: s.endSec, energy: barRoleEnergy(s.name) }));
       songBpm = inst.meta.tempoBpm;
       targetDuration = songDuration;
       songUseSec = songDuration;
@@ -195,65 +191,93 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
   let shots: MvShot[] = [];
   let characters: MvCharacter[] = [];
   let visualStyle = '';
-  await ctx.runStep('visual_plan', 'ভিজ্যুয়াল পরিকল্পনা (সেকশন-ভিত্তিক শট-তালিকা)', async (step: StepHandle) => {
+  /** Phase-5: যাচাইকৃত সিনেম্যাটিক পরিকল্পনা — artifact + final_qc-র জন্য */
+  let plan: CinematicPlan | null = null;
+  await ctx.runStep('visual_plan', 'সিনেম্যাটিক শট-পরিকল্পনা (নির্ধারক আর্ক + LLM বর্ণনা)', async (step: StepHandle) => {
     const limit = maxShots('music_video', spec.quality, engine);
-    // AI-পথে প্রতি শট ≤৯ সে. (৫/১০-গ্রিড + ট্রানজিশন-প্যাড), সিনেম্যাটিকে ২.৫–৬ সে.
-    // AI-পথে CogVideoX-3-এর ১০-সে. ক্লিপই একক — সেগমেন্ট-জানালা তার মধ্যে
-    const segCap = engine === 'ai_diffusion' ? 10 : 6;
-    const shotCount = Math.max(engine === 'ai_diffusion' ? 1 : 3, Math.min(limit, Math.ceil(targetDuration / segCap)));
 
-    // বিট-মার্কার থেকে কাট-পয়েন্ট — সমান দূরত্বে বিট বাছাই (প্রতিটি বিট নয়)
-    const usable = beatsSec.filter(b => b > 1 && b < targetDuration - 1);
-    const interior: number[] = [];
-    if (usable.length >= shotCount - 1) {
-      for (let k = 1; k <= shotCount - 1; k++) {
-        const idx = Math.min(usable.length - 1, Math.max(0, Math.round((k * usable.length) / shotCount) - 1));
-        interior.push(usable[idx]);
-      }
-    } else {
-      for (let k = 1; k <= shotCount - 1; k++) interior.push(round2((k * targetDuration) / shotCount));
+    // Phase-5: কাট-পয়েন্ট/আর্ক এখন নির্ধারক পরিকল্পকে (cinematic/planner)
+    // থেকে — Phase-4-এর অ্যালগরিদম হুবহু ওই মডিউলে উঠেছে; শট-সংখ্যার
+    // আচরণ অপরিবর্তিত। নিশ্চিতকরণ-পূর্ব প্রিভিউও একই ফাংশন ডাকে।
+    // বিট-উৎসের সৎ লেবেল: কেবল আপলোড-গানের প্রকৃত ffmpeg-বিশ্লেষণই
+    // 'measured' — প্রসিডিউরাল গানের বিট নির্ধারক BPM-গ্রিড
+    // ('bpm_grid_estimate', প্রিভিউ-পথের সাথে অভিন্ন), নীরব = 'silent'।
+    let beatSource: PlanBeatSource;
+    if (uploadedSong) beatSource = beatsSec.length > 0 ? 'measured' : 'duration_fallback';
+    else if (spec.musicSource === 'none') beatSource = 'silent';
+    else beatSource = 'bpm_grid_estimate';
+
+    const planStart = Date.now();
+    plan = applyOverrides(
+      planMusicVideo({
+        engine,
+        limit,
+        targetDurationSec: targetDuration,
+        beatsSec,
+        sections: sections.map(s => ({ startSec: s.startSec, endSec: s.endSec, energy: s.energy })),
+        beatSource,
+        // কাঠামো সবসময় পারফরম্যান্স-আর্ক ধরে (নির্ধারক — প্রিভিউ/রান অভিন্ন);
+        // শিল্পী-পোর্ট্রেট (i2v) রান-সময় LLM-চরিত্র থেকে ঐচ্ছিক সমৃদ্ধি।
+        hasArtist: true,
+        ...(spec.style ? { visualStyle: spec.style } : {}),
+      }),
+      spec.cinematicOverrides,
+      engine
+    );
+    notePlanMetrics(ctx.productionId, {
+      planMs: Date.now() - planStart,
+      plannedShots: plan.shots.length,
+      planAdjustments: plan.adjustments.length,
+    });
+    if (plan.adjustments.length > 0) {
+      ctx.partialNotes.push(
+        `শট-পরিকল্পনায় ${plan.adjustments.length}টি সৎ-সমন্বয় (ক্যামেরা-ডাউনগ্রেড/ব্যবহারকারী-ওভাররাইড) — shot-plan.json artifact-এ বিস্তারিত।`
+      );
     }
-    const bounds: number[] = [0];
-    for (const b of interior.sort((a, b) => a - b)) {
-      if (b - bounds[bounds.length - 1] >= 1.2 && targetDuration - b >= 1.2) bounds.push(round2(b));
-    }
-    bounds.push(targetDuration);
-    const segs = bounds.slice(0, -1).map((b, i) => ({
-      startSec: b,
-      endSec: bounds[i + 1],
-      energy: energyAt((b + bounds[i + 1]) / 2),
-    }));
+    const segs = plan.shots.map(cs => {
+      const s = cs.startSec ?? 0;
+      const e = cs.endSec ?? round2(s + cs.targetDurationSec);
+      return { startSec: s, endSec: e, energy: energyAt((s + e) / 2) };
+    });
 
     // S11: পরিকল্পনা-ধাপ কখনো পাইপলাইন মারবে না — ৪২৯-উইন্ডোতেও
-    // নিচের সৎ ফলব্যাক (fallbackDescription) পথ চালু থাকে।
+    // নিচের নির্ধারক সৎ-বর্ণনা (planner-এর fallbackActionEn) বহাল থাকে।
+    // Phase-5: LLM এখন কেবল স্লট-বর্ণনা লেখে — কাঠামো (সাইজ/মুভমেন্ট/কাট)
+    // নির্ধারক পরিকল্পনার, LLM-এর হাতে নয়। কল-সংখ্যা Phase-4-এর মতোই ১টি।
     let data: {
       visualStyle: string;
       characters: { name: string; appearance: string }[];
-      shots: { description: string; label: string; shotType: string; cameraMove: string; character?: string | null }[];
+      shots: { description: string; label: string; character?: string | null }[];
     } | null = null;
     try {
       ({ data } = await chatJson<{
         visualStyle: string;
         characters: { name: string; appearance: string }[];
-        shots: { description: string; label: string; shotType: string; cameraMove: string; character?: string | null }[];
+        shots: { description: string; label: string; character?: string | null }[];
       }>([
       {
         role: 'assistant',
         content:
-          'তুমি মিউজিক-ভিডিও পরিচালক। গানের সেকশন-শক্তি ও সেগমেন্ট-জানালা অনুযায়ী ঠিক ' +
-          `${segs.length}টি শট দাও — প্রতিটি সেগমেন্টের জন্য একটি করে।\n` +
-          'শটের shotType: "performance"|"close_up"|"wide"|"establishing" — জোরালো (loud/chorus) অংশে performance/close_up, শান্ত (quiet/intro/outro) অংশে wide/establishing।\n' +
-          'description ইংরেজিতে (ভিডিও-জেনারেশনের জন্য দৃশ্যমান বর্ণনা — পরিবেশ, চরিত্র, আলো), label বাংলায়।\n' +
-          'cameraMove: "zoom_in"|"zoom_out"|"pan_left"|"pan_right"|"static"।\n' +
-          'গায়ক/শিল্পী-চরিত্র দরকার হলে ঠিক ১টি চরিত্র দাও (সংগীতশিল্পী) — appearance ইংরেজিতে বিস্তারিত (বয়স, চেহারা, পোশাক); performance শটগুলোতে ওই চরিত্রের নাম দাও।\n' +
-          'শুধু JSON: {"visualStyle":"...","characters":[{"name":"...","appearance":"..."}],"shots":[{"description":"...","label":"...","shotType":"performance","cameraMove":"zoom_in","character":"নাম বা null"}]}',
+          'তুমি মিউজিক-ভিডিও পরিচালক। ক্যামেরা-কাঠামো (শট-সাইজ/ক্যামেরা-মুভমেন্ট/কাট-পয়েন্ট) নির্ধারক পরিকল্পক ঠিক করে দিয়েছে — তুমি শুধু প্রতিটি স্লটের দৃশ্যমান বর্ণনা লিখবে।\n' +
+          `ঠিক ${segs.length}টি শট — প্রতিটি সেগমেন্ট-জানালার জন্য একটি করে।\n` +
+          'description ইংরেজিতে — দৃশ্যমান বিষয়: পরিবেশ, চরিত্রের অবস্থান/অঙ্গভঙ্গি, আলো, মুড (ভিডিও-জেনারেশন প্রম্পটে যাবে); label বাংলায় (ছোট)।\n' +
+          'description-এ ক্যামেরা-নির্দেশ (zoom/pan/dolly/angle…) লিখো না — সেটি পরিকল্পনা থেকে প্রম্পটে স্বয়ংক্রিয়ভাবে যুক্ত হয়।\n' +
+          'গায়ক/শিল্পী-চরিত্র দরকার হলে ঠিক ১টি দাও (সংগীতশিল্পী) — appearance ইংরেজিতে বিস্তারিত (বয়স, চেহারা, পোশাক); পারফরম্যান্স/রিঅ্যাকশন স্লটের shots[].character-এ ওই নাম দাও, অন্যগুলোতে null।\n' +
+          'শুধু JSON: {"visualStyle":"...","characters":[{"name":"...","appearance":"..."}],"shots":[{"description":"...","label":"...","character":"নাম বা null"}]}',
       },
       {
         role: 'user',
         content:
           `শিরোনাম: ${spec.title}\nআইডিয়া: ${spec.idea ?? '(স্বাধীন)'}\nমোট দৈর্ঘ্য: ${targetDuration.toFixed(1)} সেকেন্ড\n` +
           `গান-উৎস: ${musicSourceLabel}${songBpm ? ` (${songBpm} BPM)` : ''}\n` +
-          `সেগমেন্ট-জানালা (শুরু–শেষ, শক্তি):\n${segs.map((s, i) => `  ${i + 1}. ${s.startSec.toFixed(1)}–${s.endSec.toFixed(1)} সে. [${s.energy}]`).join('\n')}\n` +
+          `শট-স্লট (কাঠামো স্থির — শুধু বর্ণনা লিখো):\n${segs
+            .map(
+              (s, i) =>
+                `  ${i + 1}. ${s.startSec.toFixed(1)}–${s.endSec.toFixed(1)} সে. [${s.energy}] — ${
+                  SHOT_SIZE_LABELS_BN[plan!.shots[i].size]
+                } (${plan!.shots[i].subject})`
+            )
+            .join('\n')}\n` +
           (spec.style ? `শৈলী-ইঙ্গিত: ${spec.style}` : ''),
       },
       ]));
@@ -261,34 +285,33 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       const msg = err instanceof Error ? err.message : String(err);
       ctx.partialNotes.push(
         isRateLimitErrorText(msg)
-          ? 'LLM ভিজ্যুয়াল-পরিকল্পনা রেট-লিমিটেড — সাধারণ শট-তালিকা ব্যবহৃত (AI-পরিকল্পনা নয়)।'
-          : `LLM ভিজ্যুয়াল-পরিকল্পনা ব্যর্থ (${msg.slice(0, 120)}) — সাধারণ শট-তালিকা ব্যবহৃত।`
+          ? 'LLM স্লট-বর্ণনা রেট-লিমিটেড — নির্ধারক সৎ-বর্ণনা ব্যবহৃত (AI-বর্ণনা নয়)।'
+          : `LLM স্লট-বর্ণনা ব্যর্থ (${msg.slice(0, 120)}) — নির্ধারক সৎ-বর্ণনা ব্যবহৃত।`
       );
       data = null;
     }
 
+    // স্লট-বর্ণনা পরিকল্পনায় ঢোকানো (কাঠামো অপরিবর্তিত থাকে)
     const rawShots = Array.isArray(data?.shots) ? data.shots : [];
-    const typeOk = ['performance', 'close_up', 'wide', 'establishing'];
-    shots = segs.map((seg, i) => {
+    plan.shots.forEach((cs, i) => {
       const s = rawShots[i];
       const description = String(s?.description ?? '').trim();
-      return {
-        description: (description || fallbackDescription(i, segs.length)).slice(0, 900),
-        label: String(s?.label ?? '').slice(0, 120) || `শট ${i + 1}`,
-        shotType: (typeOk.includes(String(s?.shotType)) ? s!.shotType : i === 0 ? 'establishing' : 'performance') as MvShotType,
-        cameraMove: (MOVES.includes(String(s?.cameraMove) as CameraMove)
-          ? (s!.cameraMove as CameraMove)
-          : MOVES[i % MOVES.length]) as CameraMove,
-        startSec: seg.startSec,
-        endSec: seg.endSec,
-        durationSec: round2(seg.endSec - seg.startSec),
-        character: s?.character ? String(s.character).slice(0, 60) : null,
-      };
+      if (description) cs.actionEn = description.slice(0, 800);
+      const label = String(s?.label ?? '').trim();
+      if (label) cs.labelBn = label.slice(0, 120);
+      // Phase-5-fix (P5-5a): LLM কোনো স্লটে শিল্পী-চরিত্রের নাম দিলে
+      // সেটি পারফরম্যান্স/রিঅ্যাকশন স্লটের পরিকল্পনা-প্রোভেনেন্সেও বসে
+      // (shot-plan.json artifact-এ দৃশ্যমান — আগে সবসময় null থাকত)।
+      const named = String(s?.character ?? '').trim();
+      if (named && (cs.subject === 'artist_performance' || cs.subject === 'reaction')) {
+        cs.character = named.slice(0, 60);
+      }
     });
     if (rawShots.length > segs.length) {
-      ctx.partialNotes.push(`LLM ${rawShots.length}টি শট দিয়েছিল — সেগমেন্ট-সীমা অনুযায়ী ${segs.length}টি রাখা হলো।`);
+      ctx.partialNotes.push(`LLM ${rawShots.length}টি বর্ণনা দিয়েছিল — সেগমেন্ট-সীমা অনুযায়ী ${segs.length}টি রাখা হলো।`);
     }
     visualStyle = String(data?.visualStyle ?? spec.style ?? '').slice(0, 200);
+    if (visualStyle) plan.visualStyle = visualStyle;
 
     const rawChars = Array.isArray(data?.characters) ? data.characters : [];
     characters = rawChars
@@ -296,9 +319,30 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
       .slice(0, 1) // সংগীতশিল্পী-চরিত্র ১টি থাকলেই চলে
       .map(c => ({ name: String(c.name).slice(0, 60), appearance: String(c.appearance).slice(0, 600) }));
 
+    shots = plan.shots.map((cs, i) => ({
+      cinematic: cs,
+      character: rawShots[i]?.character ? String(rawShots[i].character).slice(0, 60) : null,
+    }));
+
     await step.setDetail(
-      `${shots.length}টি শট (বিট-কাটে), ${characters.length > 0 ? `চরিত্র: ${characters[0].name}` : 'দৃশ্য-কেন্দ্রিক'}`
+      `${shots.length}টি শট (নির্ধারক আর্ক: এস্টাব্লিশিং → শক্তি-সচেতন মাঝ → সমাপনি), ${characters.length > 0 ? `চরিত্র: ${characters[0].name}` : 'দৃশ্য-কেন্দ্রিক'}`
     );
+
+    // Phase-5: পরিকল্পনা artifact — পুরো যাচাইকৃত plan (typed, versioned)
+    await ctx.registerArtifact({
+      buffer: Buffer.from(JSON.stringify(plan, null, 2), 'utf-8'),
+      kind: 'text',
+      mimeType: 'application/json',
+      fileName: 'shot-plan.json',
+      metaJson: {
+        pipeline: 'music_video',
+        kind: 'cinematic_plan',
+        version: plan.version,
+        shots: plan.shots.length,
+        beatSource: plan.beatSource,
+        adjustments: plan.adjustments.length,
+      },
+    });
 
     // স্পিড-আপ (২০২৬-১০-১৩): AI-পথে প্রথম শট এখনই চালু — চরিত্র-পোর্ট্রেট
     // ও পরের ধাপগুলোর সাথে জেনারেশন ওভারল্যাপ করবে (~২–৭ মিনিট সাশ্রয়)।
@@ -306,13 +350,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     if (engine === 'ai_diffusion' && shots.length > 0) {
       prewarmVideoClip(
         {
-          prompt: buildAiVideoPrompt(
-            shots[0].description,
-            visualStyle || spec.style,
-            shots[0].cameraMove,
-            SHOT_TYPE_HINT[shots[0].shotType]
-          ),
-          durationSec: aiClipDurationSec(shots[0].durationSec),
+          prompt: buildCinematicVideoPrompt(shots[0].cinematic, visualStyle || spec.style),
+          durationSec: aiClipDurationSec(shots[0].cinematic.targetDurationSec),
           quality: 'speed' as const,
           requestKey: `mv-${ctx.productionId}-shot-1`,
         },
@@ -444,14 +483,16 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
         await ctx.checkCancelled();
         const shot = shots[i];
         const needPad = !useXfade ? 0 : i === 0 || i === shots.length - 1 ? T / 2 : T;
-        const needed = round2(shot.durationSec + needPad);
+        const needed = round2(shot.cinematic.targetDurationSec + needPad);
         const artist = shot.character ? characters.find(c => c.name === shot.character && c.portraitDataUrl) : undefined;
         if (engine === 'ai_diffusion') {
           await step.setDetail(`শট ${i + 1}/${shots.length} জেনারেট হচ্ছে…`);
           try {
             const res = await generateAiShot({
               index: i,
-              prompt: buildAiVideoPrompt(shot.description, visualStyle || spec.style, shot.cameraMove, SHOT_TYPE_HINT[shot.shotType]),
+              // Phase-5: প্রম্পট এখন পরিকল্পনার শট থেকে — action/framing/
+              // composition/angle/movement/lighting সবই এখান দিয়ে যায়
+              prompt: buildCinematicVideoPrompt(shot.cinematic, visualStyle || spec.style),
               neededSec: needed,
               fps,
               width: dims.w,
@@ -461,10 +502,10 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               imageUrl: artist?.portraitDataUrl,
               // §১০ আইডেম্পোটেন্সি: এই প্রোডাকশনের এই শট = একই request_id
               requestKey: `mv-${ctx.productionId}-shot-${i + 1}`,
-              fallbackImagePrompt: imagePromptForShot(shot, visualStyle || spec.style),
+              fallbackImagePrompt: buildCinematicImagePrompt(shot.cinematic, visualStyle || spec.style),
               fallbackGenSize: genSize,
               fallbackReferenceUrl: artist?.portraitDataUrl,
-              fallbackMove: shot.cameraMove,
+              fallbackMove: shot.cinematic.fallbackMove,
               onStatus: note => step.setDetail(`শট ${i + 1}/${shots.length}: ${note}`),
               // §3-D: প্রোভাইডার-পোলের ভেতরেও বাতিল-চেক
               isCancelled: () => ctx.isCancelled(),
@@ -480,8 +521,12 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
                 metaJson: {
                   shot: i + 1,
                   of: shots.length,
-                  cameraMove: shot.cameraMove,
-                  label: shot.label,
+                  shotId: shot.cinematic.shotId,
+                  size: shot.cinematic.size,
+                  movement: shot.cinematic.movement,
+                  delivery: shot.cinematic.delivery,
+                  cameraMove: shot.cinematic.fallbackMove,
+                  label: shot.cinematic.labelBn,
                   note: res.frameLocal
                     ? `ক্লাউড AI-জেনারেশন ও ফলব্যাক-ফ্রেম ব্যর্থ — লোকাল প্রসিডিউরাল ফ্রেম (${LOCAL_FRAME_LABEL})`
                     : `AI-জেনারেশন ব্যর্থ — ফলব্যাক ফ্রেম (${res.fallbackError ?? ''})`,
@@ -512,12 +557,12 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               return (
                 await editImageBuffer(
                   artist.portraitDataUrl,
-                  `Place this same character in: ${shot.description}. Keep the face, hair and outfit identical to the reference. Consistent character.`,
+                  `Place this same character in: ${shot.cinematic.actionEn}. Keep the face, hair and outfit identical to the reference. Consistent character.`,
                   genSize
                 )
               ).buffer;
             }
-            return (await generateImageBuffer(imagePromptForShot(shot, visualStyle || spec.style), genSize)).buffer;
+            return (await generateImageBuffer(buildCinematicImagePrompt(shot.cinematic, visualStyle || spec.style), genSize)).buffer;
           };
           // S11: শট-বাদের আগে শেষ-উপায় — লোকাল প্রসিডিউরাল ফ্রেম (সৎ লেবেলসহ)
           let frameIsLocal = false;
@@ -538,7 +583,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
                   height: dims.h,
                   outputPath: path.join(wd, `frame-${i}.png`),
                   mood: String(spec.mood ?? ''),
-                  label: shot.label,
+                  label: shot.cinematic.labelBn,
                 });
                 buffer = await readFile(localFrame.path);
                 frameIsLocal = true;
@@ -567,14 +612,18 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
             metaJson: {
               shot: i + 1,
               of: shots.length,
-              cameraMove: shot.cameraMove,
-              label: shot.label,
+              shotId: shot.cinematic.shotId,
+              size: shot.cinematic.size,
+              movement: shot.cinematic.movement,
+              delivery: shot.cinematic.delivery,
+              cameraMove: shot.cinematic.fallbackMove,
+              label: shot.cinematic.labelBn,
               ...(frameIsLocal
                 ? { kind: 'local-procedural', honestLabel: LOCAL_FRAME_LABEL, note: 'local-procedural — AI ফ্রেম নয়' }
                 : {}),
             },
           });
-          await step.setDetail(`শট ${i + 1}/${shots.length} মোশন ক্লিপ (${shot.cameraMove})`);
+          await step.setDetail(`শট ${i + 1}/${shots.length} মোশন ক্লিপ (${shot.cinematic.fallbackMove})`);
           const clipPath = path.join(wd, `clip-${i}.mp4`);
           try {
             await kenBurnsClip(framePath, clipPath, {
@@ -582,7 +631,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
               fps: fps as 24 | 25 | 30,
               width: dims.w,
               height: dims.h,
-              move: shot.cameraMove,
+              move: shot.cinematic.fallbackMove,
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -592,7 +641,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
                 fps: fps as 24 | 25 | 30,
                 width: dims.w,
                 height: dims.h,
-                move: shot.cameraMove,
+                move: shot.cinematic.fallbackMove,
               });
             } catch {
               ctx.partialNotes.push(`শট ${i + 1}-এর ক্লিপ ব্যর্থ (${msg.slice(0, 120)}) — বাদ`);
@@ -635,7 +684,7 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     for (let i = 0; i < shots.length; i++) {
       const shot = shots[i];
       const needPad = !useXfade ? 0 : i === 0 || i === shots.length - 1 ? T / 2 : T;
-      const want = round2(shot.durationSec + needPad);
+      const want = round2(shot.cinematic.targetDurationSec + needPad);
       const dst = path.join(wd, `cut-${i}.mp4`);
       await runFfmpeg(
         [
@@ -800,9 +849,11 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
           artifactId: songArtifactId,
           ...(analysisLabel ? { analysis: analysisLabel } : {}),
         },
-        cutPoints: shots.map(s => s.startSec),
+        cutPoints: shots.map(s => s.cinematic.startSec ?? 0),
         shotEngineLabels,
         shotEngines,
+        // Phase-5: যাচাইকৃত সিনেম্যাটিক পরিকল্পনার সৎ সারসংক্ষেপ (গণনা/এনাম-কেবল)
+        ...(plan ? { cinematicPlan: summarizePlan(plan, engine) } : {}),
         subtitles: !!srtContent,
         avSyncOk,
         honestLabel,
@@ -830,22 +881,10 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
     result.aspect = aspect;
     result.hasAudio = info.hasAudio;
     result.honestLabel = honestLabel;
+    // Phase-5: পরিকল্পনার সারসংক্ষেপ resultJson-এও (কার্ড/রিপোর্টের জন্য)
+    if (plan) result.cinematicPlan = summarizePlan(plan, engine);
     result.notes = notes;
   }, { timeoutMs: 10 * 60_000 }); // S10
 
   return { result };
 };
-
-/** সেকশন-নাম → শক্তি-স্তর (প্রসিডিউরাল গানের intro/verse/chorus/outro) */
-function sectionEnergy(name: string): string {
-  if (name === 'chorus') return 'loud';
-  if (name === 'intro' || name === 'outro') return 'quiet';
-  return 'medium';
-}
-
-/** LLM শট না দিলে সৎ সাধারণ বর্ণনা */
-function fallbackDescription(i: number, total: number): string {
-  if (i === 0) return 'Cinematic establishing shot introducing the world of the song';
-  if (i === total - 1) return 'Emotional closing shot as the music resolves';
-  return 'Atmospheric visual montage matching the energy of the music';
-}

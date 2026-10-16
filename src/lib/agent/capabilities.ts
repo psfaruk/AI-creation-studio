@@ -15,6 +15,9 @@ import type {
   ValidatedSpec,
 } from '@/lib/types';
 import type { ImageSize } from './sdk-helpers';
+// Phase-5: শট-ওভাররাইড স্যানিটাইজার (বিশুদ্ধ ফাংশন — চক্রবিহীন:
+// cinematic/planner কেবল নিজস্ব টাইপ + capability_map আমদানি করে)
+import { sanitizeOverridesInput } from './cinematic/planner';
 
 // ------------------------------------------------------------
 // মাপ-মানচিত্র: aspect → জেনারেশন সাইজ ও আউটপুট পিক্সেল
@@ -350,6 +353,26 @@ export function validateSpec(raw: unknown): SpecValidationResult {
   }
   if (input.musicSource === 'procedural' || input.musicSource === 'uploaded_song' || input.musicSource === 'none') {
     spec.musicSource = input.musicSource;
+  }
+
+  // --- Phase-5: সিনেম্যাটিক শট-ওভাররাইড (শুধু মিউজিক ভিডিও) ---
+  // §১৫-নিরাপত্তা: validateSpec পরিচিত ক্ষেত্র থেকেই spec পুনর্গঠন করে —
+  // এই পার্সিংটি না থাকলে কনফার্মের সময় ব্যবহারকারীর শট-সম্পাদনা নীরবে
+  // ঝরে যেত (REG-14l-শ্রেণির চুক্তি-ফাঁক)। অবিশ্বস্ত ইনপুট স্যানিটাইজ হয়।
+  if (type === 'music_video' && input.cinematicOverrides != null) {
+    const limit = maxShots('music_video', spec.quality, spec.videoEngine);
+    const { overrides, droppedCount } = sanitizeOverridesInput(input.cinematicOverrides, limit);
+    if (overrides) {
+      spec.cinematicOverrides = overrides;
+    }
+    if (droppedCount > 0) {
+      adjustments.push({
+        field: 'cinematicOverrides',
+        from: `${droppedCount}টি অবৈধ এন্ট্রি`,
+        to: overrides ? 'বাদ দিয়ে বাকিগুলি গৃহীত' : 'সম্পূর্ণ বাদ',
+        reason: 'অবৈধ শট-সূচি/এনাম — সার্ভার-স্যানিটাইজেশন',
+      });
+    }
   }
 
   // --- resolution ---

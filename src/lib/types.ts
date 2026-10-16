@@ -4,6 +4,11 @@
 // কোনো এজেন্ট পক্ষ চুক্তি ছাড়া এটি পরিবর্তন করবে না।
 // ============================================================
 
+// Phase-5: কেবল-টাইপ আমদানি (রানটাইম-চক্র নেই — মুছে যায়)।
+// cinematic/types নিজে CameraMove-এর জন্য এই মডিউলের টাইপ নেয় —
+// দুই দিকেই type-only বলে টাইপ-স্তরের বিজোড় নয়।
+import type { CinematicOverrides } from './agent/cinematic/types';
+
 export type ToolCategory =
   | 'research'
   | 'media'
@@ -586,6 +591,12 @@ export interface CreativeJobSpec {
   genre?: string; // গান/ভিডিওর ধরন
   tempoBpm?: number; // ৬০–১৭০
   musicSource?: MusicSource; // মিউজিক ভিডিওর গান: আপলোড না করলে প্রসিডিউরাল ইনস্ট্রুমেন্টাল
+  /**
+   * Phase-5 (সিনেম্যাটিক ডিরেক্টর): ব্যবহারকারীর শট-স্তরের পছন্দ —
+   * মিউজিক-ভিডিও প্ল্যান-প্রিভিউ থেকে (প্রতি শটে size/movement)।
+   * সার্ভারেই স্যানিটাইজ হয় (validateSpec) — কাঠামো নির্ধারক প্ল্যানারের।
+   */
+  cinematicOverrides?: CinematicOverrides;
 }
 
 export interface SpecAdjustment {

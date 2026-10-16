@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { withStudioToken } from '@/components/auth/security-gate';
 import type { ConfigPanelSchema } from '@/lib/agent/config-panel';
+import type { CinematicPlan, CinematicPlanSummary } from '@/lib/agent/cinematic/types';
 import type { CreativeJobSpec, ProductionType } from '@/lib/types';
 
 const schemaCache = new Map<string, ConfigPanelSchema>();
@@ -102,6 +103,10 @@ export function useSpecValidation(spec: CreativeJobSpec | null): {
 
   useEffect(() => {
     if (!specJson) return;
+    // পুরনন্ত-উত্তর রেস-প্রহার: spec বদলে গেলে আগের অনুরোধের দেরি-করা উত্তর
+    // নতুন ফলাফলের উপরে setState করতে দেওয়া যাবে না — useConfigPanel-এর
+    // cancelled-প্যাটার্নেই প্রহার (P5-5b)
+    let cancelled = false;
     // অবস্থা স্থির করে ডিবাউন্স — দ্রুত টাইপিং/নির্বাচনে বারবার কল নয়
     const t = setTimeout(async () => {
       setValidatingState(true);
@@ -111,6 +116,7 @@ export function useSpecValidation(spec: CreativeJobSpec | null): {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ spec: JSON.parse(specJson) }),
         });
+        if (cancelled) return;
         if (!res.ok) {
           // রেট-লিমিট/নেটওয়ার্ক-ব্যর্থতায় প্যানেল অবরুদ্ধ হবে না —
           // নীরব-স্কিপ (confirm-এ সার্ভার-পুনঃযাচাই তো আছেই)
@@ -127,6 +133,7 @@ export function useSpecValidation(spec: CreativeJobSpec | null): {
             notes?: string[];
           };
         };
+        if (cancelled) return;
         setLiveState({
           verdict: data.verdict,
           errors: data.validation?.errors ?? [],
@@ -137,10 +144,12 @@ export function useSpecValidation(spec: CreativeJobSpec | null): {
         setValidatingState(false);
       } catch {
         // নেটওয়ার্ক — নীরব; আগের ফলাফলই থাকে
+        if (cancelled) return;
         setValidatingState(false);
       }
     }, DEBOUNCE_MS);
     return () => {
+      cancelled = true;
       clearTimeout(t);
     };
   }, [specJson]);
@@ -150,5 +159,81 @@ export function useSpecValidation(spec: CreativeJobSpec | null): {
   return {
     live: spec ? liveState : null,
     validating: spec ? validatingState : false,
+  };
+}
+
+// ------------------------------------------------------------
+// Phase-5 §7: নিশ্চিতকরণ-পূর্ব সিনেম্যাটিক শট-পরিকল্পনার প্রিভিউ
+// (ডিবাউন্সড, শূন্য-ব্যয়)। সার্ভারই পুরো পরিকল্পনা বানায় —
+// ক্লায়েন্ট কেবল প্রদর্শন করে; ব্যবহারকারীর সম্পাদনা spec-
+// cinematicOverrides হয়ে যায়, তারপর সার্ভারে পুনঃপরিকল্পনা + পুনঃযাচাই।
+// ------------------------------------------------------------
+
+export interface ShotPlanPreviewLive {
+  plan: CinematicPlan;
+  summary: CinematicPlanSummary;
+  /** কাট-টাইমিং-উৎসের সৎ বাংলা লেবেল */
+  beatSourceLabel: string;
+  /** অডিও-বিশ্লেষণের সৎ নোট (আপলোড গানে থাকে) */
+  analysisLabel?: string;
+}
+
+const PLAN_PREVIEW_TYPES = ['music_video', 'short_film'] as const;
+
+export function useShotPlanPreview(
+  spec: CreativeJobSpec | null,
+  conversationId?: string
+): {
+  shotPlan: ShotPlanPreviewLive | null;
+  loadingPlan: boolean;
+} {
+  const specJson = useMemo(() => (spec ? JSON.stringify(spec) : ''), [spec]);
+  const [state, setState] = useState<ShotPlanPreviewLive | null>(null);
+  const [loading, setLoading] = useState(false);
+  const applicable =
+    !!spec && (PLAN_PREVIEW_TYPES as readonly string[]).includes(spec.type);
+
+  useEffect(() => {
+    if (!applicable || !specJson) return;
+    // পুরনন্ত-উত্তর রেস-প্রহার: ওভাররাইড/সেটিংস-সম্পাদনায় spec দ্রুত বদলায় —
+    // আগের অনুরোধের দেরি-করা উত্তর নতুন পরিকল্পনার উপরে setState করতে
+    // দেওয়া যাবে না (useConfigPanel-এর cancelled-প্যাটার্ন; P5-5b)
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(withStudioToken('/api/productions/plan-preview'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            spec: JSON.parse(specJson),
+            ...(conversationId ? { conversationId } : {}),
+          }),
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          // রেট-লিমিট/যাচাই-ব্যর্থতা — নীরব-স্কিপ; সেকশন লুকানো থাকে
+          setLoading(false);
+          return;
+        }
+        const data = (await res.json()) as ShotPlanPreviewLive;
+        if (cancelled) return;
+        setState(data);
+        setLoading(false);
+      } catch {
+        // নেটওয়ার্ক — নীরব; আগের ফলাফলই থাকে
+        if (cancelled) return;
+        setLoading(false);
+      }
+    }, DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [specJson, applicable, conversationId]);
+
+  return {
+    shotPlan: applicable ? state : null,
+    loadingPlan: applicable ? loading : false,
   };
 }
