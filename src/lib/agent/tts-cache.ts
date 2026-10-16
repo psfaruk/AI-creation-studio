@@ -16,7 +16,7 @@
 // ============================================================
 
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { synthesizeSpeech } from './sdk-helpers';
 import type { SpeechResult, TtsVoice } from './sdk-helpers';
@@ -116,8 +116,78 @@ async function writeToCache(
     };
     await writeFile(path.join(dir, `${base}.${result.ext}`), result.buffer);
     await writeFile(path.join(dir, `${base}.meta.json`), JSON.stringify(meta), 'utf8');
+    // A1-F04 (R-FIX-1): প্রতি ২০তম লেখায় আকার-পরিস্রাবণ (best-effort, নীরব)
+    const wc = writeCounter();
+    wc.n += 1;
+    if (wc.n % 20 === 0) await sweepCacheIfLarge();
   } catch {
     // ইচ্ছাকৃত নীরবতা — ক্যাশ-লেখা ব্যর্থতা মূল ফলাফলকে স্পর্শ করবে না
+  }
+}
+
+// ------------------------------------------------------------
+// A1-F04 (R-FIX-1): সীমাবদ্ধ আকার — ২৫৬ MiB ছাড়লে পুরোনো এন্ট্রি মুছে
+// ২২৪ MiB-এ নামে (createdAt-ভিত্তিক LRU; শট-ক্যাশের আকার-সীমা-নীতির আলোকে)।
+// ডিস্ক-ব্যর্থতা সর্বদা নীরব — মূল কলকে স্পর্শ করবে না।
+// ------------------------------------------------------------
+const TTS_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+const TTS_CACHE_TARGET_BYTES = 224 * 1024 * 1024;
+
+function writeCounter(): { n: number } {
+  const g2 = globalThis as any;
+  if (!g2.__ttsCacheWriteCount) g2.__ttsCacheWriteCount = { n: 0 };
+  return g2.__ttsCacheWriteCount;
+}
+
+async function sweepCacheIfLarge(): Promise<void> {
+  try {
+    const entries: { dir: string; base: string; size: number; createdAt: string }[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let names: string[] = [];
+      try {
+        names = await readdir(dir);
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        const p = path.join(dir, name);
+        let st;
+        try {
+          st = await stat(p);
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) {
+          await walk(p);
+        } else if (name.endsWith('.meta.json')) {
+          try {
+            const meta = JSON.parse(await readFile(p, 'utf8')) as TtsCacheMeta;
+            const base = name.replace(/\.meta\.json$/, '');
+            let audioSize = 0;
+            try {
+              audioSize = (await stat(path.join(dir, `${base}.${meta.ext}`))).size;
+            } catch {}
+            entries.push({ dir, base, size: st.size + audioSize, createdAt: meta.createdAt ?? '' });
+          } catch {}
+        }
+      }
+    };
+    await walk(TTS_CACHE_DIR);
+    const total = entries.reduce((s, e) => s + e.size, 0);
+    if (total <= TTS_CACHE_MAX_BYTES) return;
+    entries.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)); // পুরোনো আগে
+    let toFree = total - TTS_CACHE_TARGET_BYTES;
+    for (const e of entries) {
+      if (toFree <= 0) break;
+      try {
+        for (const name of await readdir(e.dir)) {
+          if (name.startsWith(e.base)) await rm(path.join(e.dir, name), { force: true });
+        }
+        toFree -= e.size;
+      } catch {}
+    }
+  } catch {
+    // ইচ্ছাকৃত নীরবতা — পরিস্রাবণ-ব্যর্থতা মূল কলকে স্পর্শ করবে না
   }
 }
 

@@ -552,14 +552,19 @@ export async function generateVideoClip(
     return generateVideoClipUncached(req, opts, t0, { store: false, prodId });
   }
 
-  // ফিঙ্গারপ্রিন্ট = ঠিক যা প্রোভাইডারে যায় (স্লাইস-পরের প্রম্পট, ক্ল্যাম্পকৃত
-  // স্থায়িত্ব, ডিফল্ট-সহ গুণমান) — w/h/fps ইচ্ছাকৃতভাবে বাদ: লোকাল-স্বাভাবিকীকরণ,
-  // হিটে নির্ধারকভাবে পুনঃপ্রয়োগ হয় (shot_cache.ts-এর নীতি-টীকা)
+  // ফিঙ্গারপ্রিন্ট = ঠিক যা প্রোভাইডারে যায় (স্লাইস-পরের প্রম্পট — A1-F03:
+  // বাইট-অনুরাল, .trim() নয়: submitVideoTask-এর বডি {prompt: slice(0,2000)}
+  // অপরিবর্তিত, তাই কী-ও তাই; ক্ল্যাম্পকৃত স্থায়িত্ব, ডিফল্ট-সহ গুণমান) —
+  // w/h/fps ইচ্ছাকৃতভাবে বাদ: লোকাল-স্বাভাবিকীকরণ, হিটে নির্ধারকভাবে
+  // পুনঃপ্রয়োগ হয় (shot_cache.ts-এর নীতি-টীকা)। SCHEMA_VERSION বাড়ানোর
+  // দরকার নেই — পুরনো এন্ট্রিগুলো নিজের (ট্রিম-করা) কী-তেই বৈধ থাকে;
+  // পরিবর্তনটি শুধু শুরু/শেষ-হোয়াইটস্পেস-ভিন্ন প্রম্পটকে আলাদা করে
+  // (আগে ভুলত মার্জ হত, এখন হয় না)।
   const duration = clampDuration(req.durationSec);
   const fp = shotCacheFingerprint({
     v: SHOT_CACHE_SCHEMA_VERSION,
     model: AI_VIDEO_MODEL,
-    prompt: req.prompt.slice(0, 2000).trim(),
+    prompt: req.prompt.slice(0, 2000),
     durationSec: duration,
     quality: req.quality ?? 'speed',
     imageUrl: req.imageUrl ?? null,

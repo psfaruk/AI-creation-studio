@@ -52,6 +52,12 @@ export interface VoiceoverOutcome {
   /** ব্যবহারকারীর অনুরোধকৃত কণ্ঠ (voiceId দেওয়া হয়নি তো null) */
   requestedVoice: string | null;
   language: SpeechLanguage;
+  /**
+   * B-F09 (R-FIX-2): খণ্ডগুলোর সৎ অবস্থা-নোটের ডিডুপ-সমষ্টি (যাচাই-বন্ধ/
+   * ইঞ্জিন-ফলব্যাক/নর্মালাইজেশন) — কলার (motion_video) এগুলো partialNote-এ
+   * প্রকাশ করে, শুধু মেটাডেটায় ডুবে থাকে না।
+   */
+  honestyNotes: string[];
 }
 
 /** খণ্ডগুলোর ফাইলনাম-প্যাটার্ন আগের লুপের মতোই: voice-<i>.wav */
@@ -108,5 +114,14 @@ export async function synthesizeVoiceoverChunks(opts: {
     }
   }
 
-  return { chunks, failures, requestedVoice: opts.voiceId ?? null, language: opts.language };
+  // B-F09 (R-FIX-2): খণ্ডের সৎ অবস্থা-নোটগুলোর ডিডুপ-সমষ্টি — কলারের
+  // partialNote-প্রকাশের জন্য (নোট-কেবল মেটাডেটার নীরবতা দূর করে)
+  const honestyNotes: string[] = [];
+  for (const c of chunks) {
+    for (const n of c.notes) {
+      if (!honestyNotes.includes(n)) honestyNotes.push(n);
+    }
+  }
+
+  return { chunks, failures, requestedVoice: opts.voiceId ?? null, language: opts.language, honestyNotes };
 }

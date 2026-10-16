@@ -24,6 +24,8 @@
 // ============================================================
 
 import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import WebSocket from 'ws';
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
@@ -202,7 +204,13 @@ function dateToString(): string {
 // ------------------------------------------------------------
 
 const SEGMENT_CHAR_LIMIT = 1200;
-const WS_TIMEOUT_MS = 30_000;
+/** প্রতি-অংশ WSS সময়সীমা (৩০ সে.) — টেস্টে setEdgeWsTimeoutForTests দিয়ে ছোট করা যায় */
+let wsTimeoutMs = 30_000;
+
+/** [শুধু টেস্ট] WSS টাইমআউট ছোট করা — hermetic adapter-ইউনিটে ৩০ সে. অপেক্ষা এড়াতে (B-F11) */
+export function setEdgeWsTimeoutForTests(ms: number): void {
+  wsTimeoutMs = Math.max(20, Math.floor(ms));
+}
 
 /** দীর্ঘ লেখা বাক্য-সীমায় ভাগ (Edge-এক কলে খুব দীর্ঘ টেক্সট অস্থিতিশীল) */
 export function splitForEdge(text: string, limit = SEGMENT_CHAR_LIMIT): string[] {
@@ -263,7 +271,7 @@ function synthesizeSegment(segment: string, voice: EdgeVoiceId, speed: number, p
 
     const ws = new WebSocket(url, { headers, perMessageDeflate: true });
     const chunks: Buffer[] = [];
-    const timer = setTimeout(() => finish(new Error('Edge TTS সময়সীমা (৩০ সে.)')), WS_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(new Error(`Edge TTS সময়সীমা (${Math.round(wsTimeoutMs / 1000)} সে.)`)), wsTimeoutMs);
 
     ws.on('open', () => {
       const dateStr = dateToString();
@@ -394,6 +402,92 @@ export async function synthesizeEdgeSpeech(
 
 let healthCache: { at: number; ok: boolean; note: string } | null = null;
 
+/**
+ * সিঙ্ক্রোনাস স্বাস্থ্য-স্ন্যাপশট (B-F07): সর্বশেষ প্রোবের ক্যাশে থেকে পড়া —
+ * প্রোব কখনো ছুঁড়ে না। কখনো প্রোব হয়নি হলে status='unknown' (এই অবস্থায়
+ * ক্ষমতা-ঘোষণা শর্তাধীন শব্দে লেখা হয় — "Edge সক্রিয় কালে…")।
+ */
+export function edgeHealthSnapshot(): {
+  status: 'unknown' | 'up' | 'down';
+  at: string | null;
+  note: string;
+} {
+  if (!healthCache) return { status: 'unknown', at: null, note: '' };
+  return {
+    status: healthCache.ok ? 'up' : 'down',
+    at: new Date(healthCache.at).toISOString(),
+    note: healthCache.note,
+  };
+}
+
+// ------------------------------------------------------------
+// প্রতি-কণ্ঠ যাচাই-রেকর্ড (B-F07) — storage/voice-verification.json
+// (মাইগ্রেশনমুক্ত: কোনো Prisma-স্কিমা পরিবর্তন নেই; প্রতি কণ্ঠ সর্বশেষ
+//  রেকর্ড রাখা হয় — কণ্ঠ-সংখ্যার সাথে বাউন্ডেড, তাই ফাইল কখনো অসীম বাড়ে না)
+// ------------------------------------------------------------
+
+export interface VoiceVerificationRecord {
+  voice: string;
+  engine: 'edge' | 'zai';
+  language: string;
+  verdict: 'pass' | 'warn' | 'fail';
+  transcript: string;
+  similarity: number;
+  detectedLanguage: string;
+  durationSec: number;
+  expectedSec: number;
+  note?: string;
+  verifiedAt: string;
+}
+
+interface VoiceVerificationFile {
+  version: number;
+  records: Record<string, VoiceVerificationRecord>;
+}
+
+/** রেকর্ড-ফাইলের পথ — টেস্ট isolation-এর জন্য VOICE_VERIFICATION_FILE এনভায়রনমেন্ট ওভাররাইড */
+function verificationFilePath(): string {
+  return process.env.VOICE_VERIFICATION_FILE ?? path.join(process.cwd(), 'storage', 'voice-verification.json');
+}
+
+/** জমা রেকর্ডগুলো পড়া (নেই/ভাঙা হলে খালি) */
+export async function readVoiceVerificationRecords(): Promise<VoiceVerificationFile> {
+  try {
+    const raw = await readFile(verificationFilePath(), 'utf8');
+    const parsed = JSON.parse(raw) as VoiceVerificationFile;
+    if (parsed && typeof parsed === 'object' && parsed.records && typeof parsed.records === 'object') {
+      return { version: 1, records: parsed.records };
+    }
+    return { version: 1, records: {} };
+  } catch {
+    return { version: 1, records: {} };
+  }
+}
+
+/**
+ * প্রতি-কণ্ঠ যাচাই-রেকর্ড জমা (B-F07): verifySpeechBuffer/edgeTtsHealth লেখে।
+ * best-effort — রেকর্ড-লেখার ব্যর্থতা কখনো মূল যাচাই-ফলাফলকে ভাঙবে না;
+ * পরমাণু-লেখা (.tmp → rename) — পাঠক কখনো অর্ধ-লেখা JSON দেখবে না।
+ */
+export async function recordVoiceVerification(
+  rec: Omit<VoiceVerificationRecord, 'verifiedAt'> & { verifiedAt?: string }
+): Promise<void> {
+  try {
+    const file = verificationFilePath();
+    const current = await readVoiceVerificationRecords();
+    const records: Record<string, VoiceVerificationRecord> = {
+      ...current.records,
+      [rec.voice]: { ...rec, verifiedAt: rec.verifiedAt ?? new Date().toISOString() } as VoiceVerificationRecord,
+    };
+    const tmp = `${file}.tmp`;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(tmp, JSON.stringify({ version: 1, records }, null, 2), 'utf8');
+    await rename(tmp, file);
+  } catch {
+    // ইচ্ছাকৃত নীরবতা — রেকর্ড-লেখা যাচাই-পথকে কখনো ব্যর্থ করবে না
+  }
+}
+
 /** দ্রুত সংযোগ-পরীক্ষা (ফলাফল ৫ মিনিট ক্যাশে) */
 export async function edgeTtsHealth(force = false): Promise<{ ok: boolean; note: string }> {
   if (!force && healthCache && Date.now() - healthCache.at < 5 * 60_000) {
@@ -406,10 +500,35 @@ export async function edgeTtsHealth(force = false): Promise<{ ok: boolean; note:
       ? `সক্রিয় — bn-BD নিউরাল কণ্ঠ প্রতিক্রিয়া দিচ্ছে (${res.length} বাইট)`
       : 'প্রতিক্রিয়া অস্বাভাবিক ছোট';
     healthCache = { at: Date.now(), ok, note };
+    // B-F07: স্বাস্থ্য-প্রোবের ফলাফলও প্রতি-কণ্ঠ রেকর্ডে জমা হয় (ক্যাশ-পাঠে নয়)
+    await recordVoiceVerification({
+      voice: 'bn-BD-NabanitaNeural',
+      engine: 'edge',
+      language: 'bn',
+      verdict: ok ? 'pass' : 'fail',
+      transcript: '',
+      similarity: 0,
+      detectedLanguage: 'unknown',
+      durationSec: 0,
+      expectedSec: 0,
+      note: note.slice(0, 160),
+    });
     return { ok, note };
   } catch (err) {
     const note = `অনুপলব্ধ — ${err instanceof Error ? err.message.slice(0, 100) : 'অজানা'}`;
     healthCache = { at: Date.now(), ok: false, note };
+    await recordVoiceVerification({
+      voice: 'bn-BD-NabanitaNeural',
+      engine: 'edge',
+      language: 'bn',
+      verdict: 'fail',
+      transcript: '',
+      similarity: 0,
+      detectedLanguage: 'unknown',
+      durationSec: 0,
+      expectedSec: 0,
+      note: note.slice(0, 160),
+    }).catch(() => {});
     return { ok: false, note };
   }
 }

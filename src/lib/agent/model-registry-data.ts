@@ -204,14 +204,15 @@ export const MODEL_SEED: SeedModelEntry[] = [
     // পঞ্চম মাত্রা: ইংরেজি যন্ত্র-যাচাইকৃত (ASR রাউন্ড-ট্রিপ), বাংলা অ-যাচাইকৃত → not_verified
     qualityStatus: 'quality_not_verified',
     lastTestedAt: TESTED,
-    lastTestNote: '৭-কণ্ঠ প্রোব সম্পন্ন: ইংরেজি রাউন্ড-ট্রিপ যাচাই কার্যকর; বাংলা কোনো কণ্ঠেই প্রশিক্ষিত নয় → রায় সবসময় "সতর্কতা" + মানব-প্রিভিউ',
+    // B-F12 (R-FIX-1): প্রোব-নোট আর বাংলা-z-ai চুক্তির কথা বলে না — bn-চেইন Edge-নিউরাল-একমাত্র
+    lastTestNote: '৭-কণ্ঠ প্রোব সম্পন্ন: ইংরেজি রাউন্ড-ট্রিপ যাচাই কার্যকর; বাংলা z-ai কণ্ঠে অসমর্থিত (bn-চেইন থেকে সরানো — R-FIX-1, ২০২৬-১০-১৬-এর চীনা-আবর্জনা প্রমাণ)',
     tools: ['text_to_speech', 'speech_synthesis', 'audio পাইপলাইন (voiceover)', 'short_film সংলাপ-ধাপ'],
     capabilities: {
       task_type: 'speech',
       voices: ['tongtong', 'chuichui', 'xiaochen', 'jam', 'kazi', 'douji', 'luodo'],
       supported_languages: {
-        bn: 'আংশিক — কোনো কণ্ঠই বাংলা-প্রশিন্নত নয়; jam কেবল সম্ভাব্য-দৈর্ঘ্যে পড়ে, ASR যাচাই অসম্ভব',
-        en: 'নিশ্চিত (jam প্রধান; ASR রাউন্ড-ট্রিপ কার্যকর)',
+        bn: 'অসমর্থিত — কোনো z-ai কণ্ঠই বাংলা-প্রশিক্ষিত নয় (২০২৬-১০-১৬-এর প্রমাণ: চীনা-আবর্জনা); বাংলা-পথ = Edge-নিউরাল (নিচের আলাদা এন্ট্রি)',
+        en: 'নিশ্চিত (jam প্রধান; ASR রাউন্ড-ট্রিপ + শব্দ-আবৃত্তি-যাচাই কার্যকর)',
       },
       inputLimitChars: 1024,
       formats: ['wav', 'mp3 (সার্ভার-সমর্থনভেদে)'],
@@ -219,8 +220,43 @@ export const MODEL_SEED: SeedModelEntry[] = [
       requires_gpu: false,
       fallback_tool: '—',
     },
-    notes: 'ভাষা-নিয়ন্ত্রক (§২) ভাষা অনুযায়ী কণ্ঠ বাছে: bn→jam/douji, en→jam/tongtong/kazi/xiaochen। বাংলা উচ্চারণ যন্ত্রে নিশ্চিত হয় না — মানব-প্রিভিউ বাধ্যতামূলক।',
+    notes: 'ভাষা-নিয়ন্ত্রক (§২) ভাষা অনুযায়ী কণ্ঠ বাছে: bn→Microsoft Edge-নিউরাল (নিচের আলাদা এন্ট্রি; z-ai কণ্ঠ বাংলা-অসক্ষম), en→jam/tongtong/kazi/xiaochen (ASR রাউন্ড-ট্রিপ যাচাইসহ)।',
     sortOrder: 30,
+  },
+  {
+    // B-F12 (R-FIX-1): bn-পথের প্রকৃত প্রাথমিক ইঞ্জিন এতদিন রেজিস্ট্রিতে অনুপস্থিত ছিল
+    key: 'microsoft-edge-neural',
+    name: 'Microsoft Edge Neural TTS (bn-BD/bn-IN — বাংলা-প্রধান)',
+    category: 'audio',
+    provider: 'WSS speech.platform.bing.com (edge_tts.ts অ্যাডাপ্টার)',
+    license: 'Microsoft Edge পরিষেবা-শর্ত (প্রাতিষ্ঠানিক পথ — বাণিজ্যিক ব্যবহারে সীমাবদ্ধতা প্রযোজ্য হতে পারে)',
+    commercialUse: 'unknown',
+    status: 'enabled',
+    licenseStatus: 'provider_api_only',
+    providerStatus: 'not_exposed_by_sdk',
+    integrationStatus: 'integrated',
+    // ২০২৬-১০-১৩ সক্রিয়; ২০২৬-১০-১৬-এর রানে 403 — পরিবেশ-নির্ভর, তাই degraded
+    runtimeStatus: 'degraded',
+    apiEndpoint: 'WSS speech.platform.bing.com (bounded 3-attempt retry, 30s timeout)',
+    qualityStatus: 'quality_not_verified',
+    lastTestedAt: '2026-10-16',
+    lastTestNote: '২০২৬-১০-১৩ প্রোবে সক্রিয়; ২০২৬-১০-১৬ প্রকৃত রানে 403 (পরিবেশ-পাশের প্রত্যাখ্যান) — সীমিত-রিট্রাই সৎ হ্যান্ডলিং + VOICE_UNAVAILABLE',
+    tools: ['speech_synthesis', 'text_to_speech', 'audio পাইপলাইন (voiceover)', 'short_film সংলাপ/বর্ণনা-ধাপ'],
+    capabilities: {
+      task_type: 'speech',
+      voices: ['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural'],
+      supported_languages: {
+        bn: 'বাংলা-প্রশিক্ষিত (bn-BD/bn-IN) — Edge সক্রিয় কালে দৈর্ঘ্য-যাচাইসহ রায় "যাচাইকৃত"',
+        en: 'en-US/en-GB নিউরাল কণ্ঠও আছে (en-চেইনে প্রাথমিক)',
+      },
+      inputLimitChars: 1000,
+      formats: ['wav'],
+      sampleRate: 24000,
+      requires_gpu: false,
+      fallback_tool: '—',
+    },
+    notes: 'বাংলা-পথের একমাত্র যাচাইকৃত ইঞ্জিন। Edge অচল হলে bn = সৎ VOICE_UNAVAILABLE (z-ai কণ্ঠ বাংলা পড়তে পারে না — নীরব ভাষা-ভাঙা ফলব্যাক নিষিদ্ধ, R-FIX-1)।',
+    sortOrder: 31,
   },
   {
     key: 'platform-asr',

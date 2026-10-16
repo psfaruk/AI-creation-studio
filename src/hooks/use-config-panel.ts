@@ -6,6 +6,10 @@
 // ১. useConfigPanel(type, conversationId) — সার্ভার-মালিকানাধীন প্যানেল-
 //    স্কিমা (ক্ষেত্র/অপশন/সীমা/নিষ্ক্রিয়-কারণ) + মিউজিক-ভিডিওর গান-তালিকা।
 //    স্কিমা প্রকারভেদে স্থির — একই (type, conversationId)-এ মডিউল-ক্যাশ।
+//    (A2-F02) ক্যাশ এখন TTL-সচেতন: ৩০ সে.-এর পুরনো এন্ট্রি বাসি গণ্য হয়ে
+//    পুনঃআনা হয়, refresh() (গান-নির্বাচক খোলার মুহূর্তে) ৫ সে.-ডিডুপে সদ্য-
+//    তালিকা আনে — কার্ড-খোলার পরে আপলোড করা গান পৃষ্ঠা-রিফ্রেশ ছাড়াই
+//    তালিকায় আসে।
 //
 // ২. useSpecValidation(spec) — সম্পাদিত spec-এর ডিবাউন্স-করা লাইভ সার্ভার-
 //    যাচাই (POST /api/productions/validate): verdict + adjustments/notes/errors।
@@ -16,13 +20,96 @@
 //  fetch-ফল শুধু অ্যাসিঙ্ক কলব্যাকে।)
 // ============================================================
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { withStudioToken } from '@/components/auth/security-gate';
 import type { ConfigPanelSchema } from '@/lib/agent/config-panel';
 import type { CinematicPlan, CinematicPlanSummary } from '@/lib/agent/cinematic/types';
 import type { CreativeJobSpec, ProductionType } from '@/lib/types';
 
-const schemaCache = new Map<string, ConfigPanelSchema>();
+// ------------------------------------------------------------
+// (A2-F02) স্কিমা-ক্যাশ — TTL-সচেতন, বাতিলযোগ্য (হুক + টেস্টের এক সত্য)
+// ------------------------------------------------------------
+
+interface SchemaCacheEntry {
+  schema: ConfigPanelSchema;
+  fetchedAt: number;
+}
+
+const schemaCache = new Map<string, SchemaCacheEntry>();
+
+/** মাউন্ট/ক্যাশ-কী-বদলে সদ্য-এন্ট্রি ধরে রাখার জানালা */
+const SCHEMA_FRESH_MS = 30_000;
+/** ব্যবহারকারীর নির্বাচক-খোলা ট্রিগারের ডিডুপ-জানালা (দ্রুত খোলা-বন্ধে ব্যাক-টু-ব্যাক ফেচ নয়) */
+const REFRESH_DEDUPE_MS = 5_000;
+
+function schemaCacheKey(type: ProductionType, conversationId?: string): string {
+  return `${type}:${conversationId ?? ''}`;
+}
+
+/** এন্ট্রির স্কিমা ফেরত দেয় — বাসি হলেও (প্রদর্শন-ফলব্যাক; আসল সদ্যি-করণ পুনঃআনায়) */
+export function peekConfigPanelSchema(key: string): ConfigPanelSchema | null {
+  return schemaCache.get(key)?.schema ?? null;
+}
+
+/** সদ্য-আনা স্কিমা ক্যাশে বসায় (fetchedAt টেস্টে বসানোর জন্য প্যারামিটার) */
+export function rememberConfigPanelSchema(
+  key: string,
+  schema: ConfigPanelSchema,
+  fetchedAt: number = Date.now()
+): void {
+  schemaCache.set(key, { schema, fetchedAt });
+}
+
+/** এন্ট্রি কি এখনো সদ্য (নির্দিষ্ট জানালার ভিতরে)? — now টেস্টে বসানোর জন্য */
+export function isSchemaCacheFresh(key: string, now: number = Date.now(), freshMs: number = SCHEMA_FRESH_MS): boolean {
+  const e = schemaCache.get(key);
+  return !!e && now - e.fetchedAt <= freshMs;
+}
+
+/**
+ * (A2-F02) স্কিমা-ক্যাশ বাতিল — type বাদ দিলে সব, নাহলে ওই প্রকারের সব
+ * এন্ট্রি (conversationId দিলে শুধু সেই কথোপকথনেরটি)। নতুন অডিও-আপলোডের
+ * পরে গান-তালিকা পুনরায়-আনা জোর করতে (এপলোড-পথ বা টেস্ট থেকে ডাকা)।
+ */
+export function invalidateConfigPanelSchema(type?: ProductionType, conversationId?: string): void {
+  if (type === undefined) {
+    schemaCache.clear();
+    return;
+  }
+  if (conversationId !== undefined) {
+    schemaCache.delete(schemaCacheKey(type, conversationId));
+    return;
+  }
+  const prefix = `${type}:`;
+  for (const key of [...schemaCache.keys()]) {
+    if (key.startsWith(prefix)) schemaCache.delete(key);
+  }
+}
+
+/**
+ * স্কিমা-আনা + ক্যাশে বসানো (হুক-প্রভাব নয় — refresh-পথও একই ফেচ পুনঃব্যবহার করে)।
+ * ফেরত-মান: বাতিল-ফাংশন (cancelled-প্যাটার্ন — P5-5b FIX-2 গার্ড)।
+ */
+function fetchPanelSchema(cacheKey: string, onFresh: (schema: ConfigPanelSchema) => void): () => void {
+  let cancelled = false;
+  const params = new URLSearchParams({ type: cacheKey.split(':')[0] });
+  const convId = cacheKey.slice(cacheKey.indexOf(':') + 1);
+  if (convId) params.set('conversationId', convId);
+  fetch(withStudioToken(`/api/productions/config-panel?${params.toString()}`))
+    .then(r => (r.ok ? r.json() : null))
+    .then((data: ConfigPanelSchema | null) => {
+      if (cancelled || !data) return;
+      rememberConfigPanelSchema(cacheKey, data);
+      // কলব্যাকে setState — কেবল তখনই যখন এখনো এই key-ই সক্রিয়
+      onFresh(data);
+    })
+    .catch(() => {
+      // নেটওয়ার্ক-ব্যর্থতা — নীরব; প্যানেল ফলব্যাক-অপশনেই কাজ করে
+    });
+  return () => {
+    cancelled = true;
+  };
+}
 
 interface PanelState {
   key: string;
@@ -33,45 +120,56 @@ interface PanelState {
 export function useConfigPanel(type: ProductionType, conversationId?: string): {
   schema: ConfigPanelSchema | null;
   loading: boolean;
+  /**
+   * (A2-F02) সদ্য-না-থাকলে নীরবে পুনঃআনা — গান-নির্বাচক খোলার মুহূর্তে ডাকা
+   * হয়, যাতে কার্ড খোলার পরে আপলোড করা গান পৃষ্ঠা-রিফ্রেশ ছাড়াই দেখা যায়।
+   * দ্রুত খোলা-বন্ধে ব্যাক-টু-ব্যাক ফেচ নয় (REFRESH_DEDUPE_MS জানানা)।
+   */
+  refresh: () => void;
 } {
   const cacheKey = `${type}:${conversationId ?? ''}`;
   const [state, setState] = useState<PanelState>(() => ({
     key: cacheKey,
-    schema: schemaCache.get(cacheKey) ?? null,
+    schema: peekConfigPanelSchema(cacheKey),
     loading: !schemaCache.has(cacheKey),
   }));
 
   // cacheKey বদলালে রেন্ডার-কালেই নতুন ক্যাশ-স্টেটে সমন্বয় (effect নয়)
   if (state.key !== cacheKey) {
-    const cached = schemaCache.get(cacheKey) ?? null;
-    setState({ key: cacheKey, schema: cached, loading: !cached });
+    setState({ key: cacheKey, schema: peekConfigPanelSchema(cacheKey), loading: !schemaCache.has(cacheKey) });
   }
 
   useEffect(() => {
-    if (schemaCache.has(cacheKey)) return;
-    let cancelled = false;
-    const params = new URLSearchParams({ type: cacheKey.split(':')[0] });
-    const convId = cacheKey.slice(cacheKey.indexOf(':') + 1);
-    if (convId) params.set('conversationId', convId);
-    fetch(withStudioToken(`/api/productions/config-panel?${params.toString()}`))
-      .then(r => (r.ok ? r.json() : null))
-      .then((data: ConfigPanelSchema | null) => {
-        if (cancelled || !data) return;
-        schemaCache.set(cacheKey, data);
-        // কলব্যাকে setState — কেবল তখনই যখন এখনো এই key-ই সক্রিয়
-        setState(prev =>
-          prev.key === cacheKey ? { key: cacheKey, schema: data, loading: false } : prev
-        );
-      })
-      .catch(() => {
-        // নেটওয়ার্ক-ব্যর্থতা — নীরব; প্যানেল ফলব্যাক-অপশনেই কাজ করে
-      });
-    return () => {
-      cancelled = true;
-    };
+    // (A2-F02) সদ্য-এন্ট্রি থাকলে আর ফেচ নয়; বাসি (৩০ সে.+ পুরনো) হলে
+    // ব্যাকগ্রাউন্ডে পুনঃআনা — পুরনো স্কিমা ততক্ষণ প্রদর্শিত থাকে (ফ্লিকার নেই)
+    if (isSchemaCacheFresh(cacheKey)) return;
+    return fetchPanelSchema(cacheKey, data => {
+      setState(prev =>
+        prev.key === cacheKey ? { key: cacheKey, schema: data, loading: false } : prev
+      );
+    });
   }, [cacheKey]);
 
-  return { schema: state.schema, loading: state.loading };
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    // StrictMode-পুনঃমাউন্টে রেফ আবার সত্য হয় (কেবল প্রকৃত আনমাউন্টেই মিথ্যা)
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  const refresh = useCallback(() => {
+    if (isSchemaCacheFresh(cacheKey, Date.now(), REFRESH_DEDUPE_MS)) return;
+    fetchPanelSchema(cacheKey, data => {
+      if (!aliveRef.current) return;
+      setState(prev =>
+        prev.key === cacheKey ? { key: cacheKey, schema: data, loading: false } : prev
+      );
+    });
+  }, [cacheKey]);
+
+  return { schema: state.schema, loading: state.loading, refresh };
 }
 
 // ------------------------------------------------------------

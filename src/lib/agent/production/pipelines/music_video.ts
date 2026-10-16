@@ -108,7 +108,8 @@ export const musicVideoPipeline: PipelineFn = async ctx => {
   await ctx.runStep('song_input', 'গান ইনপুট ও বিট-বিশ্লেষণ', async (step: StepHandle) => {
     const desired = spec.durationSec && spec.durationSec > 0 ? spec.durationSec : 60;
     if (spec.songArtifactId) {
-      songPath = await ctx.resolveArtifactFile(spec.songArtifactId);
+      // A2-F04: গান-ইনপুট কেবল user_upload — প্রিভিউ-রাউটের সাথে উৎস-সমতা
+      songPath = await ctx.resolveArtifactFile(spec.songArtifactId, { requireUserUpload: true });
       songArtifactId = spec.songArtifactId;
       uploadedSong = true;
       const info = await mediaInfo(songPath);

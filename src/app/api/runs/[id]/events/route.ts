@@ -13,6 +13,17 @@ export const runtime = 'nodejs';
 const POLL_INTERVAL_MS = 1500;
 const PING_INTERVAL_MS = 15_000;
 
+/**
+ * (A1-F02) স্ট্রিমের সর্বোচ্চ আয়ু — productions-SSE রাউটের MAX_LIVE_MS-এর
+ * আদলে। জম্বি 'running'-রো একটি সংযোগকে চিরকাল ধরে রাখা বন্ধ করতে:
+ * ক্যাপ ছুঁলে স্ট্রিম সৎভাবে বন্ধ হয়, ক্লায়েন্ট-EventSource পুনঃসংযোগ
+ * করে (রান-অবস্থা অপরিবর্তিত থাকে — মিথ্যা run_finished নয়)। টেস্টে
+ * ছোট মান বসিয়ে বন্ধ-হওয়া যাচাই করা যায় বলে পরিবর্তনযোগ্য বস্তু।
+ */
+export const RUN_SSE_LIMITS = {
+  maxLiveMs: 60 * 60 * 1000, // ১ ঘণ্টা (productions-রাউটের সমান)
+};
+
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   // SSE (EventSource) — কুকি ছাড়া ?st= টোকেনও চলে
   const auth = await requireOwner(req, { allowQueryToken: true });
@@ -25,6 +36,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   }
 
   const encoder = new TextEncoder();
+  const streamStartedAt = Date.now();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -201,6 +213,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       if (!finished) {
         pollTimer = setInterval(() => {
           if (finished || closed) return;
+          // (A1-F02) সর্বোচ্চ-আয়ু ছাড়িয়ে গেলে সৎ-বন্ধ — ক্লায়েন্ট নিজেই
+          // পুনঃসংযোগ করবে (নতুন স্ট্রিম, নতুন ক্যাপ)
+          if (Date.now() - streamStartedAt > RUN_SSE_LIMITS.maxLiveMs) {
+            abort();
+            return;
+          }
           void syncFromDb();
         }, POLL_INTERVAL_MS);
         pingTimer = setInterval(() => {

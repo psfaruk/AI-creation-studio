@@ -3,7 +3,7 @@
 import { NextResponse } from 'next/server';
 import { requireOwner } from '@/lib/security';
 import { db } from '@/lib/db';
-import { startAgentRun } from '@/lib/agent/orchestrator';
+import { startAgentRun, STALE_RUN_MS } from '@/lib/agent/orchestrator';
 import { isValidChatModelId } from '@/lib/agent/chat-models';
 import { buildMessageView, toAttachmentView } from '@/lib/agent/serialize';
 import { saveArtifactFile } from '@/lib/agent/storage';
@@ -161,14 +161,35 @@ export async function POST(req: Request) {
     orderBy: { startedAt: 'desc' },
   });
   if (activeRun) {
-    return NextResponse.json(
-      {
-        error: 'এই কথোপকথনে একটি উত্তর এখনো তৈরি হচ্ছে — সেটি সম্পূর্ণ হওয়া পর্যন্ত অপেক্ষা করুন',
-        activeRunId: activeRun.id,
-        conversationId: conversation.id,
-      },
-      { status: 409 }
-    );
+    // (A1-F01, P2) জম্বি-রান গার্ড: সার্ভার-মৃত্যুতে (crash/OOM/kill) রো
+    // 'running'-ই আটকে থাকে — sweepStaleRuns কেবল GET /api/conversations-এ
+    // ডাকা হত, তাই একটিই খোলা ট্যাবে ব্যবহারকারী ~১০ মিনিট পর্যন্ত 409-এ
+    // বন্ধ থাকত। এখন সেন্ড-পথেই একই স্টেলনেস-সীমা (orchestrator-এর
+    // STALE_RUN_MS) প্রয়োগ করে স্পষ্টতই মৃত রান সৎভাবে 'interrupted'
+    // করা হয় (sweepStaleRuns-এর আপডেট-আকারেই) এবং নতুন রানের পথ খোলে।
+    if (Date.now() - activeRun.startedAt.getTime() > STALE_RUN_MS) {
+      await db.agentRun
+        .update({
+          where: { id: activeRun.id },
+          data: {
+            status: 'interrupted',
+            error: 'রানটি অসম্পূর্ণ অবস্থায় আটকে গিয়েছিল (stale sweep)',
+            endReason: 'timeout',
+            errorCategory: 'timeout',
+            finishedAt: new Date(),
+          },
+        })
+        .catch(() => undefined);
+    } else {
+      return NextResponse.json(
+        {
+          error: 'এই কথোপকথনে একটি উত্তর এখনো তৈরি হচ্ছে — সেটি সম্পূর্ণ হওয়া পর্যন্ত অপেক্ষা করুন',
+          activeRunId: activeRun.id,
+          conversationId: conversation.id,
+        },
+        { status: 409 }
+      );
+    }
   }
 
   // ইউজার বার্তা তৈরি

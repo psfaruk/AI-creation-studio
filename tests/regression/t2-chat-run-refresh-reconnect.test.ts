@@ -38,7 +38,7 @@ mock.module('@/lib/security', () => ({
 }));
 
 // REAL route handler + REAL event bus — imported after the mocks
-const { GET } = await import('@/app/api/runs/[id]/events/route');
+const { GET, RUN_SSE_LIMITS } = await import('@/app/api/runs/[id]/events/route');
 const { emit, subscribe, getReplay } = await import('@/lib/agent/events');
 
 let runId = '';
@@ -181,4 +181,37 @@ describe('REG-2: chat run refresh & reconnect (server-side recovery)', () => {
     expect(found?.id).toBe(runId);
     expect(found?.status).toBe('running');
   });
+
+  test(
+    'REG-2e [A1-F02]: the stream closes itself at the max-lifetime cap (productions-SSE parity) — no fake run_finished, run row untouched',
+    async () => {
+      // টেস্ট-ক্যাপ: আসল ১-ঘণ্টার বদলে অল্প মান — পোল-টিক (১.৫ সে.) + ক্যাপ
+      // ছুঁলেই স্ট্রিম বন্ধ হয়; finally-তে আসল মান ফেরত।
+      const originalCap = RUN_SSE_LIMITS.maxLiveMs;
+      RUN_SSE_LIMITS.maxLiveMs = 250;
+      try {
+        // চলমান রান + একটি ইন-ফ্লাইট টুল — ক্যাপ-বন্ধের সময়ও রান জীবিত
+        seedToolCall(runId, 'web_search', { id: 'tc-cap-1', status: 'running' });
+
+        const { frames, done } = await collectSse(GET, runId, {
+          until: () => false,
+          timeoutMs: 4_000,
+        });
+
+        // রিপ্লে-চুক্তি অক্ষত: run_started এসেছে…
+        expect(framesOf(frames, 'run_started').length).toBe(1);
+        // …কিন্তু ক্যাপ-বন্ধ মিথ্যা run_finished পাঠায় না — রান-সারি এখনো
+        // 'running'; ক্লায়েন্ট-EventSource বন্ধ দেখে পুনঃসংযোগ করবে
+        expect(framesOf(frames, 'run_finished').length).toBe(0);
+        // স্ট্রিম সার্ভার-সাইডেই বন্ধ হয়েছে (টাইমআউট-অ্যাবর্ট নয়)
+        expect(done).toBe(true);
+        // DB-রো-ও অক্ষত — ক্যাপ কেবল সংযোগ-স্বাস্থ্য, রান-নয়
+        const row = await fakeDb.agentRun.findUnique({ where: { id: runId } });
+        expect(row?.status).toBe('running');
+      } finally {
+        RUN_SSE_LIMITS.maxLiveMs = originalCap;
+      }
+    },
+    6_000
+  );
 });

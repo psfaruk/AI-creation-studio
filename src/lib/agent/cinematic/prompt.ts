@@ -17,11 +17,14 @@ import { CINEMATIC_SUFFIX } from '../film-helpers';
  * শট → CogVideoX-3 মোশন-প্রম্পট। গঠন (বাউন্ডেড, স্লাইস-নিরাপদ):
  * action · framing · composition · angle · movement · lighting ·
  * স্থির-সাফিক্স · style · extra
+ *
+ * D-F04: ফ্রেমিং-বাক্য শটের `character` ক্ষেত্রও পায় — OTS/রিয়াকশন
+ * সাইজে বাক্যটি চরিত্র-নামযুক্ত হয় (নির্ধারক)।
  */
 export function buildCinematicVideoPrompt(shot: CinematicShot, style?: string, extra?: string): string {
   const parts: string[] = [
     (shot.actionEn ?? '').toString().trim().slice(0, 800),
-    sizeFramingPhrase(shot.size),
+    sizeFramingPhrase(shot.size, shot.character),
   ];
   if (shot.compositionEn) parts.push(shot.compositionEn.toString().trim().slice(0, 200));
   const angle = anglePhrase(shot.angle);
@@ -42,7 +45,7 @@ export function buildCinematicVideoPrompt(shot: CinematicShot, style?: string, e
 export function buildCinematicImagePrompt(shot: CinematicShot, style?: string): string {
   const parts: string[] = [
     (shot.actionEn ?? '').toString().trim().slice(0, 900),
-    sizeFramingPhrase(shot.size),
+    sizeFramingPhrase(shot.size, shot.character),
   ];
   if (shot.compositionEn) parts.push(shot.compositionEn.toString().trim().slice(0, 200));
   const angle = anglePhrase(shot.angle);

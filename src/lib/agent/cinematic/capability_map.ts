@@ -60,8 +60,27 @@ export function classifyMovement(movement: PlanMovement, engine: VideoEngine | '
 // প্রম্পট-বাক্য — সব প্রজন্ম-প্রভাবক ক্ষেত্র এখান থেকে প্রম্পটে যায়
 // ------------------------------------------------------------
 
-/** শট-সাইজ → ফ্রেমিং-বাক্য (ভিডিও ও ইমেজ-প্রম্পট দুটোতেই যায়) */
-export function sizeFramingPhrase(size: ShotSize): string {
+/**
+ * শট-সাইজ → ফ্রেমিং-বাক্য (ভিডিও ও ইমেজ-প্রম্পট দুটোতেই যায়)।
+ *
+ * D-F04: OTS/রিঅ্যাকশন সাইজে `character` দিলে (শটের নিজের ক্ষেত্র —
+ * নির্ধারক) বাক্যটি সেই চরিত্রকেই নাম করে ("looking past X…" / "reaction
+ * shot of X…") — দুই-চরিত্র সংলাপ-কভারেজে কে সামনে/কে সাড়া দিচ্ছে তা
+ * প্রম্পটে স্পষ্ট হয়। চরিত্র না থাকলে (undefined/null/খালি) আগের
+ * সাধারণ বাক্যই — এক-আর্গুমেন্ট কলের (t17/t19-লক) আউটপুট অপরিবর্তিত।
+ * বাকি সাইজগুলোতে character উপস্থিত থাকলেও বাক্য সাধারণই থাকে (আই-
+ * কন্ডিশনিং image_url-ই চরিত্র-ভিত্তিক)।
+ */
+export function sizeFramingPhrase(size: ShotSize, character?: string | null): string {
+  const who = typeof character === 'string' ? character.trim().slice(0, 60) : '';
+  if (who) {
+    if (size === 'over_the_shoulder') {
+      return `over-the-shoulder shot, looking past ${who} toward the scene`;
+    }
+    if (size === 'reaction') {
+      return `reaction shot of ${who}, emotional response in focus`;
+    }
+  }
   switch (size) {
     case 'establishing_wide':
       return 'sweeping establishing wide shot, full environment visible';

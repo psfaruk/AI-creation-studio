@@ -242,3 +242,75 @@ describe('REG-13: config-panel schema (Phase-4 C+D)', () => {
     expect(last).toBe(429);
   });
 });
+
+// ------------------------------------------------------------
+// (R-FIX-4 / A2-F02) স্কিমা-ক্যাশ স্বাস্থ্য — REAL use-config-panel-এর
+// মডিউল-ক্যাশ ব্যবস্থাপনা (হুক-ফাংশনগুলো নয় — DOM/RTL নেই, তাই ক্যাশের
+// পিওর একক-চুক্তি: fresh/বাসি যাচাই + বাতিলকরণ + পুনঃআনার সিড)।
+// ------------------------------------------------------------
+
+const {
+  peekConfigPanelSchema,
+  rememberConfigPanelSchema,
+  isSchemaCacheFresh,
+  invalidateConfigPanelSchema,
+} = await import('@/hooks/use-config-panel');
+
+describe('REG-13j: config-panel schemaCache invalidation + freshness (A2-F02 — songs uploaded after card creation surface without a full reload)', () => {
+  const schemaA = buildConfigPanel('music_video');
+  const schemaB = buildConfigPanel('short_film');
+
+  test('REG-13j-1: freshness window — a fresh entry is served, a stale entry is not "fresh" (the refetch trigger)', () => {
+    // এন্ট্রি মনে রাখা (fetchedAt টেস্ট বসায়) — কার্ড তৈরির মুহূর্তের মতো
+    rememberConfigPanelSchema('music_video:conv-a1', schemaA, Date.now() - 1_000);
+    expect(peekConfigPanelSchema('music_video:conv-a1')).toBe(schemaA);
+    expect(isSchemaCacheFresh('music_video:conv-a1')).toBe(true);
+
+    // ৩১ সে. আগের এন্ট্রি — বাসি: মাউন্ট/refresh-পথ পুনঃআনা ট্রিগার করে
+    rememberConfigPanelSchema('music_video:conv-a2', schemaA, Date.now() - 31_000);
+    expect(isSchemaCacheFresh('music_video:conv-a2')).toBe(false);
+    // পুরনো স্কিমা ততক্ষণ প্রদর্শন-ফলব্যাক হিসেবে থাকে (লোডিং-ফ্লিকার নয়)
+    expect(peekConfigPanelSchema('music_video:conv-a2')).toBe(schemaA);
+
+    // সদ্য-আনা এন্ট্রি আবার সদ্য
+    rememberConfigPanelSchema('music_video:conv-a2', schemaA, Date.now());
+    expect(isSchemaCacheFresh('music_video:conv-a2')).toBe(true);
+  });
+
+  test('REG-13j-2: invalidateConfigPanelSchema — per-type, per-conversation, and full-clear all drop exactly what they claim', () => {
+    rememberConfigPanelSchema('music_video:conv-1', schemaA);
+    rememberConfigPanelSchema('music_video:conv-2', schemaA);
+    rememberConfigPanelSchema('short_film:conv-1', schemaB);
+
+    // শুধু এক কথোপকথনের music_video এন্ট্রি
+    invalidateConfigPanelSchema('music_video', 'conv-1');
+    expect(peekConfigPanelSchema('music_video:conv-1')).toBeNull();
+    expect(peekConfigPanelSchema('music_video:conv-2')).toBe(schemaA);
+    expect(peekConfigPanelSchema('short_film:conv-1')).toBe(schemaB);
+
+    // প্রকারভেদে সব (নতুন অডিও-আপলোডের পরে গান-তালিকা সব কথোপকথনেই সদ্যি)
+    invalidateConfigPanelSchema('music_video');
+    expect(peekConfigPanelSchema('music_video:conv-2')).toBeNull();
+    expect(peekConfigPanelSchema('short_film:conv-1')).toBe(schemaB);
+
+    // সম্পূর্ণ পরিষ্কার
+    invalidateConfigPanelSchema();
+    expect(peekConfigPanelSchema('short_film:conv-1')).toBeNull();
+  });
+
+  test('REG-13j-3: invalidation makes the next mount refetch — the pre-fix "stale until page reload" dead end is gone (upload → invalidate → fresh fetch seeds the new song list)', () => {
+    // প্রাক-ফিক্স দোষ: ক্যাশ কখনো বাতিল হত না — কার্ড খোলার পরে আপলোড করা
+    // গান পুরো পৃষ্ঠা-রিফ্রেশ ছাড়া গান-নির্বাচকে আসত না। এখন: এন্ট্রি
+    // বাতিল হলে পরের মাউন্ট/refresh-ই পুনঃআনা করে (নিচে সিড-প্রমাণ)।
+    rememberConfigPanelSchema('music_video:conv-fresh', schemaA);
+    expect(isSchemaCacheFresh('music_video:conv-fresh')).toBe(true);
+
+    invalidateConfigPanelSchema('music_video', 'conv-fresh');
+    expect(peekConfigPanelSchema('music_video:conv-fresh')).toBeNull();
+    // পুনঃআনা-সিমুলেশন: নতুন স্কিমা (নতুন গান-তালিকাসহ) বসে গেলে সদ্য-এন্ট্রি
+    const schemaNew = buildConfigPanel('music_video');
+    rememberConfigPanelSchema('music_video:conv-fresh', schemaNew);
+    expect(peekConfigPanelSchema('music_video:conv-fresh')).toBe(schemaNew);
+    expect(isSchemaCacheFresh('music_video:conv-fresh')).toBe(true);
+  });
+});

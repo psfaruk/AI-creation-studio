@@ -23,6 +23,7 @@ import {
   Film,
   Image as ImageIcon,
   Images,
+  Info,
   Loader2,
   Music,
   PencilRuler,
@@ -171,9 +172,15 @@ function honestEtaText(spec: CreativeJobSpec): string {
 // §2-C: ফলাফলের সৎ ইঞ্জিন-ব্যাজ
 // ------------------------------------------------------------
 
-interface ParsedResult {
+export interface ParsedResult {
   quality?: string;
   partialNotes?: string[];
+  /**
+   * (C-F05) পাইপলাইনের সৎ-স্ট্যাটাস নোট (যেমন MV-র "লিপ-সিঙ্ক নেই…") —
+   * resultJson.notes: string[] থেকে আসে। পুরনো ফলাফলে নেই — প্রতিরোধমূলক:
+   * উপস্থিত হলেই রেন্ডার হয়, অনুপস্থিত হলে কিছুই হয় না।
+   */
+  notes?: string[];
   engine?: string;
   aiShots?: number;
   shots?: number;
@@ -188,6 +195,28 @@ interface ParsedResult {
     beatSource: string;
     deliveryCounts: Record<string, number>;
   };
+}
+
+/**
+ * resultJson → নিরাপদ ParsedResult (বিকৃত/খালি JSON → null)।
+ * (C-F05) notes-র প্রতিরোধমূলক স্বাভাবিকীকরণ: কেবল string-এন্ট্রিগুলোই
+ * থাকে — পাইপলাইন-চুক্তি `notes: string[]`, তবে পুরনো/বিকৃত ফলাফলে
+ * অ্যারে-নয়/অ-স্ট্রিং মান এসেও কার্ড যেন ভাঙভাঙ না করে।
+ */
+export function parseResultSummary(resultJson: string | null | undefined): ParsedResult | null {
+  if (!resultJson) return null;
+  try {
+    const parsed = JSON.parse(resultJson) as ParsedResult;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      ...parsed,
+      notes: Array.isArray(parsed.notes)
+        ? parsed.notes.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+        : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** ফলাফল-বিভাগে দেখানোর সৎ ইঞ্জিন-ব্যাজগুলো */
@@ -317,10 +346,14 @@ const IMAGE_FORMAT_LABELS: Record<NonNullable<CreativeJobSpec['format']>, string
   webp: 'WebP',
 };
 
-/** ভিডিও-ইঞ্জিন-সচেতন সততা-নোট (§৪) — ডিফল্ট এখন প্রকৃত AI ডিফিউশন */
-const VIDEO_ENGINE_NOTES: Record<VideoEngine, string> = {
+/**
+ * ভিডিও-ইঞ্জিন-সচেতন সততা-নোট (§৪) — ডিফল্ট এখন প্রকৃত AI ডিফিউশন।
+ * (REG-12r টেস্ট-লক) এক্সপোর্টেড — অতিরঞ্জিত বিশেষণ/বাদ-পড়া ফলব্যাক-
+ * স্বীকারোক্তি রিগ্রেশনে আটকে রাখার জন্য।
+ */
+export const VIDEO_ENGINE_NOTES: Record<VideoEngine, string> = {
   ai_diffusion:
-    'প্রতিটি শট CogVideoX-3 ক্লাউড-ডিফিউশনে প্রকৃতভাবে তৈরি হয় — প্রতি শটে ২–৪ মিনিট সময় লাগে; রেট-সীমায় ধৈর্যশীল ব্যাকঅফ হয়, তাই অপেক্ষার সময় বাড়তে পারে।',
+    'প্রতিটি শট CogVideoX-3 ক্লাউড-ডিফিউশনে তৈরির জন্যই চেষ্টা হয় — প্রতি শটে ২–৪ মিনিট সময় লাগে; রেট-সীমায় ধৈর্যশীল ব্যাকঅফ হয়, তাই অপেক্ষার সময় বাড়তে পারে। রেট-সীমা/ব্যর্থতায় কিছু শট স্টোরিবোর্ড+ক্যামেরা-মোশনে নামতে পারে (ফলাফল-লেবেলে দেখা যাবে)।',
   cinematic_motion:
     'ভিডিও তৈরি হয় AI স্টোরিবোর্ড + সিনেম্যাটিক ক্যামেরা-মোশন পাইপলাইনে — ডিফিউশন ভিডিও-মডেল নয়; ফটোরিয়ালিস্টিক অভিনয়ের নিশ্চয়তা নেই।',
 };
@@ -352,8 +385,12 @@ const LANGUAGE_LABELS: Record<SpeechLanguage, string> = {
   en: 'ইংরেজি',
 };
 
-const VIDEO_ENGINE_LABELS: Record<VideoEngine, string> = {
-  ai_diffusion: 'প্রকৃত AI ভিডিও (CogVideoX-3) — রিয়েলিস্টিক, ধীর (প্রতি শটে ~৫ মিনিট)',
+/**
+ * (REG-12r টেস্ট-লক) এক্সপোর্টেড — O-3: অ-যাচাইকৃত গুণগত বিশেষণ
+ * ("রিয়েলিস্টিক") আর নেই; প্রকৃত ইঞ্জিন + প্রকৃত খরচই বলে।
+ */
+export const VIDEO_ENGINE_LABELS: Record<VideoEngine, string> = {
+  ai_diffusion: 'প্রকৃত AI ডিফিউশন ভিডিও (CogVideoX-3) — ধীর (প্রতি শটে ~২–৪ মিনিট)',
   cinematic_motion: 'স্টোরিবোর্ড+ক্যামেরা-মোশন — দ্রুত (মিনিটের ভেতর)',
 };
 
@@ -469,6 +506,7 @@ function SpecEditor({
   onChange,
   songs,
   fieldErrors,
+  onSongsMenuOpen,
 }: {
   spec: CreativeJobSpec;
   onChange: (next: CreativeJobSpec) => void;
@@ -476,6 +514,11 @@ function SpecEditor({
   songs?: ConfigPanelSongOption[];
   /** Phase-4 C: ক্ষেত্র-স্তরের যাচাই-ত্রুটি (স্কিমা-সচেতন) */
   fieldErrors?: { key: string; messageBn: string }[];
+  /**
+   * (A2-F02) গান-নির্বাচক খোলার মুহূর্তের ট্রিগার — কার্ড খোলার *পরে* চ্যাটে
+   * আপলোড করা গানও পৃষ্ঠা-রিফ্রেশ ছাড়াই তালিকায় আসে (স্কিমা-পুনঃআনা)।
+   */
+  onSongsMenuOpen?: () => void;
 }) {
   const errFor = (key: string) => fieldErrors?.find(e => e.key === key)?.messageBn;
   // (অডিট §D) "উন্নত সেটিংস" কোলাপ্সিবল — কম-ব্যবহৃত ফিল্ডগুলো ভাঁজ-করা;
@@ -632,6 +675,11 @@ function SpecEditor({
                   : { songArtifactId: v, musicSource: 'uploaded_song', sound: 'uploaded_song' }
               )
             }
+            onOpenChange={open => {
+              // (A2-F02) খোলার মুহূর্তে স্কিমা সদ্যি — নতুন আপলোড করা গান
+              // ড্রপডাউন খোলা অবস্থাতেই তালিকায় এসে যায়
+              if (open) onSongsMenuOpen?.();
+            }}
           >
             <SelectTrigger className="h-9 bg-background text-sm" aria-label="গানের উৎস">
               <SelectValue placeholder="প্রসিডিউরাল ইনস্ট্রুমেন্টাল" />
@@ -647,8 +695,10 @@ function SpecEditor({
           </Select>
           <p className="text-[11px] leading-snug text-muted-foreground">
             {(songs ?? []).length === 0
-              ? 'এই কথোপকথনে আপলোড করা গান নেই — চাইলে চ্যাটে গানের অডিও আপলোড করে আবার খুলুন'
-              : 'আপলোড করা গানটিই ভিডিওর সাথে সমলয় হবে'}
+              ? // (A2-F02) এখন হিন্টটি সত্য: নির্বাচক আবার খুললেই সদ্য-তালিকা
+                // আসে (আগে ক্যাশ কখনো বাতিল হত না — পুরো পৃষ্ঠা-রিফ্রেশ লাগত)
+                'এই কথোপকথনে আপলোড করা গান নেই — চাইলে চ্যাটে গানের অডিও আপলোড করে এই নির্বাচকটি বন্ধ করে আবার খুলুন'
+              : 'আপলোড করা গানটিই ভিডিওর সাথে সমলয় হবে — নতুন গান আপলোড করলে নির্বাচকটি আবার খুলুন'}
           </p>
           {errFor('songArtifactId') && (
             <p className="text-xs text-red-600 dark:text-red-400" role="alert">{errFor('songArtifactId')}</p>
@@ -1454,7 +1504,11 @@ export function ProductionCard({ productionId }: { productionId: string }) {
   // কারণ — capabilities.ts থেকে আসে, ক্লায়েন্ট-হার্ডকোড নয়) + লাইভ স্পেক-যাচাই।
   // রায় কেবল প্রদর্শনের জন্য — confirm-এ সার্ভার নিজেই পুনঃযাচাই করে।
   // (হুক-ক্রম: শীঘ্র-ফেরতের আগেই সব হুক — rules-of-hooks)
-  const { schema } = useConfigPanel(view?.spec.type ?? 'image', view?.conversationId);
+  // (A2-F02) refresh: গান-নির্বাচক খোলার মুহূর্তে স্কিমা সদ্যি-করার হাতল
+  const { schema, refresh: refreshPanelSchema } = useConfigPanel(
+    view?.spec.type ?? 'image',
+    view?.conversationId
+  );
   const awaitingSpec =
     view && view.status === 'awaiting_confirmation' ? (editedSpec ?? view.spec) : null;
   const { live, validating } = useSpecValidation(awaitingSpec);
@@ -1490,15 +1544,8 @@ export function ProductionCard({ productionId }: { productionId: string }) {
   const isActive = ['queued', 'running', 'validating', 'cancelling'].includes(view.status);
   const isDone = ['completed', 'partial'].includes(view.status);
 
-  // resultJson-এর সারাংশ (quality report + §2-C ইঞ্জিন-তথ্য)
-  let resultSummary: ParsedResult | null = null;
-  if (view.resultJson) {
-    try {
-      resultSummary = JSON.parse(view.resultJson) as ParsedResult;
-    } catch {
-      resultSummary = null;
-    }
-  }
+  // resultJson-এর সারাংশ (quality report + §2-C ইঞ্জিন-তথ্য + C-F05 সৎ-নোট)
+  const resultSummary = parseResultSummary(view.resultJson);
 
   const spec = editedSpec ?? view.spec;
   const songs = schema?.sourceOptions?.songs;
@@ -1632,6 +1679,7 @@ export function ProductionCard({ productionId }: { productionId: string }) {
               onChange={next => setEditedSpec(next)}
               songs={songs}
               fieldErrors={fieldErrors}
+              onSongsMenuOpen={refreshPanelSchema}
             />
             {isVideoType(spec.type) && (
               <AmberNote text={VIDEO_ENGINE_NOTES[spec.videoEngine ?? 'ai_diffusion']} />
@@ -1720,6 +1768,25 @@ export function ProductionCard({ productionId }: { productionId: string }) {
             )}
             {resultSummary?.quality && (
               <p className="text-xs text-muted-foreground">{resultSummary.quality}</p>
+            )}
+            {/* (C-F05) পাইপলাইনের সৎ-স্ট্যাটাস নোট — resultJson.notes
+                (যেমন MV-র "লিপ-সিঙ্ক নেই…")। প্রতিরোধমূলক: পুরনো ফলাফলে
+                নোট-ক্ষেত্রই নেই — তখন এই ব্লকটি রেন্ডারই হয় না। */}
+            {resultSummary?.notes && resultSummary.notes.length > 0 && (
+              <ul
+                className="space-y-0.5 text-xs leading-relaxed text-muted-foreground"
+                aria-label="ফলাফলের সৎ-অবস্থা নোট"
+              >
+                {resultSummary.notes.slice(0, 6).map((n, i) => (
+                  <li key={i} className="flex items-start gap-1.5">
+                    <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                    <span>{n}</span>
+                  </li>
+                ))}
+                {resultSummary.notes.length > 6 && (
+                  <li className="pl-5">…আরও {toBnDigits(resultSummary.notes.length - 6)}টি নোট</li>
+                )}
+              </ul>
             )}
             {/* Phase-5: চূড়ান্ত ফলাফলে সিনেম্যাটিক পরিকল্পনার সৎ সারসংক্ষেপ */}
             {resultSummary?.cinematicPlan && (

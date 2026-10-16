@@ -51,6 +51,7 @@ import { validateSpec } from '@/lib/agent/capabilities';
 import { notePlanMetrics, getProductionMetrics, logProductionMetrics } from '@/lib/agent/run-metrics';
 import { shotCacheFingerprint, SHOT_CACHE_SCHEMA_VERSION } from '@/lib/agent/video/shot_cache';
 import { proceduralSongGrid, synthesizeInstrumental, resolveInstrumentalMood } from '@/lib/agent/audio/music_engine';
+import { containsBengaliScript } from '@/lib/agent/cinematic/lang-guard';
 import {
   buildMusicVideoPlanPreview,
   buildShortFilmPlanPreview,
@@ -93,6 +94,36 @@ function sfInput(over: Partial<ShortFilmPlanInput> = {}): ShortFilmPlanInput {
     scenes: sfScenes(),
     ...over,
   };
+}
+
+/**
+ * দুই-চরিত্র রোমান্টিক ফিক্সচার — findings-d §3.3-এর T-R1/T-R2 স্কেলেটন
+ * (বাজেট-মুক্ত, নির্ধারক)। দৃশ্য-১ মূল সংলাপ-দৃশ্য (২ লাইন, দীর্ঘ) —
+ * ৪৫/৬০ সে.-এ ওটিই এস্টাব্লিশিং→OTS→রিয়্যাকশন কভারেজ পায়।
+ */
+function romanticScenes(): PlannerFilmScene[] {
+  return [
+    { index: 1, location: 'river ghat', timeOfDay: 'dusk', characters: ['আকাশ', 'প্রিয়া'], action: 'Akash and Priya meet at the ghat', visualEn: 'A riverside ghat at dusk, a young man and a woman meeting under warm light', estimatedSec: 28, dialogueCount: 2 },
+    { index: 2, location: 'tea stall', timeOfDay: 'night', characters: ['আকাশ', 'প্রিয়া'], action: 'they talk about the letter', visualEn: 'A small tea stall at night, two people talking across a steaming cup', estimatedSec: 6, dialogueCount: 1 },
+    { index: 3, location: 'rooftop', timeOfDay: 'night', characters: ['আকাশ', 'প্রিয়া'], action: 'a quiet farewell under the city lights', visualEn: 'A rooftop farewell under city lights at night', estimatedSec: 6, dialogueCount: 0 },
+  ];
+}
+
+/**
+ * D-F04 কভারেজ-নিয়মের সাধারণ যাচাই: প্রতিটি সংলাপ-দৃশ্যে যেখানে ≥২টি
+ * চরিত্র-কন্ডিশনড শট আছে, সেখানে উভয় নামই অন্তত একবার করে বসেছে —
+ * দ্বিতীয় চরিত্র কখনো উপস্থাপিত-না-হওয়া থাকতে পারে না।
+ */
+function assertDialogueCharacterCoverage(plan: CinematicPlan, fixture: PlannerFilmScene[]): void {
+  fixture.forEach((sc, i) => {
+    if (sc.dialogueCount <= 0 || sc.characters.length < 2) return;
+    const sceneShots = plan.shots.filter(s => s.sceneId === `SC${i + 1}`);
+    const conditioned = sceneShots.filter(s => typeof s.character === 'string');
+    if (conditioned.length < 2) return; // ১টির কম কন্ডিশনড স্লট — কভারেজ অসম্ভব (সৎ সীমা)
+    const names = new Set(conditioned.map(s => s.character as string));
+    expect(names.has(sc.characters[0])).toBe(true);
+    expect(names.has(sc.characters[1])).toBe(true);
+  });
 }
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -333,6 +364,79 @@ describe('REG-16: cinematic shot-plan (Phase-5 A/B/C/D/E/F/I/L)', () => {
     expect(skeletonSceneCount(40)).toBe(4);
   });
 
+  // ------ রিকভারি R-FIX-3 (findings-d §3.3 T-R1/T-R2 — D-F04) ------
+
+  test('REG-16r1 (T-R1, D-F04): দুই-চরিত্র রোমান্টিক ফিক্সচার — ৩০ সে.-কাঠামো + বাজেট-সীমা', () => {
+    // ৩০ সে. ai_diffusion (draft limit ৩) → ৩ শট/৩ দৃশ্য — সংলাপ-দৃশ্যে
+    // এক শটই জায়গা পায়: OTS/রিয়্যাকশন কভারেজ অসম্ভব (findings-d §3.2#4
+    // — বাজেট-প্রমাণ; ৪৫/৬০ সে.-এর ভিন্নতা REG-16r2)।
+    const plan = planShortFilmShots({ engine: 'ai_diffusion', limit: 3, durationSec: 30, scenes: romanticScenes() });
+    expect(parseAndValidateShotPlan(clone(plan)).ok).toBe(true);
+    expect(plan.shots.length).toBe(3);
+    // দৃশ্য-উদ্দেশ্য: পরিচিতি → সংলাপ-কভারেজ → সমাপনি
+    expect(plan.scenes.map(s => s.purpose)).toEqual(['পরিচিতি ও ভৌগোলিক স্থাপন', 'সংলাপ-কভারেজ', 'সমাপনি']);
+    // S01: এস্টাব্লিশিং জিওগ্রাফি (পরিবেশ-সাবজেক্ট — চরিত্র-কন্ডিশনড নয়)
+    expect(plan.shots[0].size).toBe('establishing_wide');
+    expect(plan.shots[0].subject).toBe('environment');
+    expect(plan.shots[0].character).toBeUndefined();
+    // শেষ শট: সমাপনি-বিট
+    const last = plan.shots[plan.shots.length - 1];
+    expect(last.movement).toBe('zoom_out');
+    expect(last.transitionIn).toBe('সমাপনি-বিট');
+    // ৩০ সে.-বাজেটে OTS/রিয়্যাকশন কোথাও নেই
+    expect(plan.shots.some(s => s.size === 'over_the_shoulder' || s.size === 'reaction')).toBe(false);
+    // কভারেজ-নিয়ম (সাধারণ রূপ — এখানে ১-শট দৃশ্যে প্রযোজ্য নয়, তবু চালানো)
+    assertDialogueCharacterCoverage(plan, romanticScenes());
+    // নির্ধারক: একই ইনপুট → হুবহু একই পরিকল্পনা
+    expect(
+      JSON.stringify(planShortFilmShots({ engine: 'ai_diffusion', limit: 3, durationSec: 30, scenes: romanticScenes() })),
+    ).toBe(JSON.stringify(plan));
+  });
+
+  test('REG-16r2 (T-R2, D-F04): ৪৫/৬০ সে. — সংলাপ-দৃশ্যে OTS+রিয়্যাকশন ও চরিত্র-বণ্টন-নিয়ম', () => {
+    // বাজেট-মুক্ত জ্যামিতি-প্রমাণ: limit সরাসরি ১৬ (পিওর-ফাংশন ইনপুট) —
+    // ai_diffusion-এ ceil(দৈর্ঘ্য/১০)-ই আসল সীমা, তাই ৪৫/৬০ সে.-এ ৫/৬ শট।
+    for (const durationSec of [45, 60]) {
+      const plan = planShortFilmShots({ engine: 'ai_diffusion', limit: 16, durationSec, scenes: romanticScenes() });
+      expect(parseAndValidateShotPlan(clone(plan)).ok).toBe(true);
+      // SC1 (dialogueCount ২) পূর্ণ কভারেজ পায়: এস্টাব্লিশিং + OTS(k=1) + রিয়্যাকশন(k=2)
+      const sc1 = plan.shots.filter(s => s.sceneId === 'SC1');
+      expect(sc1.length).toBe(3);
+      expect(sc1[0].size).toBe('establishing_wide');
+      expect(sc1[1].size).toBe('over_the_shoulder');
+      expect(sc1[2].size).toBe('reaction');
+      // চরিত্র-নিয়ম: OTS → characters[0]; রিয়্যাকশন → characters[1]
+      expect(sc1[1].character).toBe('আকাশ');
+      expect(sc1[2].character).toBe('প্রিয়া');
+      // SC1-এর শটগুলোতে উভয় চরিত্রই পোর্ট্রেট-কন্ডিশনড
+      const names = new Set(sc1.map(s => s.character).filter(Boolean) as string[]);
+      expect(names.has('আকাশ')).toBe(true);
+      expect(names.has('প্রিয়া')).toBe(true);
+      // প্রম্পট-পথ: চরিত্র-নামযুক্ত OTS/রিয়্যাকশন বাক্য প্রম্পটে যায় (D-F04 প্রম্পট-অর্ধেক)
+      expect(buildCinematicVideoPrompt(sc1[1])).toContain(sizeFramingPhrase('over_the_shoulder', 'আকাশ'));
+      expect(buildCinematicVideoPrompt(sc1[2])).toContain(sizeFramingPhrase('reaction', 'প্রিয়া'));
+      // সাধারণ কভারেজ-নিয়ম + মুভমেন্ট-পুনরাবৃত্তি-নিয়ম অটুট
+      assertDialogueCharacterCoverage(plan, romanticScenes());
+      for (let i = 1; i < plan.shots.length; i++) {
+        if (plan.shots[i].movement !== 'static') {
+          expect(plan.shots[i].movement).not.toBe(plan.shots[i - 1].movement);
+        }
+      }
+    }
+    // ৬০ সে.-এ SC2-ও ২ শট পায় — অ্যালটার্নেশন-গ্যারান্টি: মিডিয়াম আকাশ,
+    // OTS প্রিয়া (chars[0] বসে যাওয়ার পরের কন্ডিশনড স্লট chars[1]-কে)
+    const p60 = planShortFilmShots({ engine: 'ai_diffusion', limit: 16, durationSec: 60, scenes: romanticScenes() });
+    const sc2 = p60.shots.filter(s => s.sceneId === 'SC2');
+    expect(sc2.length).toBe(2);
+    expect(sc2[0].size).toBe('medium');
+    expect(sc2[0].character).toBe('আকাশ');
+    expect(sc2[1].size).toBe('over_the_shoulder');
+    expect(sc2[1].character).toBe('প্রিয়া');
+    // ৩০ সে.-এ OTS/রিয়্যাকশন আসতেই পারে না — বাজেট-প্রমাণ (T-R2-এর অন্য পাশ)
+    const p30 = planShortFilmShots({ engine: 'ai_diffusion', limit: 3, durationSec: 30, scenes: romanticScenes() });
+    expect(p30.shots.some(s => s.size === 'over_the_shoulder' || s.size === 'reaction')).toBe(false);
+  });
+
   // ---------------- §9-C: দৈর্ঘ্য/সংখ্যা = যাচাইকৃত সক্ষমতা ----------------
   test('REG-16c (§9-C): দৈর্ঘ্য ইঞ্জিন-সীমায়, সংখ্যা-সূত্র Phase-4-অভিন্ন', () => {
     // সংখ্যা-সূত্র — Phase-4-এর মানগুলিই (সীমা-সচেতন: কম কোয়ালিটি = কম শট)
@@ -571,6 +675,109 @@ describe('REG-16: cinematic shot-plan (Phase-5 A/B/C/D/E/F/I/L)', () => {
     expect(parseAndValidateShotPlan(clone(sf)).ok).toBe(true);
   });
 
+  test('REG-16f3 (A2-F05, R-FIX-3): দৃশ্য-স্তরের lightingMood সৎ-মার্কার্ড প্ল্যানিং-প্লেসহোল্ডার', () => {
+    // পূর্ণ পরিকল্পক + কঙ্কাল — উভয়ের দৃশ্য-বস্তুতেই provenance-মার্কার:
+    // দৃশ্য-স্তরের 'scene-appropriate cinematic lighting' সাধারণ
+    // প্লেসহোল্ডার — আর প্রকৃত পছন্দ নয়। প্রজন্ম-প্রভাবক পথ শট-স্তরের
+    // নির্ধারক lightingMood (REG-16f2-লক — এখানে শুধু দৃশ্য/শট আলাদা প্রমাণ)।
+    const plan = planShortFilmShots(sfInput());
+    expect(plan.scenes.every(s => s.lightingMood === 'scene-appropriate cinematic lighting')).toBe(true);
+    expect(plan.scenes.every(s => s.lightingProvenance === 'planning_only_generic')).toBe(true);
+    expect(parseAndValidateShotPlan(clone(plan)).ok).toBe(true);
+    const skel = planShortFilmSkeleton({ engine: 'ai_diffusion', limit: 2, durationSec: 30 });
+    expect(skel.scenes.every(s => s.lightingProvenance === 'planning_only_generic')).toBe(true);
+    // শট-স্তরের মান কখনো প্লেসহোল্ডার নয় — প্রতিটি শটে আলাদা নির্ধারক আলো
+    for (const s of plan.shots) {
+      expect(s.lightingMood).not.toBe('scene-appropriate cinematic lighting');
+    }
+  });
+
+  test('REG-16f4 (D-F04, R-FIX-3): চরিত্র-নামযুক্ত OTS/রিয়্যাকশন বাক্য + character-যাচাই গার্ড', () => {
+    // OTS/রিয়্যাকশন সাইজে চরিত্র থাকলে বাক্য সেই চরিত্রকেই নাম করে (নির্ধারক)
+    expect(sizeFramingPhrase('over_the_shoulder', 'আকাশ')).toContain('আকাশ');
+    expect(sizeFramingPhrase('reaction', 'প্রিয়া')).toContain('প্রিয়া');
+    // চরিত্র না থাকলে (undefined/null/খালি) — আগের সাধারণ বাক্যই অবিকৃত
+    // (t17/t19-এর এক-আর্গুমেন্ট কল-চুক্তি অপরিবর্তিত)
+    expect(sizeFramingPhrase('over_the_shoulder')).toBe('over-the-shoulder shot, looking past a subject toward the scene');
+    expect(sizeFramingPhrase('reaction', null)).toBe('reaction shot, the subject emotional response in focus');
+    expect(sizeFramingPhrase('reaction', '  ')).toBe('reaction shot, the subject emotional response in focus');
+    // বাকি সাইজে চরিত্র থাকলেও বাক্য সাধারণই (আই-কন্ডিশনিং image_url-ই চরিত্র-ভিত্তিক)
+    expect(sizeFramingPhrase('medium', 'আকাশ')).toBe(sizeFramingPhrase('medium'));
+    expect(sizeFramingPhrase('wide', 'প্রিয়া')).toBe(sizeFramingPhrase('wide'));
+    // প্রম্পট-নির্মাতার মধ্য দিয়ে: shot.character → নামযুক্ত বাক্য (ভিডিও+ইমেজ)
+    const mk = (over: Partial<CinematicShot>): CinematicShot => ({
+      shotId: 'S01', sceneId: 'SC1', order: 0, subject: 'scene', size: 'wide',
+      angle: 'eye_level', movement: 'static', fallbackMove: 'static', delivery: 'prompt_guided',
+      actionEn: 'a conversation at a tea stall', labelBn: 'শট ১', targetDurationSec: 5,
+      ...over,
+    });
+    const otsPrompt = buildCinematicVideoPrompt(mk({ size: 'over_the_shoulder', character: 'আকাশ' }));
+    expect(otsPrompt).toContain(sizeFramingPhrase('over_the_shoulder', 'আকাশ'));
+    const reactImg = buildCinematicImagePrompt(mk({ size: 'reaction', character: 'প্রিয়া' }));
+    expect(reactImg).toContain(sizeFramingPhrase('reaction', 'প্রিয়া'));
+
+    // যাচাইকারীর নতুন গার্ড: character উপস্থিত হলে অ-খালি স্ট্রিং হতেই হবে
+    // (null বৈধ — MV-পথের স্পষ্ট "চরিত্র নেই"; undefined = অনুপস্থিত)
+    const plan = planMusicVideo(mvInput());
+    const emptyChar = clone(plan); (emptyChar.shots[0] as { character?: unknown }).character = '';
+    const vEmpty = parseAndValidateShotPlan(emptyChar);
+    expect(vEmpty.ok).toBe(false);
+    expect(vEmpty.errors.some(e => e.includes('character'))).toBe(true);
+    const badType = clone(plan); (badType.shots[0] as { character?: unknown }).character = 42;
+    expect(parseAndValidateShotPlan(badType).ok).toBe(false);
+    const nullChar = clone(plan); (nullChar.shots[0] as { character?: unknown }).character = null;
+    expect(parseAndValidateShotPlan(nullChar).ok).toBe(true);
+    const namedChar = clone(plan); (namedChar.shots[0] as { character?: unknown }).character = 'আকাশ';
+    expect(parseAndValidateShotPlan(namedChar).ok).toBe(true);
+  });
+
+  test('REG-16r3 (T-R3, D-F03 planner-half): বাংলা উৎস-টেক্সট → ইংরেজি actionEn-ফলব্যাক + সৎ সমন্বয়', () => {
+    // রিয়েল-রান-প্রমাণ (findings-d D-F03): স্ক্রিপ্ট-LLM বাংলা visualEn
+    // ফেরালে বা visualEn না থাকলে location/timeOfDay/action-মিশ্রণ বাংলা
+    // হলে আগে সেটি হুবহু CogVideoX-3 প্রম্পটে চলে যেত। এখন পরিকল্পকের
+    // নিজের ফলব্যাক-পথ ইংরেজি-কেবল + প্রতি দৃশ্যে একটি সৎ সমন্বয়-নোট।
+    const scenes: PlannerFilmScene[] = [
+      { index: 1, location: 'নদীর ঘাট', timeOfDay: 'সন্ধ্যা', characters: [], action: 'আকাশ ঘাটে দাঁড়িয়ে তাকিয়ে আছে', visualEn: 'সন্ধ্যার আলোয় নদীর ঘাটে আকাশ দাঁড়িয়ে', estimatedSec: 10, dialogueCount: 0 },
+      { index: 2, location: 'চায়ের দোকান', timeOfDay: 'রাত', characters: [], action: 'ঝড় শুরু হয়', estimatedSec: 10, dialogueCount: 0 }, // visualEn নেই → মিশ্র-ফলব্যাকও বাংলা
+      { index: 3, location: 'roof', timeOfDay: 'night', characters: [], action: 'a quiet farewell', visualEn: 'A rooftop farewell under city lights at night', estimatedSec: 10, dialogueCount: 0 }, // ইংরেজি নিয়ন্ত্রণ
+    ];
+    const input = { engine: 'ai_diffusion' as const, limit: 3, durationSec: 30, scenes };
+    const plan = planShortFilmShots(input);
+    expect(parseAndValidateShotPlan(clone(plan)).ok).toBe(true);
+    // প্রজন্ম-ক্ষেত্র ইংরেজি-লিপি: কোনো শটের actionEn-এ বাংলা লিপি নেই;
+    // নির্মিত প্রম্পটেও নয় (চরিত্রহীন ফিক্সচার — নাম-বাহী বাক্যও নেই)
+    for (const s of plan.shots) {
+      expect(containsBengaliScript(s.actionEn)).toBe(false);
+      expect(s.actionEn.trim().length).toBeGreaterThan(0);
+      expect(containsBengaliScript(buildCinematicVideoPrompt(s))).toBe(false);
+    }
+    // ইংরেজি উৎস অপরিবর্তিত যায় (SC3) — ভাষা-চুক্তি কেবল বাংলা ধরলেই কাজ করে
+    const sc3 = plan.shots.filter(s => s.sceneId === 'SC3');
+    expect(sc3.length).toBe(1);
+    expect(sc3[0].actionEn).toBe('A rooftop farewell under city lights at night');
+    // সৎ সমন্বয়: প্রতিটি বাংলা-উৎস দৃশ্যে ঠিক একটি নোট — উৎস-ক্ষেত্রের নামসহ
+    expect(plan.adjustments.map(a => a.field)).toEqual(['scene.SC1.visualEn', 'scene.SC2.action']);
+    for (const a of plan.adjustments) {
+      expect(a.from).toBe('বাংলা লিপি');
+      expect(a.to).toBe('ইংরেজি ফলব্যাক');
+      expect(a.reason).toContain('ইংরেজি ফলব্যাক');
+      expect(a.reason).toContain('D-F03');
+    }
+    // নির্ধারক: একই ইনপুট → হুবহু একই পরিকল্পনা (LLM/RNG নেই)
+    expect(JSON.stringify(planShortFilmShots(input))).toBe(JSON.stringify(plan));
+    // ইংরেজি-মিশ্র বাহিরের ক্ষেত্র: ইংরেজি লোকেশন + বাংলা অ্যাকশন → বাংলা
+    // ধরা পড়েই (কোনো আংশিক-ছাঁকাই নয়) — নির্ধারক সম্পূর্ণ-ফলব্যাক
+    const mixed = planShortFilmShots({
+      engine: 'ai_diffusion', limit: 3, durationSec: 30,
+      scenes: [
+        { index: 1, location: 'river ghat', timeOfDay: 'dawn', characters: [], action: 'নৌকা ভোরের কুয়াশায় আসে', estimatedSec: 10, dialogueCount: 0 },
+        ...scenes.slice(1),
+      ],
+    });
+    expect(mixed.shots.every(s => !containsBengaliScript(s.actionEn))).toBe(true);
+    expect(mixed.adjustments.some(a => a.field === 'scene.SC1.action')).toBe(true);
+  });
+
   // ---------------- §9-I: ওভাররাইড-স্যানিটাইজেশন ----------------
   test('REG-16i (§9-I): সার্ভার-পুনঃযাচাই — অবৈধ পরিকল্পনা-সম্পাদনা বাদ/সমন্বয়', () => {
     // sanitize: বৈধ এন্ট্রি থাকে, অবৈধ এনাম/সূচি/আকৃতি বাদ, সূচি-মার্জ
@@ -589,6 +796,14 @@ describe('REG-16: cinematic shot-plan (Phase-5 A/B/C/D/E/F/I/L)', () => {
     // >৬৪ এন্ট্রি — স্লাইস (সীমাবদ্ধ ইনপুট)
     const many = { shots: Array.from({ length: 80 }, (_, i) => ({ index: i % 2, size: 'wide' })) };
     expect(sanitizeOverridesInput(many, 2).overrides?.shots.length).toBeLessThanOrEqual(64);
+    // A2-F03 (R-FIX-3): ক্যাপের বাইরের *বৈধ* এন্ট্রিও droppedCount-এ গণনা
+    // হয় — আগে ৭০টি বৈধ এন্ট্রি দিলে ৬টি নীরবে উধাও হতো (droppedCount ০,
+    // সৎ-নোটই জ্বলত না)। এখন ৭০ − ৬৪ = ৬টি সৎ-হিসাবে বাদ।
+    const seventy = { shots: Array.from({ length: 70 }, (_, i) => ({ index: i % 2, size: 'wide' })) };
+    const s70 = sanitizeOverridesInput(seventy, 2);
+    expect(s70.droppedCount).toBe(6);
+    expect(s70.overrides?.shots.length).toBe(2); // ক্যাপের ভিতরের বৈধ এন্ট্রি মার্জ-হয়ে বাঁচে
+    expect(sanitizeOverridesInput(many, 2).droppedCount).toBe(80 - 64);
 
     // applyOverrides: size বদল → সমন্বয়-নোটসহ প্রয়োগ
     const plan = planMusicVideo(mvInput());

@@ -549,6 +549,12 @@ export type VoicePreset =
   | 'en-GB-RyanNeural';
 export type CameraMove = 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'static';
 export type SpeechLanguage = 'bn' | 'en';
+/**
+ * কণ্ঠের লোকেল-মাত্রা (B-F10/R-FIX-1): bn-BD (বাংলাদেশ) / bn-IN (পশ্চিমবঙ্গ-ভারত)।
+ * শুধু বাংলা-অনুরোধে প্রযোজ্য — bn-IN-কে নীরবে bn-BD ধরে নেওয়া নিষিদ্ধ (§4.2);
+ * বদল হলে ফলাফলে সৎ নোট রেকর্ড হয় (verification.locale / requestedLocale)।
+ */
+export type SpeechLocale = 'bn-BD' | 'bn-IN';
 export type VideoEngine = 'ai_diffusion' | 'cinematic_motion';
 export type FilmMode = 'short_film' | 'dialogue_scene' | 'trailer' | 'story';
 export type MusicMood = 'sad' | 'romantic' | 'joyful' | 'suspense' | 'action' | 'peaceful';

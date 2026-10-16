@@ -377,6 +377,39 @@ describe('REG-18: plan-preview রুট (Phase-5 §7)', () => {
     expect(raw2.includes('[ফাইল]')).toBe(true); // পথ-প্রতিস্থাপনের প্রমাণ
     expect(raw2.includes('ffprobe')).toBe(true); // "কী ব্যর্থ" — সৎ রাখে
   });
+
+  test('REG-18k (A2-F06, R-FIX-3): কঙ্কাল-বৈচিত্র্য — রুট-পথে সন্নিহিত অভিন্ন (সাইজ+মুভমেন্ট) জোড়া নয়', async () => {
+    // ৪০ সে./high ai → ৪ শট, ৪ দৃশ্য — পুরনো কোডে S02 ও S03 উভয়ই
+    // wide+pan_right হতো (findings-a2 A2-F06-এর প্রমাণ-কেস: টানা নন-
+    // স্ট্যাটিক মুভ-পুনরাবৃত্তি + সন্নিহিত একই সাইজ)। রুট প্রিভিউ এখন
+    // রান-পরিকল্পকের §3-নিয়মের আলো-সংস্করণ গার্ড মেনে প্যাটার্ন ভাঙে।
+    const res = await call(
+      { type: 'short_film', title: 'বিদায়', durationSec: 40, quality: 'high' },
+      { ip: '203.0.113.26' },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      plan: { shots: { shotId: string; size: string; movement: string }[]; adjustments: unknown[] };
+    };
+    expect(parseAndValidateShotPlan(body.plan).ok).toBe(true);
+    const shots = body.plan.shots;
+    expect(shots.length).toBe(4); // ceil(40/10)=4 — হাই-কোয়ালিটি ai বাজেট
+    // রিগ্রেশন-কেস: S02 ও S03 আর অভিন্ন নয় (গার্ড প্যানের দিক ভাঙে)
+    expect(`${shots[1].size}+${shots[1].movement}`).not.toBe(`${shots[2].size}+${shots[2].movement}`);
+    // সাধারণ নিয়ম: কোনো সন্নিহিত জোড়াই একই (সাইজ এবং মুভমেন্ট) নয়;
+    // টানা একই নন-স্ট্যাটিক মুভও নয় (static পুনরাবৃত্তি বৈধ)
+    for (let i = 1; i < shots.length; i++) {
+      expect(`${shots[i].size}+${shots[i].movement}`).not.toBe(`${shots[i - 1].size}+${shots[i - 1].movement}`);
+      if (shots[i].movement !== 'static') {
+        expect(shots[i].movement).not.toBe(shots[i - 1].movement);
+      }
+    }
+    // স্থির-আর্ক চুক্তি অটুট: প্রথম এস্টাব্লিশিং, শেষ সমাপনি-জুম-আউট
+    expect(shots[0].size).toBe('establishing_wide');
+    expect(shots[shots.length - 1].movement).toBe('zoom_out');
+    // গার্ড সন্তুষ্ট — সৎ-নোটের (skeleton.diversity) দরকারই হয়নি
+    expect(body.plan.adjustments).toEqual([]);
+  });
 });
 
 // স্যুট-সেটআপ: প্রকৃত WAV ফিক্সচার (গান-আর্টিফ্যাক্ট বাইট)

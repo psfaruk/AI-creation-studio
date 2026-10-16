@@ -88,7 +88,9 @@ function isSameOriginApiUrl(url: string): boolean {
  *  ② উত্তর 401 + URL-এ '/api/' → 'studio-auth-required' ইভেন্ট
  */
 export function installStudioFetchWrapper(): void {
-  if (typeof window === 'undefined') return;
+  // R-FIX (suite-robustness): টেস্ট-প্রক্রিয়ায় অন্য ফাইল থেকে লিক-হওয়া
+  // খালি window-এ fetch নেই — সেক্ষেত্রে র‍্যাপার নিঃশব্দে বসেই না।
+  if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
   const w = window as typeof window & { __studioFetchWrapped?: boolean };
   if (w.__studioFetchWrapped) return;
   w.__studioFetchWrapped = true;

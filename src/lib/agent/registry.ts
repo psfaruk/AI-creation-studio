@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { getZAI } from './llm';
+import { detectLanguage, synthesizeVerifiedSpeech, verdictLabel, type SpeechLanguage } from './audio/language_controller';
 import { imageSearchSdkFirst, transcribeBuffer } from './sdk-helpers';
 import { readArtifactFile, saveArtifactFile } from './storage';
 import { toArtifactMeta } from './serialize';
@@ -267,57 +268,64 @@ const textToSpeechSpec: ToolSpec<{ text: string; voice?: 'tongtong' | 'jam' | 'k
     voice: z.enum(['tongtong', 'jam', 'kazi']).optional().default('tongtong'),
   }),
   timeoutMs: 120_000,
-  usage: 'text_to_speech — লেখাকে স্বাভাবিক কণ্ঠের অডিওতে রূপ দেয়। কণ্ঠ: tongtong (স্বাভাবিক), jam, kazi। arguments: {"text": string (১–১০০০ অক্ষর), "voice"?: "tongtong"|"jam"|"kazi"}',
+  usage:
+    'text_to_speech — লেখাকে কণ্ঠের অডিওতে রূপ দেয় (উত্তরাধিকার-টুল)। ভাষা স্বয়ংক্রিয় শনাক্ত (bn/en): বাংলা লেখায় Edge-নিউরাল বাংলা কণ্ঠ (Edge অচল হলে সৎ VOICE_UNAVAILABLE ত্রুটি), ইংরেজি লেখায় নির্বাচিত z-ai কণ্ঠ (tongtong/jam/kazi)। ভাষা-নিয়ন্ত্রকের সৎ নোটসহ ফলাফল। নতুন ব্যবহারে speech_synthesis (verify-নিয়ন্ত্রণসহ) পছন্দনীয়। arguments: {"text": string (১–১০০০ অক্ষর), "voice"?: "tongtong"|"jam"|"kazi" (শুধু ইংরেজি-পথে প্রযোজ্য)}',
   inputSummary: i => truncate(i.text, 80),
   execute: async (input, ctx) => {
-    const zai = await getZAI();
-    const attempt = async (format: 'mp3' | 'wav') => {
-      const res = await zai.audio.tts.create({
-        input: input.text,
-        voice: input.voice ?? 'tongtong',
+    // B-F08 (R-FIX-1): আগে এখানে সরাসরি zai.audio.tts.create ডাকা হতো —
+    // ভাষা-নিয়ন্ত্রক, ক্ষমতা-ট্যাগ-চেইন ও যাচাই সব বাইপাস হয়ে ভুল-ভাষার
+    // অডিও সাধারণ সাফল্য হয়ে যেত। এখন §২-নিয়ন্ত্রকের সুরক্ষিত পথেই।
+    const det = detectLanguage(input.text);
+    if (det.language !== 'bn' && det.language !== 'en' && det.language !== 'mixed') {
+      throw new Error(
+        'টেক্সটের ভাষা শনাক্ত করা যায়নি — text_to_speech বাংলা বা ইংরেজি লেখায় কাজ করে (§২ ভাষা-নিয়ন্ত্রক)।'
+      );
+    }
+    const language: SpeechLanguage =
+      det.language === 'mixed' ? (det.bnRatio >= det.latinRatio ? 'bn' : 'en') : det.language;
+    const result = await synthesizeVerifiedSpeech(
+      {
+        task: 'speech',
+        language,
+        script: input.text,
+        // bn: z-ai কণ্ঠ বাংলা-অসক্ষম — প্রোফাইল-প্রাথমিক (Edge-নিউরাল) হয়;
+        // en: নির্বাচিত z-ai কণ্ঠ বৈধ (en-সক্ষম ট্যাগসহ)
+        voiceId: language === 'en' ? (input.voice ?? 'tongtong') : undefined,
+        outputFormat: 'wav',
+        sampleRate: 24000,
         speed: 1,
-        response_format: format,
-        stream: false,
-      });
-      if (!res || typeof res.arrayBuffer !== 'function') {
-        throw new Error('TTS প্রতিক্রিয়া পড়া যায়নি');
-      }
-      return Buffer.from(new Uint8Array(await res.arrayBuffer()));
-    };
-    let buf: Buffer;
-    let ext = 'mp3';
-    let mimeType = 'audio/mpeg';
-    try {
-      buf = await attempt('mp3');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/response_format|1214/i.test(msg)) throw err;
-      buf = await attempt('wav');
-      ext = 'wav';
-      mimeType = 'audio/wav';
-    }
-    if (buf.length === 0) throw new Error('অডিও ডেটা খালি এসেছে');
-    if (ext === 'mp3' && buf.length > 12 && buf.slice(0, 4).toString('ascii') === 'RIFF') {
-      ext = 'wav';
-      mimeType = 'audio/wav';
-    }
-    const { storagePath, relName } = await saveArtifactFile(buf, ext);
+      },
+      { verify: false }
+    );
+    const v = result.verification;
+    const { storagePath } = await saveArtifactFile(result.buffer, result.ext);
     const meta = await createToolArtifact({
       conversationId: ctx.conversationId,
       runId: ctx.runId,
       kind: 'audio',
-      mimeType,
-      fileName: relName,
-      size: buf.length,
+      mimeType: result.mimeType,
+      fileName: `speech-${language}-${v.voice}.${result.ext}`,
+      size: result.buffer.length,
       storagePath,
+      metaJson: {
+        verification: v,
+        languageLabel: language === 'bn' ? 'বাংলা' : 'ইংরেজি',
+        voice: v.voice,
+        requestedVoice: v.requestedVoice,
+        audioType: 'Speech',
+      },
     });
     return {
-      summary: 'অডিও তৈরি হয়েছে',
+      summary: `${language === 'bn' ? 'বাংলা' : 'ইংরেজি'} অডিও তৈরি (কণ্ঠ=${v.voice}, রায়=${verdictLabel(v.verdict)})। নোট: ${v.notes.join(' ')}`.slice(0, 400),
       resultJson: JSON.stringify({
         artifactId: meta.id,
         url: meta.url,
         fileName: meta.fileName,
         size: meta.size,
+        language,
+        voice: v.voice,
+        verdict: v.verdict,
+        notes: v.notes,
       }),
       artifacts: [meta],
     };

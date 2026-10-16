@@ -15,7 +15,6 @@
 
 import type { ProductionType } from '@/lib/types';
 import type {
-  CapabilityVerdict,
   IntentCategory,
   IntentClassification,
   IntentContext,
@@ -481,21 +480,9 @@ export function unsupportedAlternativeText(c: IntentClassification): string | nu
   return null;
 }
 
-/** ভেরডিক্ট → মানব-পাঠযোগ্য লেবেল (পর্যবেক্ষণ/নোটে) */
-export function verdictLabelBn(v: CapabilityVerdict): string {
-  switch (v) {
-    case 'supported':
-      return 'সমর্থিত';
-    case 'supported_with_limitations':
-      return 'সীমাসহ সমর্থিত';
-    case 'unsupported':
-      return 'অসমর্থিত';
-    case 'requires_clarification':
-      return 'স্পষ্টীকরণ প্রয়োজন';
-    case 'temporarily_unavailable':
-      return 'সাময়িকভাবে অনুপলব্ধ';
-  }
-}
+// (A2-F01) প্রাক্তন মৃত-এক্সপোর্ট verdictLabelBn (ভেরডিক্ট→বাংলা লেবেল) —
+// শূন্য ভোক্তা ছিল, অপসারিত। ভেরডিক্ট-লেবেল এখন কেবল সেই পথেই বাংলায় যায়
+// যেখানে ব্যবহারকারী দেখে (capabilities.ts-এর নোট/লেবেল + UI-র নিজস্ব মানচিত্র)।
 
 // ------------------------------------------------------------
 // LLM-ইঙ্গিত-নোট — শ্রেণিবিভাগনির্ধারণের ফল এজেন্ট-লুপের context-এ

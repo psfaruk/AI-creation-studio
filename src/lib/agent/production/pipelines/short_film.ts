@@ -46,11 +46,21 @@ import { generateLocalFrame, LOCAL_FRAME_LABEL } from '../../local-frames';
 // ইঞ্জিন-ফলব্যাক-চেইনেদ্বারা হয় — সরাসরি একক-ইঞ্জিন কল আর নেই)
 import type { TtsVoice } from '../../sdk-helpers';
 import type { CameraMove, FilmMode } from '@/lib/types';
-import { ffprobeJson, mediaInfo, runFfmpeg } from '@/lib/media/ffmpeg';
+import { ffprobeJson, mediaInfo, measureLoudness, runFfmpeg } from '@/lib/media/ffmpeg';
 import { ASPECT_TO_GEN_SIZE, outputDims, maxShots } from '../../capabilities';
 import { AI_VIDEO_MODEL } from '../../video/ai_video';
-import { generateAiShot, toDataUrl, aiClipDurationSec, prewarmVideoClip, videoGenerationEtaNote, type ShotEngineRecord } from './motion_video';
+import {
+  generateAiShot,
+  toDataUrl,
+  aiClipDurationSec,
+  prewarmVideoClip,
+  videoGenerationEtaNote,
+  sniffImageMimeBuffer,
+  type ShotEngineRecord,
+} from './motion_video';
 import type { CinematicPlan, CinematicShot } from '../../cinematic/types';
+// D-F03 (রান-পথের অর্ধেক): শেয়ার্ড lang-guard — শুধু ইম্পোর্ট, সম্পাদনা নয়
+import { containsBengaliScript } from '../../cinematic/lang-guard';
 import { planShortFilmShots, summarizePlan } from '../../cinematic/planner';
 import { buildCinematicVideoPrompt, buildCinematicImagePrompt } from '../../cinematic/prompt';
 import { notePlanMetrics } from '../../run-metrics';
@@ -139,6 +149,78 @@ interface TimedLine extends DialogueLine {
   measuredSec: number;
   startSec: number;
   endSec: number;
+  /** C-F04: যে শট-উইন্ডোতে লাইনটি বসেছে (স্পিকার-মিল পেলে; D-F02) */
+  shotId?: string | null;
+  /** C-F04: লাইনটির অডিও-artifact আইডি (নিবন্ধনের পরে; সাবটাইটেল-কেবল হলে undefined) */
+  artifactId?: string;
+  /** C-F04: ওই লাইনের ভাষা-যাচাই-রায় (null = এই লাইনে সরাসরি যাচাই হয়নি) */
+  verdict?: 'pass' | 'warn' | 'fail' | null;
+  /** C-F04: অডিওর প্রকৃত স্যাম্পল-রেট (Hz) */
+  sampleRate?: number | null;
+}
+
+/**
+ * C-F04: প্রতি-লাইন টাইমিং-চুক্তির রেকর্ড — speech-ধাপে জমা হয়, চূড়ান্ত
+ * বসানোর (sound_design) পরে artifact-metaJson-এ যায়।
+ */
+interface LineRecord {
+  index: number;
+  buffer: Buffer;
+  ext: string;
+  character: string;
+  text: string;
+  emotion?: string;
+  sceneIndex: number;
+  measuredSec: number;
+  sampleRate: number | null;
+  requestedVoice: string;
+  actualVoice: string;
+  engine: string;
+  verification: SpeechVerification | null;
+  verdict: 'pass' | 'warn' | 'fail' | null;
+}
+
+/** C-F03/E-F02: চলচ্চিত্রের শেষে ছোট হয়ে যাওয়া অডিও-অংশের সৎ রেকর্ড */
+export interface AudioOverflowRecord {
+  kind: 'dialogue' | 'narration';
+  /** 1-ভিত্তিক লাইন-সূচি (dialogue-এ) */
+  lineIndex?: number;
+  character?: string;
+  endSec: number;
+  totalSec: number;
+  overflowSec: number;
+  action: 'truncated';
+}
+
+/** D-F02: স্পিকার-মিলানের সম্ভাব্য শট-উইন্ডো (নির্ধারক, পরীক্ষাযোগ্য) */
+export interface DialoguePlacementWindow {
+  shotId: string | null;
+  startSec: number;
+  endSec: number;
+  characters: string[];
+}
+
+/**
+ * D-F02 (R-FIX-2): একটি সংলাপ-লাইন কোথায় বসবে — প্রথমে একই দৃশ্যের ওই
+ * চরিত্রের (speaker) শট-উইন্ডো, জায়গা থাকলে সেখানে; নইলে আগের দৃশ্য-ক্রমিক
+ * বসানো (আজকের আচরণ) + সৎ নোট। কার্সার-চালিত — লাইন কখনো ওভারল্যাপ করে না।
+ * বিশুদ্ধ ফাংশন (t21-এ সরাসরি একক-পরীক্ষিত)।
+ */
+export function placeDialogueLine(
+  line: { character: string; measuredSec: number },
+  opts: { windows: DialoguePlacementWindow[]; sceneStartSec: number; cursorSec: number }
+): { startSec: number; endSec: number; shotId: string | null; matchedSpeakerShot: boolean } {
+  const dur = Math.max(0.8, line.measuredSec);
+  for (const w of opts.windows) {
+    if (!w.characters.includes(line.character)) continue;
+    const place = Math.max(opts.cursorSec, round2(w.startSec + 0.1));
+    if (round2(place + dur) <= round2(w.endSec + 0.1)) {
+      return { startSec: round2(place), endSec: round2(place + dur), shotId: w.shotId, matchedSpeakerShot: true };
+    }
+  }
+  // মিল-চরিত্রের শট নেই/জায়গা নেই — দৃশ্য-ক্রমিক ফলব্যাক (আগের আচরণ)
+  const start = Math.max(opts.cursorSec, round2(opts.sceneStartSec + 0.15));
+  return { startSec: round2(start), endSec: round2(start + dur), shotId: null, matchedSpeakerShot: false };
 }
 
 interface BibleEntry {
@@ -149,6 +231,15 @@ interface BibleEntry {
 }
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
+
+/**
+ * B-F06: কণ্ঠ-আইডি থেকে ইঞ্জিনের সৎ অনুমান (প্রতিরক্ষামূলক — নিয়ন্ত্রকের
+ * নতুন `engine` ক্ষেত্র না-থাকলে পুরোনো/নতুন উভয় নিয়ন্ত্রকের সাথেই চলে)।
+ * Edge-নিউরাল আইডি 'bn-…Neural'/'en-…Neural' — বাকি সবাই z-ai।
+ */
+function engineOfVoiceHeuristic(voice: string): 'edge' | 'zai' {
+  return /^(bn|en)-[A-Z]{2}-\w+Neural$/.test(voice) ? 'edge' : 'zai';
+}
 
 const FILM_MODE_DIRECTION: Record<FilmMode, string> = {
   short_film: 'পূর্ণ কাঠামোর ছোট চলচ্চিত্র — সূচনা, উত্তরণ, সমাপ্তি।',
@@ -186,6 +277,25 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   let plan: CinematicPlan | null = null;
   const characterVoices: Record<string, SpeechVoice> = {};
   const characterAppearance: Record<string, string> = {};
+  // ---- R-FIX-2 পাইপলাইন-ব্যাপী সৎ-হিসাবের অবস্থা ----
+  /** B-F02/D-F05: ভাষা-যাচাই-রায় 'ব্যর্থ' বলে বাদ পড়া লাইন (শুধু সাবটাইটেল) */
+  let speechVerifyFailCount = 0;
+  /** B-F02: TTS-নিকট ব্যর্থ (থ্রো/ইঞ্জিন-অচল) — সাবটাইটেল-কেবল লাইন */
+  let speechTtsFailCount = 0;
+  /** B-F09: মিশ্র হলেও রায় 'সতর্কতা' — দৃশ্যমান সমষ্টি */
+  let speechWarnCount = 0;
+  /** C-F03/E-F02: চলচ্চিত্রের শেষে ছোট হয়ে যাওয়া অডিও-অংশ (সৎ রেকর্ড) */
+  const audioOverflows: AudioOverflowRecord[] = [];
+  /** D-F10: সংলাপ-দৈর্ঘ্য নোট একবারই (assignLinesAndDurations দুইবার চলে) */
+  let dialogueLengthNoted = false;
+  /** D-F02: স্পিকার-মিল-নোট একবারই (একই কারণে) */
+  let speakerMismatchNoted = false;
+  /** D-F03: প্রম্পট-ভাষা-চুক্তি-ভঙ্গ নোট একবারই, প্রতি-শট বিস্তারিত */
+  let promptLanguageNoted = false;
+  /** C-F03: A5 বর্ণনার মাপা দৈর্ঘ্য (speech-ধাপ থেকে sound_design-এ) */
+  let narrationDurationSec: number | null = null;
+  /** C-F04: প্রতি-লাইন টাইমিং-চুক্তির রেকর্ড — sound_design-এ বসানোর পরে নথিভুক্ত */
+  const lineRecords: LineRecord[] = [];
   await ctx.runStep('script_breakdown', 'চিত্রনাট্য ও দৃশ্য-বিভাজন (৮-স্তর §৭)', async (step: StepHandle) => {
     const dialogueBudget = Math.round(durationSec * 2.5);
     // S11: চিত্রনাট্য-LLM অচল (৪২৯-উইন্ডো) হলেও পাইপলাইন মরবে না —
@@ -358,7 +468,19 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             ctx.partialNotes.push(
               `সংলাপের ভাষা ভুল ছিল (${dialogueDet.language === 'bn' ? 'বাংলা' : 'ইংরেজি'}) — ${language === 'bn' ? 'বাংলায়' : 'ইংরেজিতে'} পুনর্লিখিত।`
             );
+          } else {
+            // B-F14 (R-FIX-2): পুনর্লিখনের পরেও ভাষা ঠিক হয়নি — নীরব গ্রহণ নয়;
+            // সৎ নোট। এর পরের ফল যাচাই-গেট (B-F02) ও ভাষা-নিয়ন্ত্রকের
+            // অসমঞ্জস্য-থ্রো-ই সামলায় (ব্যর্থ লাইন = শুধু সাবটাইটেল)।
+            ctx.partialNotes.push(
+              `সংলাপ পুনর্লিখনের পরেও ভাষা প্রত্যাশিত (${language === 'bn' ? 'বাংলা' : 'ইংরেজি'}) হয়নি (এখনো ${reDet.language}) — ভুল ভাষার লাইন যাচাইয়ে বাদ পড়ে শুধু সাবটাইটেলে থাকতে পারে।`
+            );
           }
+        } else {
+          // B-F14: লাইন-সংখ্যাই ফিরল না — পুনর্লিখন প্রয়োগ হয়নি, সৎ নোট
+          ctx.partialNotes.push(
+            `সংলাপ-ভাষা পুনর্লিখন অসম্পূর্ণ (${lines.length}/${flat.length} লাইন ফিরেছে) — প্রিভিউতে যাচাই করুন।`
+          );
         }
       } catch {
         ctx.partialNotes.push(
@@ -515,15 +637,22 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         portraitErr = err instanceof Error ? err.message : String(err);
       }
       if (aiBuffer) {
-        entry.portraitDataUrl = `data:image/png;base64,${aiBuffer.toString('base64')}`;
-        const p = path.join(wd, `bible-${i}.png`);
+        // E-F03 (R-FIX-2): জাদু-বাইট স্নিফ — JPEG বাইট কখনো image/png লেবেলে
+        // নয় (প্রকৃত রানে ৩টি AI-ছবিই JPEG-বাইট ছিল .png নামে)।
+        const portraitMime = sniffImageMimeBuffer(aiBuffer);
+        const portraitExt = portraitMime === 'image/jpeg' ? 'jpg' : portraitMime === 'image/webp' ? 'webp' : 'png';
+        entry.portraitDataUrl = `data:${portraitMime};base64,${aiBuffer.toString('base64')}`;
+        const p = path.join(wd, `bible-${i}.${portraitExt}`);
         entry.portraitPath = p;
         await writeFile(p, aiBuffer);
+        // D-F12 (R-FIX-2): ফাইলনামে ক্যারেক্টার-স্লগ + সূচি — বাংলা নামের
+        // slug খালি হলে সবাই "bible-studio.png" হয়ে যেত (প্রকৃত রানের ত্রুটি)
+        const slug = sanitize(name) || 'char';
         const art = await ctx.registerArtifact({
           buffer: aiBuffer,
           kind: 'image',
-          mimeType: 'image/png',
-          fileName: `bible-${sanitize(name) || i + 1}.png`,
+          mimeType: portraitMime,
+          fileName: `bible-${i + 1}-${slug}.${portraitExt}`,
           metaJson: {
             characterName: name,
             voice: characterVoices[name],
@@ -566,7 +695,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             buffer: buf,
             kind: 'image',
             mimeType: 'image/png',
-            fileName: `bible-${sanitize(name) || i + 1}-local.png`,
+            fileName: `bible-${i + 1}-${sanitize(name) || 'char'}-local.png`,
             metaJson: {
               characterName: name,
               voice: characterVoices[name],
@@ -664,6 +793,22 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   let narrationPath: string | null = null;
   let narrationText = '';
   const verificationSummaries: Record<string, unknown>[] = [];
+  /**
+   * D-F02-সংশ্লিষ্ট (R-FIX-2): acting.speaks=true হলে ওই দৃশ্যের বলার-লাইনের
+   * সারমর্ম (প্রথম ~৪০ অক্ষর) — অভিনয়-টেক্সটের সাথে প্রম্পটে যায়। ক্যামেরার
+   * মুখ-নড়াচড়া/লিপ-সিঙ্কের দাবি কখনো হয় না (§৫ — লিপ-সিঙ্ক নেই)।
+   */
+  const spokenGistForShot = (shot: FilmShot): string => {
+    if (!shot.acting?.speaks) return '';
+    const scene = scenes.find(s => s.index === shot.sceneIndex);
+    if (!scene || scene.dialogue.length === 0) return '';
+    const bySpeaker =
+      (shot.characters.length > 0
+        ? scene.dialogue.find(d => shot.characters.includes(d.character))
+        : undefined) ?? scene.dialogue[0];
+    const gist = bySpeaker.line.replace(/\s+/g, ' ').trim().slice(0, 40);
+    return gist ? `speaks: "${gist}"` : '';
+  };
   // স্পিড-আপ (২০২৬-১০-১৩): AI-পথে প্রথম শট অভিনয়-পরিকল্পনার পরেই চালু —
   // সংলাপ-TTS-এর সাথে জেনারেশন ওভারল্যাপ (~২–৭ মিনিট সাশ্রয়)।
   if (engine === 'ai_diffusion' && shots.length > 0) {
@@ -674,32 +819,44 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           first.acting.gaze ? `gaze ${first.acting.gaze}` : '',
           first.acting.bodyHands ? `body language ${first.acting.bodyHands}` : '',
           first.acting.facialExpression ? `facial expression ${first.acting.facialExpression}` : '',
+          // D-F02-সংশ্লিষ্ট (R-FIX-2): speaks=true হলে বলার-লাইনের সারমর্ম —
+          // মুখ-সিঙ্কের দাবি কখনো নয় (লিপ-সিঙ্ক নেই, §৫)
+          spokenGistForShot(first),
         ]
           .filter(Boolean)
           .join(', ')
       : '';
     const firstPortrait = first.characters.map(n => bible.find(b => b.name === n)).find(Boolean)?.portraitDataUrl;
+    const prewarmPrompt = buildCinematicVideoPrompt(
+      shots[0].cinematic ?? {
+        shotId: 'S01',
+        sceneId: 'SC1',
+        order: 0,
+        subject: 'scene',
+        size: 'wide',
+        angle: 'eye_level',
+        movement: 'static',
+        fallbackMove: first.cameraMove,
+        // এই প্রি-ওয়ার্ম-শাখা কেবল ai_diffusion-ইঞ্জিনে চলে — ডেলিভারি প্রম্পট-নির্দেশিত
+        delivery: 'prompt_guided',
+        actionEn: first.description,
+        labelBn: first.label,
+        targetDurationSec: first.durationSec,
+      },
+      spec.style,
+      firstActing || undefined
+    );
+    // D-F03 (রান-পথ): প্রম্পট-ভাষা চুক্তির প্রতিরক্ষামূলক যাচাই — বাংলা লেখা
+    // থাকলে সৎ নোট (স্বয়ংক্রিয় পুনর্লিখন নয়, কোনো অতিরিক্ত LLM-খরচ নয়)
+    if (containsBengaliScript(prewarmPrompt) && !promptLanguageNoted) {
+      promptLanguageNoted = true;
+      ctx.partialNotes.push(
+        'শট-প্রম্পটে বাংলা টেক্সট রয়ে গেছে — প্রম্পট-ভাষা চুক্তি ভঙ্গ (D-F03)। স্বয়ংক্রিয় পুনর্লিখন নয় — ফলাফল প্রিভিউতে যাচাই করুন।'
+      );
+    }
     prewarmVideoClip(
       {
-        prompt: buildCinematicVideoPrompt(
-          shots[0].cinematic ?? {
-            shotId: 'S01',
-            sceneId: 'SC1',
-            order: 0,
-            subject: 'scene',
-            size: 'wide',
-            angle: 'eye_level',
-            movement: 'static',
-            fallbackMove: first.cameraMove,
-            // এই প্রি-ওয়ার্ম-শাখা কেবল ai_diffusion-ইঞ্জিনে চলে — ডেলিভারি প্রম্পট-নির্দেশিত
-            delivery: 'prompt_guided',
-            actionEn: first.description,
-            labelBn: first.label,
-            targetDurationSec: first.durationSec,
-          },
-          spec.style,
-          firstActing || undefined
-        ),
+        prompt: prewarmPrompt,
         durationSec: aiClipDurationSec(first.durationSec),
         quality: 'speed' as const,
         ...(firstPortrait ? { imageUrl: firstPortrait } : {}),
@@ -745,6 +902,15 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           const info = await mediaInfo(p);
           if (info.durationSec > 0.5) {
             narrationPath = p;
+            // C-F03: A5-এর মাপা দৈর্ঘ্য — sound_design-এ ওভারফ্লো-যাচাইয়ের জন্য
+            narrationDurationSec = info.durationSec;
+            // B-F06 (R-FIX-2): প্রকৃত-কণ্ঠের সত্য-প্রোভেনেন্স — অনুরোধকৃত
+            // কণ্ঠ (voice) নয়, ফলব্যাকে যেটি সত্যিই বলেছে সেটিও (actualVoice)
+            const narrActualVoice =
+              (speech.verification as (SpeechVerification & { actualVoice?: string }) | null)?.actualVoice ??
+              speech.voice;
+            const narrEngine =
+              (speech as { engine?: 'edge' | 'zai' }).engine ?? engineOfVoiceHeuristic(narrActualVoice);
             await ctx.registerArtifact({
               buffer: speech.buffer,
               kind: 'audio',
@@ -754,12 +920,17 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
                 pipeline: 'short_film',
                 layer: 'A5',
                 kind: 'narration',
-                voice,
+                requestedVoice: voice,
+                actualVoice: narrActualVoice,
+                engine: narrEngine,
                 language,
                 durationSec: info.durationSec,
+                sampleRate: info.sampleRate ?? null,
               },
             });
-            await step.setDetail(`A5 বর্ণনা-ট্র্যাক তৈরি (${info.durationSec.toFixed(1)} সে., ${voice})`);
+            await step.setDetail(
+              `A5 বর্ণনা-ট্র্যাক তৈরি (${info.durationSec.toFixed(1)} সে., কণ্ঠ: ${narrActualVoice}${narrActualVoice !== voice ? ` — অনুরোধ: ${voice}` : ''})`
+            );
           }
         } catch (err) {
           ctx.partialNotes.push(
@@ -793,6 +964,8 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       let buffer: Buffer | null = null;
       let ext = 'wav';
       let verification: SpeechVerification | null = null;
+      let actualVoice = useVoice;
+      let actualEngine: 'edge' | 'zai' = engineOfVoiceHeuristic(useVoice);
       try {
         if (isFirstOfVoice) {
           const out = await synthesizeVerifiedSpeech(
@@ -807,11 +980,34 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             },
             { verify: true }
           );
+          // B-F02 (R-FIX-2): যাচাই-রায় 'ব্যর্থ' = TTS-থ্রোর মতোই — অডিও বাদ,
+          // লাইন শুধু সাবটাইটেলে। ব্যর্থ অডিও আর মিক্স/artifact-এ যায় না।
+          if (out.verification?.verdict === 'fail') {
+            speechVerifyFailCount++;
+            ctx.partialNotes.push(
+              `"${d.character}"-এর লাইন ${i + 1}-এর ভাষা-যাচাই রায়: ব্যর্থ (${(
+                out.verification.notes[0] ?? ''
+              ).slice(0, 120)}) — অডিও বাদ, শুধু সাবটাইটেলে থাকবে`
+            );
+            timedLines.push({
+              ...d,
+              measuredSec: Math.max(1.5, d.line.length / 14),
+              startSec: 0,
+              endSec: 0,
+              shotId: null,
+              verdict: 'fail',
+            });
+            continue;
+          }
           buffer = out.buffer;
           ext = out.ext;
           verification = out.verification;
+          // B-F06: প্রকৃত কণ্ঠ/ইঞ্জিন (নিয়ন্ত্রকের নতুন ক্ষেত্র থাকলে সেটি, নইলে আউট. voice)
+          actualVoice = (out.verification as SpeechVerification & { actualVoice?: string })?.actualVoice ?? out.voice;
+          actualEngine = (out as { engine?: 'edge' | 'zai' }).engine ?? engineOfVoiceHeuristic(actualVoice);
           verifiedVoices.add(voice);
           effectiveVoice.set(d.character, out.voice);
+          if (out.verification?.verdict === 'warn') speechWarnCount++;
         } else {
           // P0-BUG-01 fix #3: সরাসরি একক-ইঞ্জিন কল নয় — Edge 403-এ পুরো লাইন
           // হারত; এখন একই ফলব্যাক-চেইন, শুধু ASR-যাচাই ছাড়া (খরচ-নিয়ন্ত্রণ)
@@ -829,13 +1025,25 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           );
           buffer = out.buffer;
           ext = out.ext;
+          actualVoice = (out.verification as SpeechVerification & { actualVoice?: string })?.actualVoice ?? out.voice;
+          actualEngine = (out as { engine?: 'edge' | 'zai' }).engine ?? engineOfVoiceHeuristic(actualVoice);
           effectiveVoice.set(d.character, out.voice);
         }
       } catch (err) {
+        // B-F02: নিয়ন্ত্রকের টাইপড VOICE_UNAVAILABLE/যাচাই-নিঃশেষ-থ্রো-সহ যেকোনো
+        // TTS-ব্যর্থতা — একই সৎ পথ (সাবটাইটেল-কেবল + নোট)
+        speechTtsFailCount++;
         ctx.partialNotes.push(
           `"${d.character}"-এর লাইন ${i + 1} TTS ব্যর্থ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শুধু সাবটাইটেলে থাকবে`
         );
-        timedLines.push({ ...d, measuredSec: Math.max(1.5, d.line.length / 14), startSec: 0, endSec: 0 });
+        timedLines.push({
+          ...d,
+          measuredSec: Math.max(1.5, d.line.length / 14),
+          startSec: 0,
+          endSec: 0,
+          shotId: null,
+          verdict: null,
+        });
         continue;
       }
       const filePath = path.join(wd, `line-${i}.${ext}`);
@@ -843,48 +1051,58 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         await writeFile(filePath, buffer);
         const info = await mediaInfo(filePath);
         if (!(info.durationSec > 0)) throw new Error('অডিওর দৈর্ঘ্য শূন্য');
-        timedLines.push({ ...d, filePath, measuredSec: info.durationSec, startSec: 0, endSec: 0 });
+        // C-F04: টাইমিং-চুক্তির রেকর্ড — চূড়ান্ত বসানোর পরে (sound_design)
+        // সম্পূর্ণ metaJson-সহ artifact হিসেবে নথিভুক্ত হয়
+        const lineVerdict: 'pass' | 'warn' | 'fail' | null = verification ? verification.verdict : null;
+        lineRecords.push({
+          index: i + 1,
+          buffer,
+          ext,
+          character: d.character,
+          text: d.line,
+          emotion: d.emotion,
+          sceneIndex: d.sceneIndex,
+          measuredSec: info.durationSec,
+          sampleRate: info.sampleRate ?? null,
+          requestedVoice: voice,
+          actualVoice,
+          engine: actualEngine,
+          verification,
+          verdict: lineVerdict,
+        });
+        timedLines.push({
+          ...d,
+          filePath,
+          measuredSec: info.durationSec,
+          startSec: 0,
+          endSec: 0,
+          shotId: null,
+          verdict: lineVerdict,
+          sampleRate: info.sampleRate ?? null,
+        });
         done++;
       } catch (err) {
+        speechTtsFailCount++;
         ctx.partialNotes.push(
           `লাইন ${i + 1} ত্রুটিপূর্ণ (${err instanceof Error ? err.message.slice(0, 120) : 'অজানা'}) — শুধু সাবটাইটেলে থাকবে`
         );
-        timedLines.push({ ...d, measuredSec: Math.max(1.5, d.line.length / 14), startSec: 0, endSec: 0 });
+        timedLines.push({
+          ...d,
+          measuredSec: Math.max(1.5, d.line.length / 14),
+          startSec: 0,
+          endSec: 0,
+          shotId: null,
+          verdict: null,
+        });
         continue;
       }
-      // প্রতিটি সংলাপ-লাইন আলাদা artifact — রায় metaJson-এ
-      await ctx.registerArtifact({
-        buffer,
-        kind: 'audio',
-        mimeType: ext === 'mp3' ? 'audio/mpeg' : 'audio/wav',
-        fileName: `dialogue-${i + 1}-${sanitize(d.character) || 'line'}.${ext}`,
-        metaJson: {
-          pipeline: 'short_film',
-          layer: 'A1',
-          kind: 'dialogue',
-          character: d.character,
-          text: d.line.slice(0, 200),
-          emotion: d.emotion ?? null,
-          voice,
-          language,
-          sceneIndex: d.sceneIndex,
-          verification: verification
-            ? {
-                verdict: verification.verdict,
-                verdictLabel: verdictLabel(verification.verdict),
-                similarity: verification.similarity,
-                detectedLanguage: verification.detectedLanguage,
-                durationSec: verification.durationSec,
-                expectedSec: verification.expectedSec,
-                notes: verification.notes,
-              }
-            : { verdictLabel: null, note: 'এই কণ্ঠের প্রথম লাইনের যাচাই-রায় দেখুন' },
-        },
-      });
       if (verification) {
+        // B-F06: সারসংক্ষেপেও অনুরোধকৃত + প্রকৃত কণ্ঠ/ইঞ্জিন
         verificationSummaries.push({
           character: d.character,
-          voice,
+          requestedVoice: voice,
+          actualVoice,
+          engine: actualEngine,
           verdict: verification.verdict,
           verdictLabel: verdictLabel(verification.verdict),
           similarity: verification.similarity,
@@ -901,14 +1119,18 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             ctx.partialNotes.push(`কণ্ঠ "${voice}"-এর যাচাই-রায়: সতর্কতা — প্রিভিউ শুনে নিশ্চিত করুন।`);
           }
         }
-        if (verification.verdict === 'fail') {
-          ctx.partialNotes.push(
-            `কণ্ঠ "${voice}"-এর যাচাই-রায়: ব্যর্থ — অডিও সঠিকভাবে পড়া হয়নি বলে সন্দেহ (${verification.notes[0] ?? ''})`
-          );
-        }
       }
     }
-    await step.setDetail(`${done}/${allLines.length} সংলাপ-লাইন সফল`);
+    // D-F05/D-F09 (R-FIX-2): ধাপ-বিবরণের সৎ বিভাজন — "N/N সফল" আর ব্যর্থ-রায়ের
+    // লাইনকেও সফল গণনা করে না; warn মিশ্র হলেও স্পষ্ট গণনা।
+    const subtitleOnly = speechVerifyFailCount + speechTtsFailCount;
+    await step.setDetail(
+      `${done}টি লাইন TTS-ফেরত` +
+        (speechWarnCount > 0 ? ` (${speechWarnCount}টির ভাষা-যাচাই রায়: সতর্কতা)` : '') +
+        (speechVerifyFailCount > 0 ? `; ${speechVerifyFailCount}টির ভাষা-যাচাই রায়: ব্যর্থ (শুধু সাবটাইটেল)` : '') +
+        (speechTtsFailCount > 0 ? `; ${speechTtsFailCount}টি TTS-ব্যর্থ (শুধু সাবটাইটেল)` : '') +
+        ` — মোট ${allLines.length} লাইন${subtitleOnly > 0 ? '' : ', সব অডিও-সহ'}`
+    );
   }, { timeoutMs: 4 * 60_000 }); // S10: TTS-বাজেট ৯০ সে.+জিটার — ৪ মি. যথেষ্ট জাল
 
   // সংলাপ→দৃশ্য বণ্টন + শট-দৈর্ঘ্য সমন্বয় (generate_shots-এর শুরুতে চলে)
@@ -931,9 +1153,14 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         if (give > 0) last.durationSec = round2(last.durationSec + give);
         const newDur = sceneShots.reduce((a, s) => a + s.durationSec, 0);
         if (linesDur + 0.3 > newDur) {
-          ctx.partialNotes.push(
-            `দৃশ্য ${scene.index}-এর সংলাপ শট-সময়ের চেয়ে দীর্ঘ — কথা পরের দৃশ্যে গড়িয়ে যেতে পারে (AI-ক্লিপ ${capPerShot} সে.-এ সীমিত)`
-          );
+          // D-F10 (R-FIX-2): নোট একবারই — এই ফাংশন generate_shots ও
+          // sound_design উভয় থেকে চলে, আগে ডুপ্লিকেট হতো (প্রকৃত রানে ২ বার)
+          if (!dialogueLengthNoted) {
+            dialogueLengthNoted = true;
+            ctx.partialNotes.push(
+              `দৃশ্য ${scene.index}-এর সংলাপ শট-সময়ের চেয়ে দীর্ঘ — কথা পরের দৃশ্যে গড়িয়ে যেতে পারে (AI-ক্লিপ ${capPerShot} সে.-এ সীমিত)`
+            );
+          }
         }
       }
     }
@@ -967,11 +1194,36 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     let cursor = 0;
     for (const scene of scenes) {
       const start = sceneStart.get(scene.index) ?? 0;
+      // D-F02 (R-FIX-2): এই দৃশ্যের শটগুলোর পরম উইন্ডো (ক্রসফেড-সচেতন —
+      // sceneStart-এর একই গণিত: শট k শুরু = দৃশ্য-শুরু + আগের-দৈর্ঘ্য − k·T)
+      const sceneShots = shots.filter(s => s.sceneIndex === scene.index);
+      let within = 0;
+      let k = 0;
+      const windows: DialoguePlacementWindow[] = [];
+      for (const s of sceneShots) {
+        const wStart = round2(start + within - k * T);
+        windows.push({
+          shotId: s.cinematic?.shotId ?? null,
+          startSec: wStart,
+          endSec: round2(wStart + s.durationSec),
+          characters: s.characters,
+        });
+        within += s.durationSec;
+        k++;
+      }
       let lc = Math.max(cursor, round2(start + 0.15));
       for (const l of timedLines.filter(l => l.sceneIndex === scene.index)) {
-        l.startSec = round2(lc);
-        l.endSec = round2(lc + Math.max(0.8, l.measuredSec));
-        lc = round2(lc + l.measuredSec + 0.25);
+        const p = placeDialogueLine(l, { windows, sceneStartSec: start, cursorSec: lc });
+        l.startSec = p.startSec;
+        l.endSec = p.endSec;
+        l.shotId = p.shotId;
+        if (!p.matchedSpeakerShot && l.filePath && !speakerMismatchNoted) {
+          speakerMismatchNoted = true;
+          ctx.partialNotes.push(
+            'কোনো সংলাপ-লাইনের বক্তার মিল-চরিত্রের শট-উইন্ডো পাওয়া যায়নি/জায়গা নেই — লাইনগুলো দৃশ্য-ক্রমিক বসানো (D-F02)।'
+          );
+        }
+        lc = round2(p.endSec + 0.25);
       }
       cursor = lc;
     }
@@ -994,43 +1246,57 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         await ctx.checkCancelled();
         const shot = shots[i];
         const matching = shot.characters.map(c => bible.find(b => b.name === c)).find(Boolean);
-        // অভিনয়-নির্দেশনা → ইংরেজি AI-প্রম্পট-অংশ
+        // অভিনয়-নির্দেশনা → ইংরেজি AI-প্রম্পট-অংশ (+ speaks-সারমর্ম, D-F02-সংশ্লিষ্ট)
         const actingText = shot.acting
           ? [
               `Acting: ${shot.acting.who || 'the character'} ${shot.acting.action}`.trim(),
               shot.acting.gaze ? `gaze ${shot.acting.gaze}` : '',
               shot.acting.bodyHands ? `body language ${shot.acting.bodyHands}` : '',
               shot.acting.facialExpression ? `facial expression ${shot.acting.facialExpression}` : '',
+              spokenGistForShot(shot),
             ]
               .filter(Boolean)
               .join(', ')
           : '';
         if (engine === 'ai_diffusion') {
           await step.setDetail(`শট ${i + 1}/${shots.length} জেনারেট হচ্ছে…`);
+          // Phase-5: প্রম্পট কভারেজ-পরিকল্পনার শট থেকে (acting-টেক্সট extra হিসেবে)
+          const shotPrompt = shot.cinematic
+            ? buildCinematicVideoPrompt(shot.cinematic, spec.style, actingText || undefined)
+            : buildCinematicVideoPrompt(
+                {
+                  shotId: `S${String(i + 1).padStart(2, '0')}`,
+                  sceneId: `SC${shot.sceneIndex}`,
+                  order: i,
+                  subject: 'scene',
+                  size: 'wide',
+                  angle: 'eye_level',
+                  movement: 'static',
+                  fallbackMove: shot.cameraMove,
+                  delivery: 'prompt_guided',
+                  actionEn: shot.description,
+                  labelBn: shot.label,
+                  targetDurationSec: shot.durationSec,
+                },
+                spec.style,
+                actingText || undefined
+              );
+          // D-F03 (R-FIX-2, রান-পথের অর্ধেক): জমা-দেওয়া প্রম্পটে বাংলা লেখা থাকলে
+          // সৎ নোট + প্রতি-শট বিস্তারিত (উৎস যাই হোক — planner/acting/সারমর্ম)।
+          // স্বয়ংক্রিয় পুনর্লিখন নয় (LLM-খরচ নেই); প্ল্যানার-অর্ধেক সমান্তরাল।
+          if (containsBengaliScript(shotPrompt)) {
+            await step.setDetail(`শট ${i + 1}/${shots.length}: প্রম্পটে বাংলা টেক্সট রয়ে গেছে — প্রম্পট-ভাষা চুক্তি ভঙ্গ (D-F03)`);
+            if (!promptLanguageNoted) {
+              promptLanguageNoted = true;
+              ctx.partialNotes.push(
+                'শট-প্রম্পটে বাংলা টেক্সট রয়ে গেছে — প্রম্পট-ভাষা চুক্তি ভঙ্গ (D-F03)। স্বয়ংক্রিয় পুনর্লিখন নয় — ফলাফল প্রিভিউতে যাচাই করুন।'
+              );
+            }
+          }
           try {
             const res = await generateAiShot({
               index: i,
-              // Phase-5: প্রম্পট কভারেজ-পরিকল্পনার শট থেকে (acting-টেক্সট extra হিসেবে)
-              prompt: shot.cinematic
-                ? buildCinematicVideoPrompt(shot.cinematic, spec.style, actingText || undefined)
-                : buildCinematicVideoPrompt(
-                    {
-                      shotId: `S${String(i + 1).padStart(2, '0')}`,
-                      sceneId: `SC${shot.sceneIndex}`,
-                      order: i,
-                      subject: 'scene',
-                      size: 'wide',
-                      angle: 'eye_level',
-                      movement: 'static',
-                      fallbackMove: shot.cameraMove,
-                      delivery: 'prompt_guided',
-                      actionEn: shot.description,
-                      labelBn: shot.label,
-                      targetDurationSec: shot.durationSec,
-                    },
-                    spec.style,
-                    actingText || undefined
-                  ),
+              prompt: shotPrompt,
               neededSec: shot.durationSec,
               fps,
               width: dims.w,
@@ -1054,11 +1320,14 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
             if (res.usedAi) {
               aiShots++;
             } else if (res.framePath) {
+              const frameBuf = await readFile(res.framePath);
+              // E-F03: জাদু-বাইট স্নিফ — ঘোষিত MIME বাইটের সাথে মেলে
+              const frameMime = sniffImageMimeBuffer(frameBuf);
               await ctx.registerArtifact({
-                buffer: await readFile(res.framePath),
+                buffer: frameBuf,
                 kind: 'image',
-                mimeType: 'image/png',
-                fileName: `storyboard-shot-${i + 1}.png`,
+                mimeType: frameMime,
+                fileName: `storyboard-shot-${i + 1}.${frameMime === 'image/jpeg' ? 'jpg' : frameMime === 'image/webp' ? 'webp' : 'png'}`,
                 metaJson: {
                   shot: i + 1,
                   of: shots.length,
@@ -1157,11 +1426,13 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           }
           const framePath = path.join(wd, `frame-${i}.png`);
           if (!frameIsLocal) await writeFile(framePath, buffer);
+          // E-F03: জাদু-বাইট স্নিফ — ঘোষিত MIME বাইটের সাথে মেলে
+          const cineFrameMime = sniffImageMimeBuffer(buffer);
           await ctx.registerArtifact({
             buffer,
             kind: 'image',
-            mimeType: 'image/png',
-            fileName: `storyboard-shot-${i + 1}.png`,
+            mimeType: cineFrameMime,
+            fileName: `storyboard-shot-${i + 1}.${cineFrameMime === 'image/jpeg' ? 'jpg' : cineFrameMime === 'image/webp' ? 'webp' : 'png'}`,
             metaJson: {
               shot: i + 1,
               of: shots.length,
@@ -1234,6 +1505,77 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     const total = assignLinesAndDurations(); // চূড়ান্ত অফসেট (শট-সেট চূড়ান্ত হওয়ার পরে)
     const layers: MixLayer[] = [];
     const soundOn = spec.sound !== 'none';
+
+    // ---- C-F03 (R-FIX-2): চলচ্চিত্রের শেষে অডিও-ওভারফ্লো — নীরব কাটা নয় ----
+    // চূড়ান্ত অফসেটের পরেই: কোনো সংলাপ-লাইন totalSec ছাড়িয়ে গেলে সৎ নোট +
+    // রেকর্ড (action:'truncated' — A1-ট্র্যাক ও চূড়ান্ত মাক্স ওই অংশ কেটে দেয়)।
+    for (const l of timedLines) {
+      if (!l.filePath) continue;
+      if (l.endSec > total + 0.1) {
+        const overflowSec = round2(l.endSec - total);
+        audioOverflows.push({
+          kind: 'dialogue',
+          lineIndex: lineRecords.find(r => r.text === l.line && r.character === l.character)?.index,
+          character: l.character,
+          endSec: l.endSec,
+          totalSec: total,
+          overflowSec,
+          action: 'truncated',
+        });
+        ctx.partialNotes.push(
+          `সংলাপ-লাইন ${audioOverflows[audioOverflows.length - 1].lineIndex ?? '?'} ("${l.character}") চলচ্চিত্রের শেষ ছাড়িয়ে যায় (শেষ ${l.endSec.toFixed(1)} সে. বনাম মোট ${total.toFixed(1)} সে.) — শেষ ${overflowSec.toFixed(1)} সে. কাটা পড়ে (action: truncated, C-F03)।`
+        );
+      }
+    }
+
+    // ---- C-F04 (R-FIX-2): প্রতি-লাইন artifact — চূড়ান্ত টাইমিং-চুক্তিসহ ----
+    // (বসানো চূড়ান্ত হওয়ার পরে নথিভুক্ত: startSec/endSec/measuredSec/sampleRate/
+    //  sceneId/shotId + পূর্ণ টেক্সট (C-F07) + প্রকৃত-কণ্ঠের প্রোভেনেন্স (B-F06))
+    for (const rec of lineRecords) {
+      const placed = timedLines.find(
+        l => l.character === rec.character && l.line === rec.text && l.filePath
+      );
+      const artifact = await ctx.registerArtifact({
+        buffer: rec.buffer,
+        kind: 'audio',
+        mimeType: rec.ext === 'mp3' ? 'audio/mpeg' : 'audio/wav',
+        fileName: `dialogue-${rec.index}-${sanitize(rec.character) || 'line'}.${rec.ext}`,
+        metaJson: {
+          pipeline: 'short_film',
+          layer: 'A1',
+          kind: 'dialogue',
+          character: rec.character,
+          text: rec.text, // C-F07: পূর্ণ টেক্সট — ২০০-অক্ষরের কাটা নয়
+          emotion: rec.emotion ?? null,
+          requestedVoice: rec.requestedVoice,
+          actualVoice: rec.actualVoice,
+          engine: rec.engine,
+          language,
+          sceneIndex: rec.sceneIndex,
+          sceneId: `SC${rec.sceneIndex}`,
+          shotId: placed?.shotId ?? null,
+          startSec: placed?.startSec ?? null,
+          endSec: placed?.endSec ?? null,
+          measuredSec: round2(rec.measuredSec),
+          sampleRate: rec.sampleRate,
+          verification: rec.verification
+            ? {
+                verdict: rec.verification.verdict,
+                verdictLabel: verdictLabel(rec.verification.verdict),
+                similarity: rec.verification.similarity,
+                detectedLanguage: rec.verification.detectedLanguage,
+                durationSec: rec.verification.durationSec,
+                expectedSec: rec.verification.expectedSec,
+                notes: rec.verification.notes,
+              }
+            : { verdictLabel: null, note: 'এই কণ্ঠের প্রথম লাইনের যাচাই-রায় দেখুন' },
+        },
+      });
+      if (placed) placed.artifactId = artifact.id;
+    }
+    if (lineRecords.length > 0) {
+      await step.setDetail(`${lineRecords.length}টি সংলাপ-artifact টাইমিং-চুক্তিসহ নথিভুক্ত`);
+    }
 
     // A1 — মোট সংলাপ-অডিও এক টাইমলাইনে (অবস্থানসহ)
     const lineFiles = timedLines.filter(l => l.filePath);
@@ -1328,6 +1670,23 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       const narrationStart = lineFiles.length > 0 ? round2(lastLineEnd + 0.5) : 0;
       layers.push({ layer: 'A5_narration', file: narrationPath, startSec: narrationStart });
       usedLayers.push(`A5 বর্ণনা (${narrationStart.toFixed(1)} সে. থেকে)`);
+      // D-F06/E-F02 (R-FIX-2): A5-বর্ণনা চলচ্চিত্রের শেষ ছাড়িয়ে গেলে আর নীরবে
+      // ৮৭% কাটা যায় না (প্রকৃত রান: 41.1 সে. বর্ণনার 35.8 সে. নীরবে বাদ) —
+      // সৎ নোট + রেকর্ড; muxAudio-র -t ট্রিমটি এখন প্রকাশিত।
+      if (narrationDurationSec != null && narrationStart + narrationDurationSec > total + 0.1) {
+        const narrEnd = round2(narrationStart + narrationDurationSec);
+        const narrOverflow = round2(narrEnd - total);
+        audioOverflows.push({
+          kind: 'narration',
+          endSec: narrEnd,
+          totalSec: total,
+          overflowSec: narrOverflow,
+          action: 'truncated',
+        });
+        ctx.partialNotes.push(
+          `A5 বর্ণনা (${narrationDurationSec.toFixed(1)} সে., ${narrationStart.toFixed(1)} সে. থেকে) চলচ্চিত্রের ${total.toFixed(1)} সে. ছাড়িয়ে যায় — শেষ ${narrOverflow.toFixed(1)} সে. কাটা পড়ে (action: truncated, D-F06)।`
+        );
+      }
     }
 
     // ৫-স্তর মিক্স — DEFAULT_MIX_RULES (সংলাপ-ডাকিং + লিমিটারসহ)
@@ -1508,6 +1867,40 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           : `${aiShots}/${shots.length} শট প্রকৃত AI (${AI_VIDEO_MODEL}); বাকি ${shots.length - aiShots}টি স্টোরিবোর্ড+ক্যামেরা-মোশন ফলব্যাক`
         : 'cinematic_motion ইঞ্জিন — AI স্টোরিবোর্ড + ক্যামেরা-মোশন (প্রকৃত ডিফিউশন ভিডিও নয়)';
 
+    // D-F07/E-F01 (R-FIX-2): লাউডনেস-সত্য — ডেলিভার্ড ফাইনালেই মাপা হয়।
+    // আগে মিক্স-স্টেজের মান (প্রকৃত রানে −16.3, প্রি-ট্রিম 65.8 সে.-এ) রিপোর্ট
+    // হতো অথচ ডেলিভার্ড 30 সে. MP4 স্বাধীনভাবে −14.4 LUFS মাপা গিয়েছিল।
+    // loudnessSignal ফিল্ডটি মাপা সিগন্যালটি স্পষ্ট করে লেবেল করে।
+    let loudnessLufs: number | null = mixReport?.loudnessLufs ?? null;
+    let loudnessSignal: 'delivered' | 'pre-mix' | null = mixReport ? 'pre-mix' : null;
+    let truePeakDbtp: number | null = null;
+    if (vInfo.hasAudio) {
+      try {
+        const delivered = await measureLoudness(videoPath);
+        if (delivered.integratedLufs != null) {
+          loudnessLufs = delivered.integratedLufs;
+          loudnessSignal = 'delivered';
+          truePeakDbtp = delivered.truePeakDbtp ?? null;
+          const target = mixReport?.targetLufs ?? DEFAULT_MIX_RULES.targetLufs ?? -16;
+          if (Math.abs(delivered.integratedLufs - target) > 1.5) {
+            ctx.partialNotes.push(
+              `ডেলিভার্ড ফাইনালের লাউডনেস ${delivered.integratedLufs.toFixed(1)} LUFS — লক্ষ্য ${target} LUFS থেকে ব্যবধান (মিক্স-ট্রিম/স্তর-ভারসাম্যের প্রভাব সম্ভাব্য; D-F07)`
+            );
+          }
+        }
+      } catch {
+        // অ-বাধামূলক — মিক্স-রিপোর্টের মানই থাকে (loudnessSignal:'pre-mix')
+      }
+    }
+    // C-F08: মাক্সের আগেই প্রি-মিক্স অডিও-মোট — ভিডিও-দৈর্ঘ্যের চেয়ে বেশি হলে
+    // সেটি রেকর্ডেড (কারণ-নোটগুলো ওপরে C-F03/D-F06-এ পুশ হয়েছে)
+    const preMuxAudioTotalSec = mixReport ? round2(mixReport.durationSec) : null;
+    if (preMuxAudioTotalSec != null && vInfo.durationSec > 0 && preMuxAudioTotalSec > vInfo.durationSec + 0.1 && audioOverflows.length === 0) {
+      ctx.partialNotes.push(
+        `প্রি-মিক্স অডিও ${preMuxAudioTotalSec.toFixed(1)} সে. > ভিডিও ${vInfo.durationSec.toFixed(1)} সে. — মাক্স-ট্রিমে অতিরিক্ত অংশ কাটা পড়ে (C-F08)`
+      );
+    }
+
     // SRT artifact
     if (srtContent) {
       await ctx.registerArtifact({
@@ -1546,6 +1939,20 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
         shotEngines,
         subtitles: !!srtContent,
         speechVerification: verificationSummaries,
+        // C-F04 (R-FIX-2): চূড়ান্ত ভিডিওর সাথে সংলাপ-লাইনগুলোর মেশিন-পাঠযোগ্য জয়েন —
+        // প্রতিটি {artifactId, character, startSec, endSec, verdict, shotId}
+        dialogue: timedLines
+          .filter(l => l.line.trim())
+          .map(l => ({
+            artifactId: l.artifactId ?? null,
+            character: l.character,
+            startSec: l.startSec,
+            endSec: l.endSec,
+            verdict: l.verdict ?? null,
+            shotId: l.shotId ?? null,
+          })),
+        // C-F03/E-F02: ছোট হয়ে যাওয়া অডিও-অংশের সৎ রেকর্ড (কারণ-নোট partialNotes-এ)
+        audioOverflows,
         mix: mixReport
           ? { loudnessLufs: mixReport.loudnessLufs ?? null, peakDb: mixReport.peakDb ?? null, issues: mixReport.issues, honestLabel: mixReport.honestLabel }
           : null,
@@ -1557,10 +1964,24 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       },
     });
 
+    // B-F02/B-F09/D-F05 (R-FIX-2): চূড়ান্ত রায় এখন ভাষা-যাচাইকে গণনায় ধরে —
+    // কোনো লাইনের রায় ব্যর্থ/অডিও-বাদ হলে "চমৎকার" আর হয় না; warn/ওভারফ্লো
+    // হলে মৃদু-সতর্কতা যুক্ত হয় (নীরব সতর্কতা নয়)।
+    const subtitleOnlyCount = speechVerifyFailCount + speechTtsFailCount;
+    const caveats: string[] = [...problems];
+    if (speechVerifyFailCount > 0) {
+      caveats.push(`${speechVerifyFailCount}টি সংলাপ-লাইনের ভাষা-যাচাই ব্যর্থ (ওই লাইন শুধু সাবটাইটেলে)`);
+    }
+    if (speechTtsFailCount > 0) {
+      caveats.push(`${speechTtsFailCount}টি সংলাপ-লাইন TTS-ব্যর্থ (শুধু সাবটাইটেলে)`);
+    }
+    const softCaveats: string[] = [];
+    if (speechWarnCount > 0) softCaveats.push(`${speechWarnCount}টি সংলাপ-লাইনের ভাষা-যাচাই রায়: সতর্কতা (প্রিভিউ শুনে নিশ্চিত করুন)`);
+    if (audioOverflows.length > 0) softCaveats.push(`${audioOverflows.length}টি অডিও-অংশ চলচ্চিত্রের শেষে ছোট হয়ে গেছে (নোট দেখুন)`);
     const verdict =
-      problems.length === 0
-        ? `চমৎকার — ${shots.length}টি শট / ${scenes.length}টি দৃশ্য, ${vInfo.durationSec.toFixed(1)} সেকেন্ড, ${vInfo.width}×${vInfo.height}@${vInfo.fps}FPS${vInfo.hasAudio ? `, ${usedLayers.length}টি অডিও-স্তর-সহ` : ''}${srtContent ? ', বাংলা সাবটাইটেল-সহ' : ''}। (${honestLabel})`
-        : `কার্যকর, তবে সতর্কতা: ${problems.join(', ')}। ${vInfo.durationSec.toFixed(1)} সেকেন্ড, ${shots.length}টি শট।`;
+      caveats.length === 0
+        ? `চমৎকার — ${shots.length}টি শট / ${scenes.length}টি দৃশ্য, ${vInfo.durationSec.toFixed(1)} সেকেন্ড, ${vInfo.width}×${vInfo.height}@${vInfo.fps}FPS${vInfo.hasAudio ? `, ${usedLayers.length}টি অডিও-স্তর-সহ` : ''}${srtContent ? ', বাংলা সাবটাইটেল-সহ' : ''}${softCaveats.length > 0 ? ` (সতর্কতা: ${softCaveats.join('; ')})` : ''}। (${honestLabel})`
+        : `কার্যকর, তবে সতর্কতা: ${caveats.join(', ')}। ${vInfo.durationSec.toFixed(1)} সেকেন্ড, ${shots.length}টি শট।${softCaveats.length > 0 ? ` (${softCaveats.join('; ')})` : ''}`;
     result.quality = verdict;
     result.artifactId = artifact.id;
     result.title = title;
@@ -1579,6 +2000,17 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
     result.honestLabel = honestLabel;
     // Phase-5: পরিকল্পনার সারসংক্ষেপ resultJson-এও (কার্ড/রিপোর্টের জন্য)
     if (plan) result.cinematicPlan = summarizePlan(plan, engine);
+    // C-F05-এসএফ-অর্ধেক (R-FIX-2): ব্যবহারকারী-দৃশ্যমান ফলাফল-নোট —
+    // music_video-র মতোই `notes: string[]` আকারে (UI-এজেন্ট এই ফিল্ডটি রেন্ডার করে)
+    const resultNotes: string[] = [
+      'লিপ-সিঙ্ক নেই — চরিত্রের মুখের নড়াচড়ার দাবি করা হয় না (§৫ সৎ-অবস্থা)।',
+    ];
+    if (subtitleOnlyCount > 0) {
+      resultNotes.push(
+        `${subtitleOnlyCount}টি সংলাপ-লাইন শুধু সাবটাইটেলে (ভাষা-যাচাই ব্যর্থ/TTS-ব্যর্থ) — প্রিভিউতে যাচাই করুন।`
+      );
+    }
+    result.notes = resultNotes;
     result.technicalReport = {
       hasVideo: vInfo.hasVideo,
       hasAudio: vInfo.hasAudio,
@@ -1589,10 +2021,21 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       videoCodec: vInfo.videoCodec,
       audioCodec: vInfo.audioCodec,
       avSyncOk,
-      loudnessLufs: mixReport?.loudnessLufs ?? null,
+      // D-F07/E-F01: ডেলিভার্ড-সিগন্যালের লাউডনেস + স্পষ্ট লেবেল
+      loudnessLufs,
+      loudnessSignal,
+      truePeakDbtp,
       peakDb: mixReport?.peakDb ?? null,
       mixIssues: mixReport?.issues ?? [],
       subtitleBurned: !!srtContent,
+      // C-F08: মাক্সের আগের অডিও-মোট (E-F02-শ্রেণীর নীরব-ট্রিম ধরার প্রমাণ)
+      preMuxAudioTotalSec,
+      // C-F03/D-F06: ছোট হয়ে যাওয়া অংশের রেকর্ড
+      audioOverflows,
+      // B-F02/D-F05: ভাষা-যাচাইয়ের সৎ গণনা
+      speechVerifyFailCount,
+      speechTtsFailCount,
+      speechWarnCount,
     };
   }, { timeoutMs: 10 * 60_000 }); // S10: স্থানীয় FFmpeg-সমাবেশ সুরক্ষা-জাল
 

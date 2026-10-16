@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "description": "Defect A-র দুটি প্রকৃত ডিবি-ট্রান্সক্রিপ্ট (২০২৬-১০-১৬-এর ব্যবহারকারী-চালিত রান, Production cmvbbv86c000apzrc9mra61oi) — ভাষা-যাচাইকারীর রিগ্রেশন ফিক্সচার হিসেবে প্রমোট (Audit E §2.2 সুপারিশ, Audit B §১০-৭)। বাইনারি-মুক্ত: শুধু ট্রান্সক্রিপ্ট-স্ট্রিং + আচরণ-প্রত্যাশা।",
+  "cases": [
+    {
+      "id": "bn-jam-chinese-garbage",
+      "provenance": "DB Artifact speech-bn-jam (storage/artifacts/mvbbyh49-fc58ad64.wav) — বাংলা অনুরোধ, Edge-403-এর পরে z-ai jam কণ্ঠ",
+      "requestedLanguage": "bn",
+      "actualVoice": "jam",
+      "engine": "zai",
+      "script": "বৃষ্টি ভালোই লাগে।",
+      "transcript": "可真的，可真的，踢踢踢，忙的，踢踢踢，踢B T",
+      "dbSimilarity": 0,
+      "expectedVerdict": "fail",
+      "expectedReasons": [
+        "other-script: CJK-অক্ষর ≥২৫% → ভাষা 'other-script' ⇒ fail (B-F04-ক)",
+        "trivial repetition: শীর্ষ টোকেন '踢' ঘনত্ব ≥০.৪ ⇒ fail (B-F04-খ)",
+        "bn সাদৃশ্য ০ (বাংলা-অক্ষর নেই) ⇒ fail (B-F04-গ)"
+      ]
+    },
+    {
+      "id": "en-tongtong-romanized-garbage",
+      "provenance": "DB Artifact speech-en-tongtong (storage/artifacts/mvbbz23v-b29896ab.wav) — ইংরেজি অনুরোধ, ইঞ্জিন-ফলব্যাকে z-ai tongtong কণ্ঠ",
+      "requestedLanguage": "en",
+      "actualVoice": "tongtong",
+      "engine": "zai",
+      "script": null,
+      "scriptNote": "মূল ইংরেজি স্ক্রিপ্ট ডিবি-নোট থেকে পুনরুদ্ধার হয়নি — টেস্টে প্রতিনিধি ইংরেজি স্ক্রিপ্ট ব্যবহার করা হয় (আচরণ-প্রত্যাশা অপরিবর্তিত: এই ধরনের রোমানীকৃত আবর্জনা 'pass' হতে পারে না)",
+      "transcript": "Shubhoh bioya no tan bochar shukho, sumridhi ar shashti din niy asak.",
+      "dbSimilarity": 0.57,
+      "expectedVerdict": "not-pass (warn বা fail — কখনোই pass নয়)",
+      "expectedReasons": [
+        "শব্দ-আবৃত্তি <৫০% — স্ক্রিপ্টের ইংরেজি শব্দের অর্ধেকও ট্রান্সক্রিপ্টে নেই (B-F05)",
+        "ইঞ্জিন-ফলব্যাকের পরে পাওয়া ফল — রায় সর্বোচ্চ 'warn' (B-F05-ক্যাপ, REG-1i-লক)"
+      ]
+    }
+  ]
+}

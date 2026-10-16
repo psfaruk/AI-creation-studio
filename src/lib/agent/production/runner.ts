@@ -126,8 +126,9 @@ export interface PipelineContext {
   workingDir: string;
   /** আংশিক সফলতার তালিকা (partial স্ট্যাটাসের ভিত্তি) */
   partialNotes: string[];
-  /** আর্টিফ্যাক্ট আইডি থেকে ফাইল-পাথ (source ছবি/গান ইত্যাদি) */
-  resolveArtifactFile(artifactId: string): Promise<string>;
+  /** আর্টিফ্যাক্ট আইডি থেকে ফাইল-পাথ (source ছবি/গান ইত্যাদি) — A2-F04: নিজ
+   *  কথোপকথনের আর্টিফ্যাক্টই পাঠযোগ্য; requireUserUpload-এ কেবল user_upload */
+  resolveArtifactFile(artifactId: string, opts?: { requireUserUpload?: boolean }): Promise<string>;
 }
 
 export interface PipelineResult {
@@ -379,10 +380,23 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
       });
       return toArtifactMeta(row);
     },
-    async resolveArtifactFile(artifactId: string) {
+    async resolveArtifactFile(artifactId: string, opts?: { requireUserUpload?: boolean }) {
       const artifact = await db.artifact.findUnique({ where: { id: artifactId } });
       if (!artifact || !artifact.storagePath) {
         throw new Error(`নির্দেশিত ফাইল (artifact) পাওয়া যায়নি: ${artifactId.slice(0, 24)}`);
+      }
+      // A2-F04 (R-FIX-4 — lead): প্রিভিউ-রাউটের সাথে উৎস-সমতা — শুধু নিজ
+      // কথোপকথনের আর্টিফ্যাক্ট পাঠযোগ্য (নিরাপত্তা: অন্য কথোপকথনের আর্টিফ্যাক্ট
+      // নয় — REG-18c-শ্রেণির প্যারিটি); গান-ইনপুটে কেবল user_upload-অডিও।
+      if (artifact.conversationId && artifact.conversationId !== run.conversationId) {
+        throw new Error(
+          `নির্দেশিত আর্টিফ্যাক্টটি এই কথোপকথনের নয় — পড়া যাবে না: ${artifactId.slice(0, 24)}`
+        );
+      }
+      if (opts?.requireUserUpload && artifact.origin !== 'user_upload') {
+        throw new Error(
+          `নির্দেশিত আর্টিফ্যাক্টটি ব্যবহারকারীর আপলোড নয় — গান-ইনপুটে অনুমোদিত নয়: ${artifactId.slice(0, 24)}`
+        );
       }
       return artifact.storagePath;
     },

@@ -22,7 +22,7 @@ import {
   noteIntentClassification,
   noteIntentPlanningMs,
 } from './run-metrics';
-import { chatComplete, parseToolCall, type ChatCallMeta, type LLMMessage } from './llm';
+import { chatComplete, parseToolCall, LLM_CHAT_RETRY_ATTEMPTS, type ChatCallMeta, type LLMMessage } from './llm';
 import { TemporarilyUnavailableError, isRateLimitErrorText } from './retry';
 import { isChannelBlocked } from './rate-limit-coordinator';
 import { CHAT_ONLY_DIRECTIVE, SYSTEM_PROMPT } from './prompts';
@@ -35,7 +35,9 @@ import type { CreativeJobSpec } from '@/lib/types';
 
 const MAX_STEPS = 12;
 const HISTORY_LIMIT = 20;
-const STALE_RUN_MS = 10 * 60 * 1000; // ১০ মিনিট
+/** (A1-F01) 'running' রানের স্টেলনেস-সীমা — sweepStaleRuns এবং চ্যাট-সেন্ড
+ *  পথের জম্বি-গার্ড উভয়ে একই মান ব্যবহার করে (এক সত্যের উৎস)। */
+export const STALE_RUN_MS = 10 * 60 * 1000; // ১০ মিনিট
 /** (অডিট §E) এজেন্ট-লুপের সর্বোচ্চ সময়সীমা — এর পরে বাধ্যতামূলক সৎ মোড়ক
  *  (stale-sweep-এর ১০ মিনিটের সাথেই সামঞ্জস্যপূর্ণ, যাতে রান স্রীয় সত্য থাকে) */
 const MAX_RUN_ELAPSED_MS = 10 * 60_000;
@@ -432,7 +434,8 @@ async function chatCompleteWithNotes(
         level: 'waiting',
         note:
           `ক্লাউড LLM রেট-লিমিটেড (৪২৯ — সাময়িক, লাইসেন্স-সমস্যা নয়)। ` +
-          `পুনঃচেষ্টা ${bnNum(info.attempt)}/${bnNum(6)} — ${bnNum(sec)} সেকেন্ড অপেক্ষা করা হচ্ছে…`,
+          // (A1-F05) মোট-প্রচেষ্টা llm.ts-এর একই ধ্রুবক থেকে — আর হার্ডকোড "৬" নয়
+          `পুনঃচেষ্টা ${bnNum(info.attempt)}/${bnNum(LLM_CHAT_RETRY_ATTEMPTS)} — ${bnNum(sec)} সেকেন্ড অপেক্ষা করা হচ্ছে…`,
       });
     },
     onMeta: m => {

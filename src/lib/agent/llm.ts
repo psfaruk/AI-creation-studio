@@ -5,8 +5,9 @@
 // S9-গভীর-সমাধান (২০২৬-১০-১১-এর ৪২৯-ঘটনা থেকে):
 //  - chatComplete-এর পুরনো বাজেট ছিল ৪ চেষ্টা × ৩ সে. ≈ ১৬ সে. —
 //    মিনিট-দীর্ঘ ৪২৯-উইন্ডোতে রান ধাপ ০-তেই মরে যেত। এখন:
-//    ৮ চেষ্টা, base ৫ সে., max ১০০ সে. (সব-ব্যর্থ-ক্ষেত্রেও
-//    অপেক্ষা-বাজেট ≈ ৪ মিনিট — ১০-মিনিটের stale-sweepের মধ্যে)।
+//    ৬ চেষ্টা (LLM_CHAT_RETRY_ATTEMPTS), base ৪ সে., max ৬০ সে.
+//    (সব-ব্যর্থ-ক্ষেত্রেও অপেক্ষা-বাজেট ≈ ৪ মিনিট —
+//    ১০-মিনিটের stale-sweepের মধ্যে)।
 //  - চ্যানেল 'chat' — coordinator-কুলডাউন সৎ-অপেক্ষা + সিরিয়ালাইজড।
 //  - onRateLimitWait-কলব্যাক — orchestrator এটি দিয়ে SSE-তে
 //    "রেট-লিমিট, অপেক্ষা চলছে" নোট পাঠায়।
@@ -23,6 +24,13 @@ import { findChatModel, PROVIDERS } from './chat-models';
 import { externalChatComplete } from './external-llm';
 
 export { externalChatComplete, ExternalFatalError, ExternalRetryableError } from './external-llm';
+
+/**
+ * (A1-F05) চ্যাট-LLM কলের সর্বোচ্চ প্রচেষ্টা-সংখ্যা — নিচের withRetry-কল
+ * এবং orchestrator-এর ব্যবহারকারী-দৃশ্যমান ৪২৯-নোট ("চেষ্টা n/৬") একই
+ * ধ্রুবক থেকে পড়ে, যাতে দুই জায়গার মান কখনো আলাদা হয়ে না যায়।
+ */
+export const LLM_CHAT_RETRY_ATTEMPTS = 6;
 
 export interface LLMMessage {
   role: 'user' | 'assistant';
@@ -337,7 +345,7 @@ export async function chatComplete(
       return typeof content === 'string' ? content : '';
     },
     'LLM (চ্যাট)',
-    6, // S9: ৬ চেষ্টা — মোট অপেক্ষা-বাজেট ≈৪–৫ মিনিট (১০-মিনিটের stale-sweepের মধ্যে)
+    LLM_CHAT_RETRY_ATTEMPTS, // S9: ৬ চেষ্টা — মোট অপেক্ষা-বাজেট ≈৪–৫ মিনিট (১০-মিনিটের stale-sweepের মধ্যে)
     4000, // base ৪ সে.
     {
       maxDelayMs: 60_000, // একক সর্বোচ্চ অপেক্ষা ৬০ সে.

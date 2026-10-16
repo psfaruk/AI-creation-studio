@@ -85,15 +85,21 @@ export function aiClipDurationSec(neededSec: number): 5 | 10 {
   return neededSec >= 7.5 ? 10 : 5;
 }
 
-/** ফাইলের প্রথম বাইটগুলো থেকে ছবির MIME-ধরন */
-export async function sniffImageMime(file: string): Promise<'image/png' | 'image/jpeg' | 'image/webp'> {
-  const head = await readFile(file).then(b => b.subarray(0, 16));
+/** বাফারের প্রথম বাইটগুলো থেকে ছবির MIME-ধরন (E-F03: জাদু-বাইট সততা —
+ *  JPEG বাইট কখনো image/png লেবেলে যায় না) */
+export function sniffImageMimeBuffer(buf: Buffer): 'image/png' | 'image/jpeg' | 'image/webp' {
+  const head = buf.subarray(0, 16);
   if (head[0] === 0x89 && head[1] === 0x50) return 'image/png';
   if (head[0] === 0xff && head[1] === 0xd8) return 'image/jpeg';
   if (head.subarray(0, 4).toString('ascii') === 'RIFF' && head.subarray(8, 12).toString('ascii') === 'WEBP') {
     return 'image/webp';
   }
   return 'image/png';
+}
+
+/** ফাইলের প্রথম বাইটগুলো থেকে ছবির MIME-ধরন */
+export async function sniffImageMime(file: string): Promise<'image/png' | 'image/jpeg' | 'image/webp'> {
+  return sniffImageMimeBuffer(await readFile(file));
 }
 
 /** লোকাল ছবি-ফাইল → data-URL (i2v রেফারেন্স হিসেবে) */
@@ -665,12 +671,20 @@ export const motionVideoPipeline: PipelineFn = async ctx => {
       });
       voiceoverDetail = voiceover;
       for (const f of voiceover.failures) ctx.partialNotes.push(f);
+      // B-F09 (R-FIX-2): ভয়েসওভারের সততা-নোট আর নীরব নয় — যাচাই-বন্ধ/
+      // ইঞ্জিন-ফলব্যাক অবস্থা partialNote-এও দৃশ্যমান (নোট-কেবল মেটাডেটা নয়)
+      for (const n of voiceover.honestyNotes) ctx.partialNotes.push(`ভয়েসওভার: ${n}`);
       const fallbackCount = voiceover.chunks.filter(c => c.attempts > 1).length;
+      const unverifiedCount = voiceover.chunks.filter(c =>
+        c.notes.some(n => n.includes('যাচাই বন্ধ'))
+      ).length;
       voiceoverLabel =
         voiceover.chunks.length === chunks.length
           ? `ভয়েসওভার: ${voiceover.chunks.length}/${chunks.length} খণ্ড সফল (কণ্ঠ: ${[
               ...new Set(voiceover.chunks.map(c => c.voice)),
-            ].join(', ')})${fallbackCount > 0 ? ` — ${fallbackCount}টি খণ্ডে ইঞ্জিন-ফলব্যাক` : ''}`
+            ].join(', ')})` +
+            `${fallbackCount > 0 ? ` — ${fallbackCount}টি খণ্ডে ইঞ্জিন-ফলব্যাক` : ''}` +
+            `${unverifiedCount > 0 ? ` — ${unverifiedCount}টি খণ্ডের ASR-যাচাই বন্ধ ছিল (প্রিভিউ শুনে নিশ্চিত করুন)` : ''}`
           : `ভয়েসওভার: ${voiceover.chunks.length}/${chunks.length} খণ্ড সফল — বাদ পড়া খণ্ডের সৎ নোট দেখুন`;
       const voiceFiles: { file: string; startSec: number }[] = voiceover.chunks.map(c => ({
         file: c.file,

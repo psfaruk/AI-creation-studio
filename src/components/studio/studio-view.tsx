@@ -340,7 +340,9 @@ const VIDEO_MODES: StudioMode[] = [
 // ফিল্ম ডিরেক্টর — ৫টি মোড
 // ------------------------------------------------------------
 
-const FILM_MODES: StudioMode[] = [
+// (REG-12r টেস্ট-লক) মোড-তালিকাগুলো এক্সপোর্টেড — সৎ-স্ট্যাটাস-লেবেল
+// (যেমন ঠোঁট-সিঙ্ক-নয় statusNote) রিগ্রেশন-টেস্টে আটকে রাখার জন্য।
+export const FILM_MODES: StudioMode[] = [
   {
     id: 'film-short',
     icon: Clapperboard,
@@ -366,6 +368,9 @@ const FILM_MODES: StudioMode[] = [
       'দুই/তিন চরিত্রের কথোপকথনের দৃশ্য — সংলাপ-TTS মাপা-দৈর্ঘ্য টাইমলাইনে বসে।',
     status: 'active',
     matrixKey: 'cap-short-film',
+    // (C-F06) সবচেয়ে কথা-ঘন মোড — ভাইবোদের (film-short/film-music-video)
+    // মতোই স্পষ্ট ঠোঁট-সিঙ্ক-নয় স্বীকারোক্তি বহন করে
+    statusNote: 'সংলাপ-কণ্ঠ ও সাবটাইটেল — ঠোঁট-সিঙ্ক নয়',
     languages: 'বাংলা · ইংরেজি',
     maxDuration: `${toBnDigits(20)}–${toBnDigits(60)} সেকেন্ড`,
     engine: 'ai',

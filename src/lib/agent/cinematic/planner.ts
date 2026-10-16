@@ -30,6 +30,7 @@ import type {
 } from './types';
 import { SHOT_PLAN_VERSION, shotIdFor } from './types';
 import { classifyMovement } from './capability_map';
+import { containsBengaliScript } from './lang-guard';
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
@@ -456,6 +457,51 @@ function timeOfDayLighting(timeOfDay: string): string {
 }
 
 /**
+ * D-F03 (planner-half): বাংলা উৎস-টেক্সটের বদলে নির্ধারক ইংরেজি
+ * actionEn-ফলব্যাক (শর্টফিল্ম)। বিদ্যমান ইংরেজি ফলব্যাক-শব্দভাণ্ডারের
+ * (fallbackActionEn) সাইজ/সাবজেক্ট-ভিত্তিক গঠন অনুসরণ করে — কিন্তু
+ * "গান/শিল্পী"-বাচক শব্দ ছাড়া (শর্টফিল্ম-প্রসঙ্গে মিথ্যা নয়)।
+ * নির্দিষ্ট অ্যাকশন-টেক্সট LLM ছাড়া অনুবাদযোগ্য নয় — সেই অর্থ-ক্ষয়
+ * প্রতি দৃশ্যে একটি সৎ সমন্বয়-নোটে স্বীকৃত (নীচে)।
+ */
+function sfEnglishActionFallback(size: ShotSize, subject: ShotSubject, isFinalShot: boolean): string {
+  if (isFinalShot) return 'Emotional closing shot as the story resolves';
+  if (subject === 'environment' || size === 'establishing_wide') {
+    return 'Cinematic establishing view of the scene location';
+  }
+  switch (size) {
+    case 'wide':
+      return 'The scene plays out in full view of the location';
+    case 'over_the_shoulder':
+      return 'The conversation plays out, seen past one character toward the other';
+    case 'reaction':
+      return 'A quiet reaction moment as the scene unfolds';
+    case 'insert':
+      return 'A telling visual detail of the moment';
+    case 'close_up':
+      return 'An intimate close view of the character in the scene';
+    case 'extreme_close_up':
+      return 'One meaningful detail filling the frame';
+    case 'medium':
+    default:
+      return 'The scene plays out with the character in frame';
+  }
+}
+
+/**
+ * A2-F06 কঙ্কাল-বৈচিত্র্য-গার্ডের নির্ধারক মুভ-বিকল্প ম্যাপ (সম্পূর্ণ
+ * PlanMovement-ইউনিয়ন প্যারামিটারে কাজ করে — ইনিশিয়াইজার-টার্নারির
+ * ফ্লো-ন্যারোয়িং-এ পড়ে TS-ত্রুটি হয়, তাই আলাদা ফাংশন)।
+ */
+function skeletonMoveAlternative(m: PlanMovement): PlanMovement {
+  if (m === 'pan_right') return 'pan_left';
+  if (m === 'pan_left') return 'pan_right';
+  if (m === 'zoom_out') return 'zoom_in';
+  if (m === 'zoom_in') return 'static';
+  return 'static';
+}
+
+/**
  * দৃশ্য-তালিকা → কভারেজ-শট (নির্ধারক)। Phase-4-এর দ্বিতীয় LLM কলের
  * (শট-বিভাজন) বদলে এই বিশুদ্ধ ফাংশন — এক LLM রাউন্ড-ট্রিপ সাশ্রয়।
  */
@@ -529,7 +575,10 @@ export function planShortFilmShots(input: ShortFilmPlanInput): CinematicPlan {
             : 'অ্যাকশন-কভারেজ',
     narrativeBeat: s.action.slice(0, 120),
     environment: `${s.location}, ${s.timeOfDay}`.slice(0, 160),
+    // A2-F05 সৎ-মার্কার: এই দৃশ্য-স্তরের মান সাধারণ প্ল্যানিং-প্লেসহোল্ডার —
+    // প্রজন্ম-প্রভাবক পথ শট-স্তরের নির্ধারক lightingMood (নীচে প্রতি শটে)।
     lightingMood: 'scene-appropriate cinematic lighting',
+    lightingProvenance: 'planning_only_generic',
     ...(si === lastCovered ? { transitionIntent: 'সমাপনি-বিট' } : {}),
   }));
 
@@ -543,6 +592,37 @@ export function planShortFilmShots(input: ShortFilmPlanInput): CinematicPlan {
     if (n <= 0) return;
     const isLastScene = si === lastCovered;
     const hasDialogue = scene.dialogueCount > 0;
+
+    // D-F03 (planner-half) ভাষা-চুক্তি: প্রজন্ম-প্রম্পটে যাওয়া actionEn
+    // অবশ্যই ইংরেজি-লিপি। উৎস-টেক্সট (visualEn, বা visualEn না থাকলে
+    // location/timeOfDay/action-মিশ্রণ) বাংলা লিপি ধরলে (শেয়ার্ড
+    // lang-guard — containsBengaliScript) সেটি প্রম্পটে যায় না: পরিবর্তে
+    // সাইজ/সাবজেক্ট-ভিত্তিক নির্ধারক ইংরেজি ফলব্যাক-বাক্য
+    // (sfEnglishActionFallback — বিদ্যমান ফলব্যাক-শব্দভাণ্ডার) + প্রতি
+    // দৃশ্যে ঠিক একটি সৎ সমন্বয়-নোট। LLM কল নেই; অর্থ-ক্ষয় নোটে
+    // স্বীকৃত। (রান-পথে পাইপলাইনের নিজস্ব বেল্ট-অ্যান্ড-ব্রেসেস যাচাই
+    // সমান্তরালভাবে যোগ হচ্ছে — এটি পরিকল্পকের নিজের ফলব্যাক-পথ।)
+    const visualEn = scene.visualEn && scene.visualEn.trim() ? scene.visualEn.trim() : '';
+    const sourceEn = visualEn || `${scene.location}, ${scene.timeOfDay}. ${scene.action}`;
+    const bengaliSource = containsBengaliScript(sourceEn);
+    if (bengaliSource) {
+      adjustments.push({
+        field: `scene.SC${si + 1}.${visualEn ? 'visualEn' : 'action'}`,
+        from: 'বাংলা লিপি',
+        to: 'ইংরেজি ফলব্যাক',
+        reason: 'উৎস-টেক্সট বাংলা — ইংরেজি ফলব্যাক বাক্য বসানো হলো (D-F03)',
+      });
+    }
+
+    // D-F04: দৃশ্যের চরিত্র-নাম — খালি/অ-স্ট্রিং এন্ট্রি বাদ (পরিকল্পকের
+    // নিজের আউটপুট যাচাইকারীর character-গার্ড সবসময় পাস করে)।
+    const sceneChars = scene.characters.filter(
+      (c): c is string => typeof c === 'string' && c.trim().length > 0
+    );
+    // দুই-চরিত্র কভারেজ-গ্যারান্টির অবস্থা-ট্র্যাকিং (এই দৃশ্যে কে ইতিমধ্যে
+    // পোর্ট্রেট-কন্ডিশনড শট পেয়েছে)
+    let seenCharA = false;
+    let seenCharB = false;
 
     // স্লট-প্যাটার্ন (নির্ধারক)
     const sizes: ShotSize[] = [];
@@ -639,6 +719,32 @@ export function planShortFilmShots(input: ShortFilmPlanInput): CinematicPlan {
         });
       }
 
+      // D-F04: চরিত্র-বণ্টন — এক শটে এক `character?` স্লট, কিন্তু
+      // দুই-চরিত্র সংলাপ-দৃশ্যে দ্বিতীয় চরিত্র আর কখনো উপস্থাপিত হয় না
+      // — এমন হতে দেওয়া যায় না। নিয়ম (নির্ধারক):
+      //  - রিয়্যাকশন স্লট → characters[1] (দৃশ্যে ≥২ চরিত্র থাকলে; নইলে
+      //    characters[0]) — "অন্য চরিত্রটি সাড়া দিচ্ছে" কভারেজ।
+      //  - মিডিয়াম/OTS স্লট → বেস characters[0]; কিন্তু দুই-চরিত্রের
+      //    সংলাপ-দৃশ্যে characters[0] ইতিমধ্যে বসে গেলে পরের স্লট
+      //    characters[1]-কে দেওয়া হয় — ≥২ কন্ডিশনড স্লটের দৃশ্যে উভয়
+      //    চরিত্রই নিশ্চিত কমপক্ষে একটি করে পোর্ট্রেট-কন্ডিশনড শট পায়।
+      //  - অ্যাকশন-দৃশ্য অপরিবর্তিত: characters[0] (আগের আচরণ)।
+      // সীমা (সৎ): দৃশ্য-১-এর এস্টাব্লিশিং স্লট environment-সাবজেক্ট —
+      // কন্ডিশনড স্লট মাত্র একটি থাকলে (যেমন [এস্টাব্লিশিং, OTS]) এক
+      // character-স্লটে দুই চরিত্র অসম্ভব; সেখানে characters[0] থাকে।
+      let character: string | undefined;
+      if (sceneChars.length > 0 && (subject === 'scene' || subject === 'reaction')) {
+        if (subject === 'reaction') {
+          character = sceneChars.length >= 2 ? sceneChars[1] : sceneChars[0];
+        } else if (hasDialogue && sceneChars.length >= 2 && seenCharA && !seenCharB) {
+          character = sceneChars[1];
+        } else {
+          character = sceneChars[0];
+        }
+        if (sceneChars.length >= 2 && character === sceneChars[1]) seenCharB = true;
+        else seenCharA = true;
+      }
+
       shots.push({
         shotId: shotIdFor(order),
         sceneId: `SC${si + 1}`,
@@ -649,17 +755,14 @@ export function planShortFilmShots(input: ShortFilmPlanInput): CinematicPlan {
         movement,
         fallbackMove: cls.fallbackMove,
         delivery: cls.delivery,
-        actionEn: (scene.visualEn && scene.visualEn.trim()
-          ? scene.visualEn
-          : `${scene.location}, ${scene.timeOfDay}. ${scene.action}`
-        ).slice(0, 900),
+        // D-F03: বাংলা উৎস-টেক্সট ধরা পড়লে ইংরেজি ফলব্যাক-বাক্য (উপরে
+        // সৎ সমন্বয়-নোট); ইংরেজি উৎস আগের মতোই অপরিবর্তিত যায়।
+        actionEn: (bengaliSource ? sfEnglishActionFallback(size, subject, isFinalShot) : sourceEn).slice(0, 900),
         // দৃশ্যের সময় থেকে নির্ধারক আলো-মুড — প্রম্পটে যায়
         lightingMood: timeOfDayLighting(scene.timeOfDay),
         labelBn: `দৃশ্য ${scene.index} — শট ${k + 1}`,
         targetDurationSec: perShot,
-        ...(scene.characters.length > 0 && (subject === 'scene' || subject === 'reaction')
-          ? { character: scene.characters[0] }
-          : {}),
+        ...(character ? { character } : {}),
         ...(isFinalShot ? { transitionIn: 'সমাপনি-বিট' } : {}),
       });
     }
@@ -701,7 +804,11 @@ export function planShortFilmSkeleton(opts: {
   // নির্ধারক কঙ্কাল-প্যাটার্ন: প্রতি দৃশ্যে ~২ শট পর্যন্ত, শেষে সমাপনি
   const shots: CinematicShot[] = [];
   const scenes: CinematicScene[] = [];
+  const adjustments: PlanAdjustment[] = [];
   const perScene = Math.max(1, Math.floor(shotCount / sceneCount));
+  // A2-F06: গার্ড অসম্ভব হলে ঠিক একটি সৎ-নোট (adjustments = কঙ্কালের
+  // honest-notes চ্যানেল; প্রিভিউ-সারসংক্ষেপের limitations-এর পাশাপাশি)
+  let diversityNoted = false;
   let order = 0;
   for (let si = 0; si < sceneCount; si++) {
     const isLast = si === sceneCount - 1;
@@ -711,7 +818,10 @@ export function planShortFilmSkeleton(opts: {
       purpose: isFirst ? 'পরিচিতি ও ভৌগোলিক স্থাপন' : isLast ? 'সমাপনি' : si % 2 === 1 ? 'সংলাপ/অ্যাকশন কভারেজ' : 'বিকাশ',
       narrativeBeat: '(চূড়ান্ত আখ্যান জেনারেশন-সময়ে চিত্রনাট্য থেকে তৈরি হবে)',
       environment: 'story location (runtime)',
+      // A2-F05 সৎ-মার্কার (পূর্ণ পরিকল্পকের মতোই): দৃশ্য-স্তরের মান
+      // সাধারণ প্ল্যানিং-প্লেসহোল্ডার — প্রজন্ম-পথ শট-স্তরের।
       lightingMood: 'scene-appropriate cinematic lighting',
+      lightingProvenance: 'planning_only_generic',
     });
     // শেষ-দৃশ্যের জন্য অন্তত ১টি শট সংরক্ষিত — আগের দৃশ্যগুলি বাজেট
     // শেষ করে দিলেও সমাপনি-বিট-ওয়ালা শেষ শটটি কখনো হারায় না।
@@ -719,9 +829,47 @@ export function planShortFilmSkeleton(opts: {
       ? Math.max(1, shotCount - order)
       : Math.min(perScene, Math.max(0, shotCount - order - 1));
     for (let k = 0; k < n && order < shotCount; k++) {
-      const size: ShotSize = isFirst && k === 0 ? 'establishing_wide' : isLast && k === n - 1 ? 'medium' : k === 0 ? 'wide' : 'medium';
+      let size: ShotSize = isFirst && k === 0 ? 'establishing_wide' : isLast && k === n - 1 ? 'medium' : k === 0 ? 'wide' : 'medium';
       const subject: ShotSubject = isFirst && k === 0 ? 'environment' : 'scene';
-      const movement: PlanMovement = isFirst && k === 0 ? 'zoom_in' : isLast && k === n - 1 ? 'zoom_out' : k === 0 ? 'pan_right' : 'static';
+      let movement: PlanMovement = isFirst && k === 0 ? 'zoom_in' : isLast && k === n - 1 ? 'zoom_out' : k === 0 ? 'pan_right' : 'static';
+      // A2-F06 বৈচিত্র্য-গার্ড (রান-পরিকল্পকের §3-নিয়মের আলো সংস্করণ —
+      // কঙ্কাল রিভিউ-কেবল, প্রজন্ম-পথ নয়, কিন্তু প্রিভিউ রান-পরিকল্পকের
+      // কখনো-উৎপাদন-করে-না এমন প্যাটার্ন দেখাত পারত না): সন্নিহিত
+      // শট-জোড়ায় (ক) একই (সাইজ এবং মুভমেন্ট) নয়, (খ) টানা একই নন-
+      // স্ট্যাটিক মুভ নয় (static পুনরাবৃত্তি বৈধ — তবে একই সাইজ+static
+      // জোড়াও (ক)-এর অধীনে)। স্থির-আর্ক স্লট (প্রথম এস্টাব্লিশিং, শেষ
+      // জুম-আউট) নিয়মের বাইরে — পূর্ণ পরিকল্পকের নকশার মতোই।
+      // নির্ধারক বিকল্প-ক্রম: মুভ-ফ্লিপ → সাইজ-ফ্লিপ → উভয়। স্থির
+      // বাজেটে কোনোটিই না চললে নির্ধারক মান বহাল + একটি সৎ-নোট।
+      const prev = shots[shots.length - 1];
+      const isFixedArcSlot = (isFirst && k === 0) || (isLast && k === n - 1);
+      if (prev && !isFixedArcSlot) {
+        const clash = (s: ShotSize, m: PlanMovement): boolean =>
+          (m !== 'static' && m === prev.movement) || (s === prev.size && m === prev.movement);
+        if (clash(size, movement)) {
+          // TS ফ্লো-ন্যারোয়িং (ইনিশিয়াইজার-টার্নারি 'pan_left' বাদ দেয়) এড়াতে
+          // পূর্ণ-ইউনিয়ন ম্যাপার-ফাংশন ব্যবহৃত।
+          const mvAlt: PlanMovement = skeletonMoveAlternative(movement);
+          const szAlt: ShotSize = size === 'wide' ? 'medium' : 'wide';
+          if (!clash(size, mvAlt)) {
+            movement = mvAlt;
+          } else if (!clash(szAlt, movement)) {
+            size = szAlt;
+          } else if (!clash(szAlt, mvAlt)) {
+            size = szAlt;
+            movement = mvAlt;
+          } else if (!diversityNoted) {
+            adjustments.push({
+              field: 'skeleton.diversity',
+              from: `${prev.size}+${prev.movement}`,
+              to: `${size}+${movement}`,
+              reason:
+                'কঙ্কালের স্থির স্লট-বাজেটে বৈচিত্র্য-নিয়ম (সন্নিহিত একই সাইজ+মুভমেন্ট নয়; টানা নন-স্ট্যাটিক মুভ নয়) রক্ষা করা গেল না — নির্ধারক আউটপুট বহাল (A2-F06)',
+            });
+            diversityNoted = true;
+          }
+        }
+      }
       const cls = classifyMovement(movement, opts.engine);
       shots.push({
         shotId: shotIdFor(order),
@@ -748,7 +896,7 @@ export function planShortFilmSkeleton(opts: {
     totalPlannedSec: round2(shots.reduce((a, s) => a + s.targetDurationSec, 0)),
     scenes,
     shots,
-    adjustments: [],
+    adjustments,
   };
 }
 
@@ -796,6 +944,13 @@ export function sanitizeOverridesInput(raw: unknown, maxShotCount: number): Sani
       ...(size ? { size } : prev?.size ? { size: prev.size } : {}),
       ...(movement ? { movement } : prev?.movement ? { movement: prev.movement } : {}),
     });
+  }
+  // A2-F03: ৬৪-এন্ট্রি ক্যাপের বাইরের এন্ট্রিও বাদই পড়ে — সেগুলোর
+  // হিসাব droppedCount-এ থাকতেই হবে (আগে নীরবে উধাও হতো, সৎ-নোটের
+  // ভিত্তিই ছিল না — বৈধ-এন্ট্রির নীরব-ড্রপ REG-14l-শ্রেণির)। বাস্তব
+  // UI-প্রবাহ কখনো ৬৪ ছুঁয়ে না (প্রতি শটে ≤১, maxShots ≤ ১৬)।
+  if (shotsRaw.length > 64) {
+    dropped += shotsRaw.length - 64;
   }
   if (seen.size === 0) return { droppedCount: dropped };
   return { overrides: { shots: [...seen.values()] }, droppedCount: dropped };

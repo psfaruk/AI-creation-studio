@@ -269,3 +269,78 @@ describe('REG-12: classification → createProduction (shared path)', () => {
     expect(spec.language).toBe('bn');
   });
 });
+
+// ------------------------------------------------------------
+// (R-FIX-4) UI সততা-লক — C-F05/C-F06/O-3/O-4। REAL কম্পোনেন্ট-মডিউল থেকে
+// পিওর একক (DOM রেন্ডার নয় — স্যুটে RTL নেই, তাই ParsedResult-পার্সার +
+// লেবেল-মানচিত্র স্তরে চুক্তি আটকানো)।
+// ------------------------------------------------------------
+
+const {
+  parseResultSummary,
+  VIDEO_ENGINE_LABELS,
+  VIDEO_ENGINE_NOTES,
+} = await import('@/components/studio/production-card');
+const { FILM_MODES } = await import('@/components/studio/studio-view');
+
+describe('REG-12r: completed-result honest-status notes + UI honest labels (C-F05/C-F06/O-3/O-4)', () => {
+  test('REG-12r-1 [C-F05]: parseResultSummary surfaces resultJson.notes (pipeline contract: string[]) — legacy results without notes parse unchanged, dirty entries are filtered, corrupt JSON stays null', () => {
+    // পাইপলাইন-চুক্তি: MV-র সৎ নোট (যেমন "লিপ-সিঙ্ক নেই…") এখন
+    // resultJson.notes: string[] হয়ে আসে — কার্ড সেটি রেন্ডার করে।
+    const mvNote = 'লিপ-সিঙ্ক নেই — "গায়কের মুখ নড়ছে" দাবি করা হয় না।';
+    const withNotes = parseResultSummary(
+      JSON.stringify({ engine: 'ai_diffusion', aiShots: 4, notes: [mvNote] })
+    );
+    expect(withNotes).not.toBeNull();
+    expect(withNotes!.notes).toEqual([mvNote]);
+    expect(withNotes!.engine).toBe('ai_diffusion');
+
+    // একাধিক নোটও ক্রম-সংরক্ষণে আসে
+    const two = parseResultSummary(JSON.stringify({ notes: [mvNote, 'দ্বিতীয় সৎ নোট'] }));
+    expect(two!.notes?.length).toBe(2);
+
+    // প্রতিরোধমূলক: পুরনো ফলাফলে notes ক্ষেত্রই নেই — undefined থাকে, কার্ড
+    // কিছুই রেন্ডার করে না (feature-detect)
+    const legacy = parseResultSummary(JSON.stringify({ quality: 'মান: standard', partialNotes: ['x'] }));
+    expect(legacy?.quality).toBe('মান: standard');
+    expect(legacy?.notes).toBeUndefined();
+
+    // প্রতিরোধমূলক: অ-স্ট্রিং/ফাঁকা এন্ট্রি ছাঁকা যায়, অ্যারে-নয় উপেক্ষিত
+    const dirty = parseResultSummary(JSON.stringify({ notes: ['সৎ নোট', 42, null, '  '] }));
+    expect(dirty!.notes).toEqual(['সৎ নোট']);
+    const notArray = parseResultSummary(JSON.stringify({ notes: 'লিপ-সিঙ্ক নেই' }));
+    expect(notArray!.notes).toBeUndefined();
+
+    // বিকৃত/খালি JSON → null (পূর্বের সৎ আচরণ অক্ষত)
+    expect(parseResultSummary('{broken')).toBeNull();
+    expect(parseResultSummary(null)).toBeNull();
+    expect(parseResultSummary(undefined)).toBeNull();
+  });
+
+  test('REG-12r-2 [O-3/O-4]: engine label carries no unverified quality adjective; the ai_diffusion note honestly admits the storyboard fallback path', () => {
+    // O-3: "রিয়েলিস্টিক" বিশেষণটি অ-যাচাইকৃত ছিল — আর নেই; প্রকৃত
+    // ইঞ্জিন-নাম + প্রকৃত খরচই থাকে
+    expect(VIDEO_ENGINE_LABELS.ai_diffusion).not.toContain('রিয়েলিস্টিক');
+    expect(VIDEO_ENGINE_LABELS.ai_diffusion).toContain('CogVideoX-3');
+    expect(VIDEO_ENGINE_LABELS.ai_diffusion).toContain('ধীর');
+    // cinematic_motion-এর সততা-লেবেল অক্ষত
+    expect(VIDEO_ENGINE_LABELS.cinematic_motion).toContain('স্টোরিবোর্ড');
+
+    // O-4: ai_diffusion নোট স্টোরিবোর্ড+ক্যামেরা-মোশন ফলব্যাক স্বীকার করে
+    expect(VIDEO_ENGINE_NOTES.ai_diffusion).toContain('স্টোরিবোর্ড+ক্যামেরা-মোশনে নামতে পারে');
+    expect(VIDEO_ENGINE_NOTES.ai_diffusion).toContain('CogVideoX-3');
+    // cinematic_motion-এর নোট অক্ষত
+    expect(VIDEO_ENGINE_NOTES.cinematic_motion).toContain('ডিফিউশন ভিডিও-মডেল নয়');
+  });
+
+  test('REG-12r-3 [C-F06]: the film-dialogue mode card carries the explicit no-mouth-sync statusNote its siblings have', () => {
+    const dialogue = FILM_MODES.find(m => m.id === 'film-dialogue');
+    expect(dialogue).toBeDefined();
+    expect(dialogue!.statusNote).toBe('সংলাপ-কণ্ঠ ও সাবটাইটেল — ঠোঁট-সিঙ্ক নয়');
+    // ভাইবোদের স্বীকারোক্তি অক্ষত — সব কথা-ঘন মোডে একই সততা
+    const short = FILM_MODES.find(m => m.id === 'film-short');
+    expect(short!.statusNote).toContain('ঠোঁট-সিঙ্ক নয়');
+    const mv = FILM_MODES.find(m => m.id === 'film-music-video');
+    expect(mv!.statusNote).toContain('লিপ-সিঙ্ক নেই');
+  });
+});

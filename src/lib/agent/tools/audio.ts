@@ -36,6 +36,7 @@ import {
   detectLanguage,
   LANGUAGE_PROFILES,
   verdictLabel,
+  SpeechSynthesisError,
   type SpeechLanguage,
 } from '../audio/language_controller';
 import type { TtsVoice, TTS_VOICES } from '../sdk-helpers';
@@ -444,18 +445,50 @@ const speechSynthesisSpec: ToolSpec<{
         throw new Error('স্ক্রিপ্টের ভাষা শনাক্ত করা যায়নি — "language" যুক্তি দিয়ে bn বা en নির্দিষ্ট করো।');
       }
     }
-    const result = await synthesizeVerifiedSpeech(
-      {
-        task: 'speech',
-        language,
-        script: input.script,
-        voiceId: (input.voice as TtsVoice) ?? LANGUAGE_PROFILES[language].voices[0],
-        outputFormat: 'wav',
-        sampleRate: 24000,
-        speed: input.speed,
-      },
-      { verify: input.verify !== false }
-    );
+    let result: Awaited<ReturnType<typeof synthesizeVerifiedSpeech>>;
+    try {
+      result = await synthesizeVerifiedSpeech(
+        {
+          task: 'speech',
+          language,
+          script: input.script,
+          voiceId: (input.voice as TtsVoice) ?? LANGUAGE_PROFILES[language].voices[0],
+          outputFormat: 'wav',
+          sampleRate: 24000,
+          speed: input.speed,
+        },
+        { verify: input.verify !== false }
+      );
+    } catch (err) {
+      // B-F13 (R-FIX-1): যাচাই-ব্যর্থ অডিও আর সাধারণ আর্টিফ্যাক্ট হিসেবে নিবন্ধিত
+      // হয় না — ভুল-ভাষার আবর্জনা "speech-bn-…" নামে কথিত ভাষা দাবি করত
+      // (§৪.৫-১২; প্রকৃত রানের dialogue-2 প্রমাণ)। সৎ ব্যর্থতা-ফলাফল।
+      if (err instanceof SpeechSynthesisError && err.code === 'VERIFICATION_FAILED') {
+        const lv = err.lastVerification;
+        return {
+          summary: `${language === 'bn' ? 'বাংলা' : 'ইংরেজি'} কণ্ঠ তৈরি ব্যর্থ — সব প্রার্থী কণ্ঠই ভাষা/প্রযুক্তি-যাচাইয়ে ব্যর্থ (${err.attempts}টি চেষ্টা)। অডিও নিবন্ধিত হয়নি (ভাষা-যাচাই ব্যর্ত)।`,
+          resultJson: JSON.stringify({
+            language,
+            audioType: 'Speech',
+            verdict: 'fail',
+            registered: false,
+            reason: 'language_verification_failed',
+            attempts: err.attempts,
+            ...(lv
+              ? {
+                  voice: lv.voice,
+                  transcript: lv.transcript.slice(0, 600),
+                  detectedLanguage: lv.detectedLanguage,
+                  similarity: lv.similarity,
+                  durationSec: lv.durationSec,
+                  notes: lv.notes,
+                }
+              : {}),
+          }),
+        };
+      }
+      throw err;
+    }
     const { storagePath } = await saveArtifactFile(result.buffer, result.ext);
     const meta = await createToolArtifact({
       conversationId: ctx.conversationId,

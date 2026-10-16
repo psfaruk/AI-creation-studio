@@ -132,6 +132,14 @@ export interface CinematicScene {
   environment: string;
   /** আলো/মুড (ইংরেজি — পরিকল্পনা-কেবল দৃশ্য-বিবরণী; আর্টিফ্যাকট/UI-প্রোভেনেন্স) */
   lightingMood: string;
+  /**
+   * A2-F05 সৎ-মার্কার: দৃশ্য-স্তরের lightingMood যখন সাধারণ প্ল্যানিং-
+   * প্লেসহোল্ডার ('scene-appropriate cinematic lighting') — প্রকৃত
+   * আলো-নির্বাচন নয়। প্রজন্ম-প্রভাবক পথ শট-স্তরের নির্ধারক lightingMood
+   * (পরিকল্পকের TIME_OF_DAY_LIGHTING → prompt.ts)। ঐচ্ছিক — পুরনো
+   * পরিকল্পনা/ভোক্তাদের জন্য অনুপস্থিত থাকলে অ-চিহ্নিত ধরা হয়।
+   */
+  lightingProvenance?: 'planning_only_generic';
   /** পরবর্তী রূপান্তর-ইচ্ছা (পরিকল্পনা-কেবল) */
   transitionIntent?: string;
 }

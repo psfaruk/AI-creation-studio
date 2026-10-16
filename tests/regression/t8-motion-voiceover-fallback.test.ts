@@ -13,6 +13,13 @@
 // রিয়েল; ffmpeg রিয়েল (শুধু os.tmpdir()-এ); কোনো provider/db/storage
 // ছোঁয়া নেই। মক ইঞ্জিন রিয়েল encodeWav বাফার ফেরত দেয় — ফলে টাইমলাইনের
 // duration/startSec হিসাব প্রকৃত ffprobe দিয়েই যাচাই হয়।
+//
+// R-FIX-1 চুক্তি-পরিবর্তন (Defect A, findings-b §১০): bn-চেইনে আর z-ai
+// ফলব্যাক নেই — bn + Edge-403 এখন প্রতি-খণ্ড সৎ VOICE_UNAVAILABLE ব্যর্থতা
+// (চীনা-ভাষা কণ্ঠে বাংলা পড়ানো নিষিদ্ধ); en-চেইনে z-ai ফলব্যাক বৈধ রয়েছে।
+// ফলব্যাক-সফলতার কেসগুলো (8b/8f) এখন en-পথে, bn-পথের কেসগুলো (8c/8d/8g)
+// সৎ-ব্যর্থতা লক করে। পুরোনো bn→jam চুক্তি ত্রুটিপূর্ণ ছিল (B-F01) — এই
+// রিরাইট শক্তিশালীকরণ, দুর্বলীকরণ নয়।
 // ============================================================
 
 import { describe, expect, test, mock, beforeEach, afterAll } from 'bun:test';
@@ -74,11 +81,13 @@ const { synthesizeVoiceoverChunks } = await import(
   '@/lib/agent/production/pipelines/voiceover'
 );
 
-// bn প্রোফাইল: ৩টি Edge-নিউরাল + jam + douji (language_controller.ts:68)
+// bn প্রোফাইল (R-FIX-1): ৪টি Edge-নিউরাল কণ্ঠ — z-ai ফলব্যাক নেই (Defect A)
 const BN_CHUNKS = [
   'এটি প্রথম খণ্ডের ভয়েসওভার পাঠ্য।',
   'এটি দ্বিতীয় খণ্ডের ভয়েসওভার পাঠ্য।',
 ];
+// en-পথ: z-ai ফলব্যাক বৈধ (en-সক্ষম ট্যাগসহ) — ফলব্যাক-সফলতার কেস এখানে
+const EN_CHUNK = 'This is the first voiceover chunk text for the test.';
 const WORKDIRS: string[] = [];
 
 async function freshWorkdir(): Promise<string> {
@@ -128,7 +137,26 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
     expect(files.sort()).toEqual(['voice-0.wav', 'voice-1.wav']);
   });
 
-  test('REG-8b: fallback success — Edge 403 → chain reaches z-ai voice, attempts>1, honest note', async () => {
+  test('REG-8b [R-FIX-1]: en fallback success — Edge 403 → chain reaches the en-capable z-ai voice, attempts>1, honest notes', async () => {
+    edgeMode = 'throw403';
+    const wd = await freshWorkdir();
+    const out = await synthesizeVoiceoverChunks({
+      chunks: [EN_CHUNK],
+      language: 'en',
+      voiceId: 'en-US-AriaNeural',
+      workingDir: wd,
+    });
+
+    expect(out.chunks.length).toBe(1);
+    expect(out.chunks[0].voice).toBe('jam'); // প্রথম en-সক্ষম z-ai ফলব্যাক কণ্ঠ
+    expect(out.chunks[0].attempts).toBe(2); // Aria(৪০৩) → jam(সফল)
+    expect(out.chunks[0].notes.some(n => n.includes('ইঞ্জিন-ফলব্যাক'))).toBe(true);
+    expect(out.failures.length).toBe(0); // খণ্ড হারেনি — চেইন-নির্ভরতার মূল দাবি অক্ষত
+    // B-F09: সৎ নোট ডিডুপ-সমষ্টিতেও দৃশ্যমান (নীরব মেটাডেটা নয়)
+    expect(out.honestyNotes.some(n => n.includes('ইঞ্জিন-ফলব্যাক'))).toBe(true);
+  });
+
+  test('REG-8c [R-FIX-1 — Defect A]: bn + Edge 403 ⇒ engine-aware skip AND no cross-language fallback — the chunk fails honestly', async () => {
     edgeMode = 'throw403';
     const wd = await freshWorkdir();
     const out = await synthesizeVoiceoverChunks({
@@ -138,31 +166,20 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
       workingDir: wd,
     });
 
-    expect(out.chunks.length).toBe(1);
-    expect(out.chunks[0].voice).toBe('jam'); // প্রথম z-ai ফলব্যাক কণ্ঠ
-    expect(out.chunks[0].attempts).toBe(2); // Nabanita(ব্যর্থ) → jam(সফল)
-    expect(out.chunks[0].notes.some(n => n.includes('ইঞ্জিন-ফলব্যাক'))).toBe(true);
-    expect(out.failures.length).toBe(0); // খণ্ড হারেনি — এটিই ফিক্সের মূল দাবি
-  });
-
-  test('REG-8c: engine-aware skip — dead Edge engine never wastes calls on its remaining voices', async () => {
-    edgeMode = 'throw403';
-    const wd = await freshWorkdir();
-    await synthesizeVoiceoverChunks({
-      chunks: [BN_CHUNKS[0]],
-      language: 'bn',
-      voiceId: 'bn-BD-NabanitaNeural',
-      workingDir: wd,
-    });
-
-    // প্রথম Edge 403-ই ইঞ্জিনকে অচল ঘোষণা করে — Pradeep/Tanishaa কখনো ডাকা হয় না
+    // প্রথম Edge 403-ই ইঞ্জিনকে অচল করে — Pradeep/Tanishaa/Bashkar কখনো ডাকা হয় না
     expect(edgeCalls.map(c => c.voice)).toEqual(['bn-BD-NabanitaNeural']);
-    expect(zaiCalls.map(c => c.voice)).toEqual(['jam']);
+    // Defect-A লক: z-ai (চীনা-ভাষা) কণ্ঠ কখনোই বাংলা পড়তে বসে না
+    expect(zaiCalls.length).toBe(0);
+    // খণ্ডটি সৎভাবে ব্যর্থ — টাইপড VOICE_UNAVAILABLE বার্তাসহ (নীরব-ভান নয়)
+    expect(out.chunks.length).toBe(0);
+    expect(out.failures.length).toBe(1);
+    expect(out.failures[0]).toContain('ভয়েসওভার খণ্ড 1 ব্যর্থ');
+    expect(out.failures[0]).toContain('VOICE_UNAVAILABLE');
+    expect(out.failures[0]).toContain('Bengali locale');
   });
 
-  test('REG-8d: all engines dead — honest per-chunk failure, other chunks still processed', async () => {
+  test('REG-8d [R-FIX-1]: bn + Edge 403 — every chunk fails honestly (VOICE_UNAVAILABLE), no silent wrong-language audio', async () => {
     edgeMode = 'throw403';
-    zaiMode = 'throw';
     const wd = await freshWorkdir();
     const out = await synthesizeVoiceoverChunks({
       chunks: BN_CHUNKS,
@@ -173,10 +190,11 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
 
     expect(out.chunks.length).toBe(0);
     expect(out.failures.length).toBe(2);
-    // সৎ ব্যর্থতা-বার্তা: সব ইঞ্জিন অচল — নীরব-ভান নয় (REG-1g-চুক্তির উত্তরাধিকার)
+    // সৎ ব্যর্থতা-বার্তা: টাইপড VOICE_UNAVAILABLE — নীরব-ভান বা ভুল-ভাষা নয়
     expect(out.failures[0]).toContain('ভয়েসওভার খণ্ড 1 ব্যর্থ');
-    expect(out.failures[0]).toContain('সব TTS ইঞ্জিন অচল');
+    expect(out.failures[0]).toContain('VOICE_UNAVAILABLE');
     expect(out.failures[1]).toContain('ভয়েসওভার খণ্ড 2 ব্যর্থ');
+    expect(out.failures[1]).toContain('VOICE_UNAVAILABLE');
   });
 
   test('REG-8e: optional speech truly optional — total voiceover failure resolves, caller can continue', async () => {
@@ -195,18 +213,18 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
     expect(out.failures.length).toBe(2);
   });
 
-  test('REG-8f: metadata truthfulness — actual voice, attempts and fallback notes recorded', async () => {
+  test('REG-8f [R-FIX-1]: metadata truthfulness — actual voice ≠ requested recorded, attempts + fallback notes honest (en path)', async () => {
     edgeMode = 'throw403';
     const wd = await freshWorkdir();
     const out = await synthesizeVoiceoverChunks({
-      chunks: BN_CHUNKS,
-      language: 'bn',
-      voiceId: 'bn-BD-NabanitaNeural',
+      chunks: [EN_CHUNK],
+      language: 'en',
+      voiceId: 'en-US-AriaNeural',
       workingDir: wd,
     });
 
-    expect(out.language).toBe('bn');
-    expect(out.requestedVoice).toBe('bn-BD-NabanitaNeural');
+    expect(out.language).toBe('en');
+    expect(out.requestedVoice).toBe('en-US-AriaNeural');
     for (const c of out.chunks) {
       expect(c.voice).toBe('jam'); // আসল কণ্ঠ ≠ অনুরোধকৃত — মেটাডেটায় স্পষ্ট
       expect(c.attempts).toBe(2);
@@ -216,9 +234,9 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
     }
   });
 
-  test('REG-8g: bounded retry — per-chunk chain never exceeds the profile, no infinite loop', async () => {
+  test('REG-8g [R-FIX-1]: bounded retry — bn + Edge 403: exactly one real call per chunk, loop always terminates', async () => {
     edgeMode = 'throw403';
-    zaiMode = 'throw';
+    zaiMode = 'throw'; // bn-চেইনে z-ai নেই — অপ্রাসঙ্গিক, কিন্তু সীমা-প্রমাণে রাখা
     const wd = await freshWorkdir();
     const out = await synthesizeVoiceoverChunks({
       chunks: BN_CHUNKS,
@@ -227,11 +245,11 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
       workingDir: wd,
     });
 
-    // ইঞ্জিন-সচেতন স্কিপসহ চেইন: প্রতি খণ্ডে সর্বোচ্চ ৫টি প্রোফাইল-কণ্ঠ,
-    // কিন্তু ২টি ইঞ্জিন মরলে মাত্র ২টি বাস্তব কল-ই যথেষ্ট — সীমা কখনো ছাড়ায় না
+    // প্রতি খণ্ডে সর্বোচ্চ ৪টি প্রোফাইল-কণ্ঠ (সবই Edge) — কিন্তু ইঞ্জিন
+    // মরলে মাত্র ১টি বাস্তব কল-ই যথেষ্ট; সীমা কখনো ছাড়ায় না
     expect(edgeCalls.length).toBe(2); // প্রতি খণ্ডে ১টি Edge কল
-    expect(zaiCalls.length).toBe(2); // প্রতি খণ্ডে ১টি z-ai কল
-    expect(edgeCalls.length + zaiCalls.length).toBeLessThanOrEqual(BN_CHUNKS.length * 5);
-    expect(out.chunks.length).toBe(0); // এবং লুপ স্বাভাবিকভাবে সমাপ্ত (টাইমআউট নয়)
+    expect(zaiCalls.length).toBe(0); // bn-চেইনে z-ai কণ্ঠ নেই
+    expect(edgeCalls.length + zaiCalls.length).toBeLessThanOrEqual(BN_CHUNKS.length * 4);
+    expect(out.chunks.length).toBe(0); // লুপ স্বাভাবিকভাবে সমাপ্ত (টাইমআউট নয়)
   });
 });

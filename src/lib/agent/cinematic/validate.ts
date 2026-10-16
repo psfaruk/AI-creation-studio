@@ -91,6 +91,15 @@ export function parseAndValidateShotPlan(input: unknown): PlanValidationResult {
     if (!['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'static'].includes(String(shot?.fallbackMove))) {
       errors.push(`শট ${sid || i + 1}-এর fallbackMove অবৈধ: ${String(shot?.fallbackMove)}`);
     }
+    // D-F04 গার্ড: character উপস্থিত থাকলে অ-খালি স্ট্রিং হতেই হবে
+    // (null বৈধ — MV-পথের "চরিত্র নেই" স্পষ্ট মান; খালি/অ-স্ট্রিং বাদ)।
+    // পরিকল্পকের বসানো মান (scene.characters-এর নাম) কখনো খালি নয় —
+    // নোংরা আর্টিফ্যাকট-পুনঃপাঠ/ওভাররাইড পথ ধরতে।
+    if (shot?.character !== undefined && shot?.character !== null) {
+      if (typeof shot.character !== 'string' || !shot.character.trim()) {
+        errors.push(`শট ${sid || i + 1}-এর character অবৈধ: অ-খালি স্ট্রিং দরকার (নাল বৈধ)`);
+      }
+    }
     const dur = Number(shot?.targetDurationSec);
     // উচ্চ-সীমা ১৮০ সে.: targetDurationSec হলো টাইমলাইন-ট্রিম-লক্ষ্য (রান-
     // ডোমেইনের সর্বোচ্চ জানালা — নীরব মিউজিক-ভিডিওর ১৮০-সে. ক্ল্যাম্প),

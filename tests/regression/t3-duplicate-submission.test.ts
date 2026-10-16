@@ -41,6 +41,9 @@ mock.module('@/lib/agent/orchestrator', () => ({
   startAgentRun: (id: string) => {
     startAgentRunCalls.push(id);
   },
+  // (A1-F01) চ্যাট-রাউট এখন স্টেলনেস-সীমাও রিয়েল orchestrator থেকে নেয় —
+  // মক-মান রিয়েলটিরই সমান (১০ মিনিট); গার্ড-লজিক রাউটের নিজের (রিয়েল) দেহে
+  STALE_RUN_MS: 10 * 60 * 1000,
 }));
 mock.module('@/lib/agent/storage', () => ({
   saveArtifactFile: async () => {
@@ -149,5 +152,68 @@ describe('REG-3: duplicate submission of the same logical request', () => {
     expect(data.conversationId).toBe(convB.id);
     expect(data.runId).not.toBe('run-elsewhere');
     expect(fakeDb.__agentRunCreateCalls().length).toBe(1);
+  });
+
+  // ------------------------------------------------------------
+  // A1-F01 (P2) — zombie-run lockout: server death leaves a 'running'
+  // row; before the fix, ONLY GET /api/conversations swept it, so a
+  // single open chat tab 409-locked the conversation for up to 10 min.
+  // ------------------------------------------------------------
+
+  test('REG-3f [A1-F01]: an obviously-stale running row (past the 10-min sweep window) no longer 409-locks — it is honestly interrupted and the new send proceeds', async () => {
+    const conv = seedConversation('conv-zombie');
+    seedAgentRun(conv.id, {
+      id: 'run-zombie-1',
+      status: 'running',
+      // সার্ভার-মৃত্যুর ১১ মিনিট আগে শুরু — STALE_RUN_MS (১০ মি.)-এর বাইরে
+      startedAt: new Date(Date.now() - 11 * 60_000),
+    });
+
+    const userMsgCountBefore = await fakeDb.message.count({
+      where: { conversationId: conv.id, role: 'user' },
+    });
+
+    const res = await POST(chatRequest(conv.id, 'সার্ভার মরার পরে নতুন বার্তা'));
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()) as { runId: string; conversationId: string };
+    expect(data.conversationId).toBe(conv.id);
+    expect(data.runId).not.toBe('run-zombie-1');
+    expect(fakeDb.__agentRunCreateCalls().length).toBe(1);
+    expect(startAgentRunCalls.length).toBe(1);
+    expect(await fakeDb.message.count({ where: { conversationId: conv.id, role: 'user' } })).toBe(
+      userMsgCountBefore + 1
+    );
+
+    // জম্বি-রোটি নীরবে ফেলে রাখা হয়নি — সৎভাবে 'interrupted' + কারণ
+    // (sweepStaleRuns-এর আপডেট-আকারেই)। রান-SSE পোল এই অবস্থা-বদল দেখে
+    // সংযুক্ত ক্লায়েন্টকে run_finished(interrupted) পাঠায়।
+    const flipped = await fakeDb.agentRun.findUnique({ where: { id: 'run-zombie-1' } });
+    expect(flipped?.status).toBe('interrupted');
+    expect(flipped?.endReason).toBe('timeout');
+    expect(flipped?.errorCategory).toBe('timeout');
+    expect(typeof flipped?.error).toBe('string');
+    expect(flipped?.error).toContain('আটকে');
+    expect(flipped?.finishedAt).toBeDefined();
+  });
+
+  test('REG-3g [A1-F01 boundary]: a running row still INSIDE the 10-min window keeps the honest 409 — the staleness path never weakens the duplicate guard', async () => {
+    const conv = seedConversation('conv-barely-alive');
+    seedAgentRun(conv.id, {
+      id: 'run-recent-1',
+      status: 'running',
+      // ৯ মিনিট আগে শুরু — এখনো সীমার ভিতরে (রান সত্যিই চলমান হতে পারে)
+      startedAt: new Date(Date.now() - 9 * 60_000),
+    });
+
+    const res = await POST(chatRequest(conv.id, 'এখনো চলমান রানের সময়ে দ্বিতীয় পাঠ'));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { activeRunId?: unknown };
+    expect(body.activeRunId).toBe('run-recent-1');
+    // রানটি স্পর্শ করা হয়নি — এখনো সত্যিকারের চলমান
+    const untouched = await fakeDb.agentRun.findUnique({ where: { id: 'run-recent-1' } });
+    expect(untouched?.status).toBe('running');
+    expect(fakeDb.__agentRunCreateCalls().length).toBe(0);
+    expect(startAgentRunCalls.length).toBe(0);
   });
 });

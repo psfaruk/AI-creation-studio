@@ -146,7 +146,14 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
     const det = detectLanguage(text);
     let language: SpeechLanguage = ctx.spec.language ?? 'bn';
     const notes: string[] = [];
-    if (det.language !== 'unknown' && det.language !== 'mixed' && det.language !== language) {
+    if (det.language === 'other-script') {
+      // B-F04-সংশ্লিষ্ট (R-FIX-2): বাংলা/লাতিন বাদে অন্য লিপি (CJK/দেবনাগরী/আরবি…)
+      // — ভাষা বদলানো নয় (অন্য ভাষাও নয়); নির্বাচিত ভাষাতেই চেষ্টা হবে এবং
+      // নিয়ন্ত্রক অসমঞ্জস্য ধরলে সৎভাবে থামবে। নীরব অনুমান নয়।
+      notes.push(
+        `ভাষা-শনাক্তকরণ: লেখায় বাংলা/লাতিন বাদে অন্য লিপির অক্ষর (${toBn(Math.round((det.otherScriptRatio ?? 0) * 100))}%) রয়েছে — নির্বাচিত ভাষাতেই (${language === 'bn' ? 'বাংলা' : 'ইংরেজি'}) চেষ্টা হবে; ভাষা-নিয়ন্ত্রক অসমঞ্জস্য ধরলে সৎভাবে থামবে।`
+      );
+    } else if (det.language !== 'unknown' && det.language !== 'mixed' && det.language !== language) {
       const detectedLabel =
         det.language === 'bn'
           ? `বাংলা (${toBn(Math.round(det.bnRatio * 100))}% বাংলা অক্ষর)`
