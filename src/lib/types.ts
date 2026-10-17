@@ -529,7 +529,10 @@ export type VideoSound = 'none' | 'ambient' | 'narration' | 'uploaded_song';
 /**
  * কণ্ঠ-প্যাক: z-ai SDK-র ৭টি কণ্ঠ + Microsoft Edge-নিউরাল কণ্ঠ
  * (২০২৬-১০-১৩ থেকে বাংলা/ইংরেজির প্রধান পথ — bn-BD-নবনীতা/প্রদীপ
- * সত্যিই বাংলা-প্রশিক্ষিত; z-ai কণ্ঠগুলো বাংলা পড়তে পারে না)
+ * সত্যিই বাংলা-প্রশিক্ষিত; z-ai কণ্ঠগুলো বাংলা পড়তে পারে না)।
+ * C-ব্যাচ (PART C): hi/ur/zh-এর Edge-নিউরাল কণ্ঠগুলো যোগ — এগুলো
+ * প্রামাণ্যিক মাইক্রোসফট ক্যাটালগ-নাম, তবে এই পরিবেশে এখনো লাইভ-যাচাই
+ * হয়নি (Edge-403) — ক্ষমতা-রেকর্ডে "UNVERIFIED" সৎ অবস্থা (C1)।
  */
 export type VoicePreset =
   | 'tongtong'
@@ -546,15 +549,28 @@ export type VoicePreset =
   | 'en-US-AriaNeural'
   | 'en-US-GuyNeural'
   | 'en-GB-SoniaNeural'
-  | 'en-GB-RyanNeural';
+  | 'en-GB-RyanNeural'
+  | 'hi-IN-MadhurNeural'
+  | 'hi-IN-SwaraNeural'
+  | 'ur-PK-AsadNeural'
+  | 'ur-PK-UzmaNeural'
+  | 'zh-CN-XiaoxiaoNeural'
+  | 'zh-CN-YunxiNeural'
+  | 'zh-HK-HiuMaanNeural'
+  | 'zh-TW-HsiaoChenNeural';
 export type CameraMove = 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'static';
-export type SpeechLanguage = 'bn' | 'en';
+/**
+ * কথার ভাষা (PART C): bn/en যাচাইকৃত; hi/ur/zh রাউটিং-সমর্থিত কিন্তু
+ * এই পরিবেশে লাইভ-যাচাই হয়নি — ক্ষমতা-রেকর্ড (C1) সৎ অবস্থা বহন করে।
+ */
+export type SpeechLanguage = 'bn' | 'en' | 'hi' | 'ur' | 'zh';
 /**
  * কণ্ঠের লোকেল-মাত্রা (B-F10/R-FIX-1): bn-BD (বাংলাদেশ) / bn-IN (পশ্চিমবঙ্গ-ভারত)।
  * শুধু বাংলা-অনুরোধে প্রযোজ্য — bn-IN-কে নীরবে bn-BD ধরে নেওয়া নিষিদ্ধ (§4.2);
  * বদল হলে ফলাফলে সৎ নোট রেকর্ড হয় (verification.locale / requestedLocale)।
+ * C-ব্যাচ: hi-IN / ur-PK / zh-CN / zh-HK / zh-TW যোগ (UNVERIFIED-সৎ অবস্থায়)।
  */
-export type SpeechLocale = 'bn-BD' | 'bn-IN';
+export type SpeechLocale = 'bn-BD' | 'bn-IN' | 'hi-IN' | 'ur-PK' | 'zh-CN' | 'zh-HK' | 'zh-TW';
 export type VideoEngine = 'ai_diffusion' | 'cinematic_motion';
 export type FilmMode = 'short_film' | 'dialogue_scene' | 'trailer' | 'story';
 export type MusicMood = 'sad' | 'romantic' | 'joyful' | 'suspense' | 'action' | 'peaceful';
@@ -713,6 +729,10 @@ export type ProductionEvent =
       seq: number;
       key: string;
       title: string;
+      /** (F3) ধাপ-স্তরের স্টেজ — STEP_STAGE মানচিত্র (run-metrics.ts) থেকে
+       *  যোগাত্মক; অজানা ধাপ-কীতে ক্ষেত্রটিই থাকে না (কাল্পনিক নয়)।
+       *  ProductionStep DB-সারি ও serialize.ts-এর status-whitelist অপরিবর্তিত। */
+      stage?: string;
     }
   | {
       type: 'step_end';
@@ -723,6 +743,8 @@ export type ProductionEvent =
       detail?: string;
       error?: string;
       durationMs?: number;
+      /** (F3) step_start-এর মতোই — একই STEP_STAGE মানচিত্র থেকে */
+      stage?: string;
     }
   | {
       type: 'production_progress';
@@ -739,6 +761,29 @@ export type ProductionEvent =
   /** §2-B (audit 3-a append): ভিডিও-ধর্মী প্রোডাকশনে প্রোভাইডার-স্ট্যাটাস টিক */
   | { type: 'provider_status'; productionId: string; provider: VideoProviderStatusView }
   | { type: 'ping' };
+
+/**
+ * (PART G) ব্যর্থ প্রোডাকশনের resultJson-এ বসা কাঠামোগত ত্রুটি-বিবরণ —
+ * রানারের buildProductionErrorDetail (production/error-detail.ts) একমাত্র
+ * উৎস। সাধারণ `error` স্ট্রিং-এর পাশাপাশি যোগাত্মক। সততা: অজানা →
+ * null (কাল্পনিক নয়); শ্রেণি RunErrorCategory-ট্যাক্সোনমির সৎ মান।
+ */
+export interface ProductionErrorDetail {
+  /** যে ধাপ-কীতে ব্যর্থ — জানা না থাকলে null */
+  operation: string | null;
+  /** RunErrorCategory (orchestrator categorizeError-ট্যাক্সোনমির আয়না) */
+  category: string | null;
+  /** সাময়িক (রেট-লিমিট/টাইমআউট/৫xx) ত্রুতিতে true — পুনঃচেষ্টা সমীচ্ছা */
+  retryAppropriate: boolean;
+  /** ডিগ্রেডেড/ফলব্যাক পথ চালানো হয়েছিল কি না */
+  fallbackAttempted: boolean;
+  /** ফলব্যাক-ফলাফলের সৎ সারাংশ — না থাকলে null */
+  fallbackResult: string | null;
+  /** এই রানে সংরক্ষিত artifact-আইডি */
+  retainedArtifactIds: string[];
+  /** ১–৩টি কার্যকর বাংলা পরবর্তী-পদক্ষেপ */
+  nextSteps: string[];
+}
 
 // ------------------------------------------------------------
 // Model & License Registry (§৮) + Availability Matrix (নতুন পরিকল্পনা §২/§৫)

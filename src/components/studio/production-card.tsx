@@ -383,6 +383,9 @@ function AmberNote({ text }: { text: string }) {
 const LANGUAGE_LABELS: Record<SpeechLanguage, string> = {
   bn: 'বাংলা',
   en: 'ইংরেজি',
+  hi: 'হিন্দি',
+  ur: 'উর্দু',
+  zh: 'চীনা',
 };
 
 /**
@@ -423,6 +426,14 @@ const VOICE_OPTIONS: { id: VoicePreset; label: string; group: string }[] = [
   { id: 'en-US-AriaNeural', label: 'আরিয়া — ইংরেজি নিউরাল (নারী)', group: 'ইংরেজি নিউরাল' },
   { id: 'en-US-GuyNeural', label: 'গাই — ইংরেজি নিউরাল (পুরুষ)', group: 'ইংরেজি নিউরাল' },
   { id: 'en-GB-SoniaNeural', label: 'সোনিয়া — ব্রিটিশ ইংরেজি (নারী)', group: 'ইংরেজি নিউরাল' },
+  { id: 'hi-IN-SwaraNeural', label: 'স্বরা — হিন্দি নিউরাল (নারী) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'hi-IN-MadhurNeural', label: 'মধুর — হিন্দি নিউরাল (পুরুষ) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'ur-PK-UzmaNeural', label: 'উজমা — উর্দু নিউরাল (নারী) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'ur-PK-AsadNeural', label: 'আসাদ — উর্দু নিউরাল (পুরুষ) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'zh-CN-XiaoxiaoNeural', label: 'শিয়াওশিয়াও — চীনা সরলীকৃত (নারী) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'zh-CN-YunxiNeural', label: 'ইউনশি — চীনা সরলীকৃত (পুরুষ) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'zh-HK-HiuMaanNeural', label: 'হিউমান — ক্যান্টনিজ (নারী) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
+  { id: 'zh-TW-HsiaoChenNeural', label: 'শিয়াওচেন — চীনা প্রথাগত (নারী) — অপরীক্ষিত', group: 'অন্য ভাষা (Edge-নিউরাল, এই পরিবেশে অপরীক্ষিত)' },
   { id: 'jam', label: 'jam — ইংরেজি (z-ai)', group: 'z-ai (ফলব্যাক)' },
   { id: 'douji', label: 'douji (z-ai)', group: 'z-ai (ফলব্যাক)' },
   { id: 'tongtong', label: 'tongtong (z-ai)', group: 'z-ai (ফলব্যাক)' },

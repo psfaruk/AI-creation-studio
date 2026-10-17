@@ -17,7 +17,14 @@ import { db } from '@/lib/db';
 import { saveArtifactFile, readArtifactFile } from '../storage';
 import { toArtifactMeta } from '../serialize';
 import { emitProduction } from './bus';
-import { logProductionMetrics, getProductionMetrics, clearProductionMetrics } from '../run-metrics';
+import {
+  logProductionMetrics,
+  getProductionMetrics,
+  clearProductionMetrics,
+  computeFinalTimings,
+  STEP_STAGE,
+} from '../run-metrics';
+import { buildProductionErrorDetail } from './error-detail';
 import { cleanupWorkingDir, makeWorkingDir, killProductionFfmpeg, runWithFfmpegTracking } from '@/lib/media/ffmpeg';
 import { validateSpec } from '../capabilities';
 
@@ -241,6 +248,9 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
         where: { id: productionId },
         data: { currentStepKey: key, status: 'running', progress: progressNow },
       });
+      // (F3) ধাপ→স্টেজ মানচিত্র — অজানা কীতে stage ক্ষেত্রই নেই (কাল্পনিক নয়);
+      // ProductionStep DB-সারি ও status-whitelist অপরিবর্তিত।
+      const stage = STEP_STAGE[key];
       emitProduction(productionId, {
         type: 'step_start',
         productionId,
@@ -248,6 +258,7 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
         seq,
         key,
         title,
+        ...(stage ? { stage } : {}),
       });
       const progress = Math.min(96, Math.round((completedSteps / ctx.totalSteps) * 100));
       emitProduction(productionId, { type: 'production_progress', productionId, progress, currentStepKey: key });
@@ -299,6 +310,7 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
           stepId: step.id,
           key,
           status: 'done',
+          ...(stage ? { stage } : {}),
           durationMs: step.startedAt
             ? Date.now() - step.startedAt.getTime()
             : undefined,
@@ -318,6 +330,7 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
             stepId: step.id,
             key,
             status: 'skipped',
+            ...(stage ? { stage } : {}),
             // (অডিট §A3) বাতিল-ধাপেও সময় — সারি-সেলাই হওয়া ধাপগুলোর খরচ দৃশ্যমান
             durationMs: step.startedAt ? Date.now() - step.startedAt.getTime() : undefined,
           });
@@ -342,6 +355,7 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
             error: message.slice(0, 400),
             // (অডিট §A3) ব্যর্থ ধাপেও অতিবাহিত-সময় — সময়সীমায় আটকেছে কিনা স্পষ্ট
             durationMs: step.startedAt ? Date.now() - step.startedAt.getTime() : undefined,
+            ...(stage ? { stage } : {}),
           });
           return undefined as unknown as T;
         }
@@ -359,6 +373,7 @@ async function loadCtx(productionId: string): Promise<{ ctx: PipelineContext; pi
           error: message.slice(0, 400),
           // (অডিট §A3) ব্যর্থ ধাপেও অতিবাহিত-সময় — কতক্ষণ চেষ্টা করে ব্যর্থ হয়েছে
           durationMs: step.startedAt ? Date.now() - step.startedAt.getTime() : undefined,
+          ...(stage ? { stage } : {}),
         });
         throw err;
       }
@@ -482,10 +497,38 @@ async function runProduction(productionId: string): Promise<void> {
           errorMessage = undefined;
         } else {
           // কিছু আর্টিফ্যাক্ট তৈরি হয়ে থাকলে partial
-          const produced = await db.artifact.count({ where: { productionId } });
-          if (produced > 0) {
+          const producedArts = await db.artifact
+            .findMany({ where: { productionId }, select: { id: true } })
+            .catch(() => [] as { id: string }[]);
+          if (producedArts.length > 0) {
             finalStatus = 'partial';
             result = { partialNotes: [...ctx.partialNotes, `ত্রুটি: ${errorMessage.slice(0, 300)}`] };
+          } else {
+            // (PART G) ব্যর্থ-প্রোডাকশনের কাঠামোগত বিবরণ — সাধারণ error-
+            // স্ট্রিং-এর পাশাপাশি resultJson.errorDetail; অজানা → null।
+            try {
+              const failedStepKeys = await db.productionStep
+                .findMany({ where: { productionId }, select: { key: true, status: true } })
+                .then(rows => rows.filter(s => s.status === 'failed').map(s => s.key))
+                .catch(() => [] as string[]);
+              result = {
+                ...result,
+                errorDetail: buildProductionErrorDetail({
+                  error: errorMessage,
+                  // সর্বশেষ ব্যর্থ ধাপের কী — কোনোটি না নথিভুক্ত হলে null
+                  operation: failedStepKeys.length > 0 ? failedStepKeys[failedStepKeys.length - 1] : null,
+                  // fail-soft ধাপ (S10) চলেছিল = ডিগ্রেডেড পথ চেষ্টা হয়েছে
+                  fallbackAttempted: ctx.partialNotes.length > 0,
+                  fallbackResult:
+                    ctx.partialNotes.length > 0
+                      ? ctx.partialNotes.slice(0, 3).join(' | ').slice(0, 400)
+                      : null,
+                  retainedArtifactIds: producedArts.map(a => a.id),
+                }),
+              };
+            } catch {
+              // errorDetail সর্বোত্তম-প্রচেষ্টা — এই নোট প্রোডাকশন-ফলাফল মারবে না
+            }
           }
         }
       }
@@ -534,11 +577,18 @@ async function runProduction(productionId: string): Promise<void> {
       const [finalRow, artifacts, steps] = await Promise.all([
         db.production.findUnique({
           where: { id: productionId },
-          select: { createdAt: true, startedAt: true, finishedAt: true, type: true },
+          select: { createdAt: true, confirmedAt: true, startedAt: true, finishedAt: true, type: true },
         }),
         db.artifact.count({ where: { productionId } }),
-        db.productionStep.findMany({ where: { productionId }, select: { status: true } }),
+        db.productionStep.findMany({
+          where: { productionId },
+          select: { status: true, key: true, startedAt: true, finishedAt: true },
+        }),
       ]);
+      // (D-8 লিগ্যাসি-চুক্তি) শীর্ষ-স্তরের queueWaitMs = startedAt−createdAt —
+      // ইচ্ছাকৃতভাবে ব্যবহারকারীর নিশ্চিতকরণ-অপেক্ষাসহ (pre-D-8 অর্থ)।
+      // পেছনের-সামঞ্জস্যের জন্য সূত্র/অর্থ অপরিবর্তিত (smoke.test.ts:107,
+      // বাস্তব-রান প্রমাণ worklog :2008); বিভাজন timings.confirmationHoldMs-এ।
       const queueWaitMs =
         finalRow?.startedAt && finalRow.createdAt
           ? Math.max(0, finalRow.startedAt.getTime() - finalRow.createdAt.getTime())
@@ -549,6 +599,20 @@ async function runProduction(productionId: string): Promise<void> {
           : null;
       // Phase-3 D: ভিডিও-ধাপ সঞ্চয়কারী (চ্যাট-ধরনের রানে বা ভিডিও-কল না থাকলে null)
       const videoAcc = getProductionMetrics(productionId);
+      // (D-8/B6) বিভাজিত সময়-ব্লক — timings.queueWaitMs উপরের লিগ্যাসি
+      // সূত্রেরই মান (নিশ্চিতকরণ-অপেক্ষাসহ); confirmationHoldMs সেটাকে আলাদা করে।
+      const timings = computeFinalTimings(
+        finalRow
+          ? {
+              createdAt: finalRow.createdAt,
+              confirmedAt: finalRow.confirmedAt,
+              startedAt: finalRow.startedAt,
+              finishedAt: finalRow.finishedAt,
+            }
+          : null,
+        steps ?? [],
+        videoAcc
+      );
       logProductionMetrics({
         productionId,
         type: finalRow?.type ?? ctx.spec.type,
@@ -560,6 +624,7 @@ async function runProduction(productionId: string): Promise<void> {
         artifacts,
         // শ্রেণি-সংকেত মাত্র — কোনো ত্রুটি-টেক্সট নয় (DB-তে সংরক্ষিত)
         errorCategoryHint: errorMessage ? 'see_error_field' : null,
+        timings,
         // Phase-5: সিনেম্যাটিক পরিকল্পনা-মেট্রিকস (পরিকল্পক চলেনি → planMs=-1 →
         // প্ল্যান-ব্লকই লাগে না; মানগুলো সংখ্যা-কেবল — REDACTION)
         ...(videoAcc && videoAcc.planMs >= 0
@@ -601,18 +666,73 @@ async function runProduction(productionId: string): Promise<void> {
 
 async function failProduction(productionId: string, message: string): Promise<void> {
   try {
+    // (PART G) ব্যর্থতার কাঠামোগত বিবরণ আগে-পড়া (update-এ resultJson-এ বসবে)।
+    // এই পথে পাইপলাইনই চালু হয়নি (loadCtx-ধরনের ব্যর্থতা) — তাই
+    // fallbackAttempted সৎভাবে false, operation সর্বোত্তম-প্রচেষ্টা।
+    // সাধারণ error-স্ট্রিং অপরিবর্তিত থাকে (পেছনের সামঞ্জস্য)।
+    const failedAt = new Date();
+    const [preRow, preSteps, preArts] = await Promise.all([
+      db.production
+        .findUnique({
+          where: { id: productionId },
+          select: { createdAt: true, confirmedAt: true, startedAt: true, type: true, currentStepKey: true },
+        })
+        .catch(() => null),
+      db.productionStep
+        .findMany({
+          where: { productionId },
+          select: { key: true, status: true, startedAt: true, finishedAt: true },
+        })
+        .catch(() => []),
+      db.artifact
+        .findMany({ where: { productionId }, select: { id: true } })
+        .catch(() => [] as { id: string }[]),
+    ]);
+    const failedStepKeys = preSteps.filter(s => s.status === 'failed').map(s => s.key);
+    const errorDetail = preRow
+      ? buildProductionErrorDetail({
+          error: message,
+          operation:
+            failedStepKeys.length > 0
+              ? failedStepKeys[failedStepKeys.length - 1]
+              : preRow.currentStepKey,
+          fallbackAttempted: false, // পাইপলাইন-শুরুর আগের ব্যর্থতা — কোনো ফলব্যাক হয়নি
+          fallbackResult: null,
+          retainedArtifactIds: preArts.map(a => a.id),
+        })
+      : null;
     await db.production.update({
       where: { id: productionId },
-      data: { status: 'failed', error: message.slice(0, 1000), finishedAt: new Date() },
+      data: {
+        status: 'failed',
+        error: message.slice(0, 1000),
+        finishedAt: failedAt,
+        ...(errorDetail ? { resultJson: JSON.stringify({ errorDetail }).slice(0, 8000) } : {}),
+      },
     });
     emitProduction(productionId, { type: 'production_finished', productionId, status: 'failed', error: message.slice(0, 400) });
     // (Phase-1 অবজারভেবিলিটি) ব্যর্থ-প্রোডাকশনের মেট্রিকস-লাইন
     const meta = await db.production.findUnique({
       where: { id: productionId },
-      select: { createdAt: true, startedAt: true, type: true },
+      select: { createdAt: true, confirmedAt: true, startedAt: true, finishedAt: true, type: true },
     });
     // Phase-3 D: ব্যর্থ-পথেও ভিডিও-ধাপ সঞ্চয়কারীর সৎ সারসংক্ষেপ
     const videoAcc = getProductionMetrics(productionId);
+    // (D-8/B6) ব্যর্থ-পথেও বিভাজিত সময় — প্রাথমিক-ব্যর্থতায় startedAt প্রায়ই
+    // null → queueWaitMs/totalExecutionMs সৎ-null; confirmedAt থাকলে
+    // confirmationHoldMs তবেই মাপা হয়।
+    const timings = computeFinalTimings(
+      meta
+        ? {
+            createdAt: meta.createdAt,
+            confirmedAt: meta.confirmedAt,
+            startedAt: meta.startedAt,
+            finishedAt: meta.finishedAt ?? failedAt,
+          }
+        : null,
+      preSteps,
+      videoAcc
+    );
     logProductionMetrics({
       productionId,
       type: meta?.type ?? 'unknown',
@@ -626,6 +746,7 @@ async function failProduction(productionId: string, message: string): Promise<vo
       stepsFailed: null,
       artifacts: null,
       errorCategoryHint: 'see_error_field',
+      timings,
       // Phase-5: ব্যর্থ-পথেও পরিকল্পনা-মেট্রিকসের সৎ সারসংক্ষেপ
       ...(videoAcc && videoAcc.planMs >= 0
         ? {

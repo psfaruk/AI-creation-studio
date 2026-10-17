@@ -14,6 +14,7 @@
 // ============================================================
 
 import type { AvailabilityMatrixRow, AvailabilityMatrixResponse } from '@/lib/types';
+import { activeLipSyncProvider } from './video/lip_sync_module';
 
 /** §৫ — ব্যবহারকারীর টাস্ক-শ্রেণির স্থিতিশীল কী */
 export type CapabilityTaskType =
@@ -43,12 +44,21 @@ export type CapabilityTaskType =
 
 const TESTED = '2026-10-11';
 
+// D-5/B5: লিপ-সিঙ্ক-সারির চার-মাত্রিক রায় ও overall সরাসরি সক্রিয়
+// লিপ-সিঙ্ক-প্রোভাইডারের ক্ষমতা-প্রতিবেদন থেকে উদ্ভূত (আজ
+// available:false → সব মাত্রা 'unavailable_*' + overall 'unavailable_here';
+// প্রকৃত অ্যাডাপ্টার যোগ হলে এই সারিগুলো নিজেই সৎ হয়ে যাবে)।
+const LIP_SYNC_CAPS = activeLipSyncProvider().getCapabilities();
+const LIP_SYNC_OVERALL: AvailabilityMatrixRow['overall'] = LIP_SYNC_CAPS.available
+  ? 'available'
+  : 'unavailable_here';
+
 export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- অডিও ----------------
   {
     key: 'cap-speech',
     quality: 'quality_not_verified',
-    capability: 'কথা-উচ্চারণ (TTS) — বাংলা/ইংরেজি',
+    capability: 'কথা-উচ্চারণ (TTS) — বাংলা/ইংরেজি (bn/en লাইভ-চেষ্টিত); হিন্দি/উর্দু/চীনা রাউটিং-সমর্থিত, UNVERIFIED',
     taskType: 'speech',
     tools: ['text_to_speech', 'speech_synthesis'],
     modelKey: 'platform-tts',
@@ -290,13 +300,13 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     tools: ['lip_sync (সৎ-গেটেড)'],
     modelKey: 'wav2lip-sadtalker',
     model: 'Wav2Lip / SadTalker / MuseTalk (প্রার্থী)',
-    license: 'needs_review',
-    provider: 'not_exposed_by_sdk',
-    integration: 'not_integrated',
-    runtime: 'unavailable_hardware',
+    license: LIP_SYNC_CAPS.blockageDimensions.license,
+    provider: LIP_SYNC_CAPS.blockageDimensions.provider,
+    integration: LIP_SYNC_CAPS.blockageDimensions.integration,
+    runtime: LIP_SYNC_CAPS.blockageDimensions.hardware,
     errorReason:
       'চার-মাত্রিক বাধা: প্রোভাইডার — SDK-তে লিপ-সিঙ্ক API নেই; হার্ডওয়্যার — GPU নেই (৪–১২GB VRAM দরকার); ইন্টিগ্রেশন — অ্যাডাপ্টার নেই; যাচাই — বাংলা সংলাপের বেঞ্চমার্ক হয়নি ও কিছু প্রকল্পের লাইসেন্স-শর্ত স্পষ্ট নয়।',
-    overall: 'unavailable_here',
+    overall: LIP_SYNC_OVERALL,
     honestNote: 'ছবিতে জুম করে "লিপ-সিঙ্ক সফল" দেখানো নিষিদ্ধ — মিথ্যা সফলতা নয়।',
     fallback: 'সংলাপ-অডিও (TTS) + AI-দৃশ্য আলাদাভাবে তৈরি হয়; অডিও-ভিডিও টাইমলাইন-সমলয় থাকে, মুখের নড়াচড়ার দাবি থাকে না।',
   },
@@ -308,13 +318,13 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     tools: ['lip_sync (গান-মোড, সৎ-গেটেড)'],
     modelKey: 'wav2lip-sadtalker',
     model: '—',
-    license: 'needs_review',
-    provider: 'not_exposed_by_sdk',
-    integration: 'not_integrated',
-    runtime: 'unavailable_hardware',
+    license: LIP_SYNC_CAPS.blockageDimensions.license,
+    provider: LIP_SYNC_CAPS.blockageDimensions.provider,
+    integration: LIP_SYNC_CAPS.blockageDimensions.integration,
+    runtime: LIP_SYNC_CAPS.blockageDimensions.hardware,
     errorReason:
       'টকিং পোর্ট্রেটের চার-মাত্রিক বাধার সাথে অতিরিক্ষম: গানের vocal-টাইমিং/সিলেবল-অ্যালাইনমেন্ট আলাদা বেঞ্চমার্ক বাধ্যতামূলক (কথার মডেল পরীক্ষা ছাড়া গানে চালু করা নিষিদ্ধ); এই স্যান্ডবক্সে পূর্ণ-গান মডেলও নেই।',
-    overall: 'unavailable_here',
+    overall: LIP_SYNC_OVERALL,
     fallback: 'গান-অডিও + AI-দৃশ্যের মিউজিক-ভিডিও (কণ্ঠ শোনা যায়, মুখ নড়ে না — সৎভাবে ঘোষিত)।',
   },
   // ---------------- সম্পাদনা/পোস্ট ----------------

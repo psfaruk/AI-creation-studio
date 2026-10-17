@@ -81,7 +81,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const updated = await db.production.update({
     where: { id },
-    data: { status: 'queued', specJson: JSON.stringify(validation.validated.spec) },
+    data: {
+      status: 'queued',
+      // (D-8/B6) নিশ্চিতকরণের মুহূর্ত — মেট্রিকসের confirmationHoldMs
+      // (confirmedAt − createdAt) সৎভাবে বের করার ভিত্তি; ঐতিহাসিক
+      // সারিতে null → সৎ-null মেট্রিকস।
+      confirmedAt: new Date(),
+      specJson: JSON.stringify(validation.validated.spec),
+    },
     include: { steps: { orderBy: { seq: 'asc' } }, artifacts: { orderBy: { createdAt: 'asc' } } },
   });
 

@@ -1,0 +1,6 @@
+# টেস্ট-রান কনফিগারেশন (D-1 আইসোলেশন)
+# preload প্রতিটি টেস্ট-প্রসেসের শুরুতেই চলে — স্যুটের কোনো টেস্ট যেন
+# প্রকৃত storage/voice-verification.json-এ লিখতে না পারে সেই স্যুট-স্তরের
+# নিশ্চয়তা (tests/helpers/test-storage-preload.ts দেখুন)।
+[test]
+preload = ["./tests/helpers/test-storage-preload.ts"]

@@ -210,7 +210,9 @@ export function placeDialogueLine(
   line: { character: string; measuredSec: number },
   opts: { windows: DialoguePlacementWindow[]; sceneStartSec: number; cursorSec: number }
 ): { startSec: number; endSec: number; shotId: string | null; matchedSpeakerShot: boolean } {
-  const dur = Math.max(0.8, line.measuredSec);
+  // (MP4-E-পতাকা) measuredSec NaN/শূন্য/ঋণাত্মক হলে সৎ ডিফল্ট-দৈর্ঘ্য — NaN-সংক্রমণ নয়
+  const safeMeasured = Number.isFinite(line.measuredSec) && line.measuredSec > 0 ? line.measuredSec : 0.8;
+  const dur = Math.max(0.8, safeMeasured);
   for (const w of opts.windows) {
     if (!w.characters.includes(line.character)) continue;
     const place = Math.max(opts.cursorSec, round2(w.startSec + 0.1));
@@ -259,7 +261,13 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
   const durationSec = Math.max(30, Math.min(120, spec.durationSec ?? 60));
   const subtitlesOn = spec.subtitles !== false;
   const engine = spec.videoEngine === 'cinematic_motion' ? 'cinematic_motion' : 'ai_diffusion';
-  const language: SpeechLanguage = spec.language === 'en' ? 'en' : 'bn';
+  // PART C: সমর্থিত ভাষা সরাসরি; অসমর্থিত মান validateSpec-ই আগে প্রত্যাখ্যান করে —
+  // এখানে পৌঁছানো মানেই সমর্থিত (কেবল en/bn-এ সংকুচিত নয়)
+  const language: SpeechLanguage = (
+    spec.language === 'en' || spec.language === 'hi' || spec.language === 'ur' || spec.language === 'zh'
+      ? spec.language
+      : 'bn'
+  );
   // (অডিট §D) spec-এ স্পষ্ট রেজোলিউশন থাকলে সেটিই; নইলে quality-ভিত্তিক ডিফল্ট
   const resolution = spec.resolution ?? (spec.quality === 'draft' ? '720p' : '1080p');
   const dims = outputDims(aspect, resolution);

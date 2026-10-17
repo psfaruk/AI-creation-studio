@@ -138,15 +138,128 @@ export function lipSyncCapabilityReport(): LipSyncCapabilityReport {
   };
 }
 
+// ------------------------------------------------------------
+// §৫/§৮ — LipSyncProvider: প্রোভাইডার-নিরপেক্ষ চুক্তি + সৎ-অসমর্থিত
+// অ্যাডাপ্টার (D-5/B5)। আজ একমাত্র নিবন্ধিত প্রোভাইডার = অসমর্থিত;
+// ভবিষ্যতের প্রকৃত অ্যাডাপ্টারও এই একই চুক্তিতে বসবে — মিথ্যা
+// সফলতা/বানানো সংখ্যা চুক্তিতেই নিষিদ্ধ।
+// ------------------------------------------------------------
+
+/** লিপ-সিঙ্ক ত্রুটির টাইপড কোড */
+export type LipSyncErrorCode = 'LIPSYNC_UNSUPPORTED' | 'LIPSYNC_ALIGNMENT_FAILED' | 'LIPSYNC_INVALID_INPUT';
+
+/** টাইপড লিপ-সিঙ্ক-ত্রুটি (কোডসহ — অস্পষ্ট ব্যর্থতা/মিথ্যা সফলতা নয়) */
+export class LipSyncProviderError extends Error {
+  readonly code: LipSyncErrorCode;
+  constructor(code: LipSyncErrorCode, message: string) {
+    super(message);
+    this.name = 'LipSyncProviderError';
+    this.code = code;
+  }
+}
+
 /**
- * লিপ-সিঙ্ক চালানোর প্রস্তাব এলে সৎ ব্যর্থতা — মিথ্যা সফলতা নয়।
- * বার্তায় ৪-মাত্রিক বাধা + বিকল্প স্পষ্ট থাকে।
- * মডেল-সংযোগের পর এই ফাংশনই প্রকৃত পাইপলাইনে রূপান্তরিত হবে।
+ * খরচ/লেটেন্সির সৎ অনুমান — অজানা হলে সংখ্যা বানানো হয় না।
+ * (অসমর্থিত প্রোভাইডারের জন্য দুটিই সবসময় false — ডোমেইনে কোনো
+ * সংখ্যাসূচক ক্ষেত্রই নেই।)
  */
-export async function runLipSync(_spec: LipSyncJobSpec): Promise<never> {
+export interface LipSyncEstimate {
+  costKnown: false;
+  latencyKnown: false;
+  note: string;
+}
+
+/** প্রক্রিয়াকরণের বাইট-ইনপুট — প্রকৃত অডিও-বাইট ছাড়া কোনো প্রোভাইডার
+ *  সফলতা দাবি করতে পারে না (artifact-আইডি মানেই "অডিও শোনা" নয়)। */
+export interface LipSyncProcessOptions {
+  /** সংলাপ-অডিওর প্রকৃত বাইট (artifact-লোডার থেকে লোড করা) */
+  audioBuffer?: Buffer;
+}
+
+/** লিপ-সিঙ্কের সৎ ফল — সফল হলে provenance-লেবেলসহ মিডিয়া-বাইট;
+ *  অন্যথা সৎ কারণ (mediaBuffer কখনোই অনুপস্থিত-সাফল্যে থাকে না)। */
+export type LipSyncOutput =
+  | { processed: true; provenance: string; mediaBuffer: Buffer }
+  | { processed: false; reason: string; mediaBuffer?: never };
+
+/**
+ * প্রোভাইডার-নিরপেক্ষ লিপ-সিঙ্ক চুক্তি। আজ একমাত্র বাস্তবায়ন
+ * অসমর্থিত-অ্যাডাপ্টার; প্রতিটি মেথড সৎ উত্তর দিতে বাধ্য।
+ */
+export interface LipSyncProvider {
+  /** অ্যাডাপ্টারের স্থিতিশীল আইডি (যেমন 'unsupported'; ভবিষ্যতে 'musetalk' ইত্যাদি) */
+  readonly id: string;
+  /** সৎ ক্ষমতা-প্রতিবেদন — রাউটার/ম্যাট্রিক্স/টুল সব এখান থেকেই পড়ে */
+  getCapabilities(): LipSyncCapabilityReport;
+  /** স্ট্রাকচারাল যাচাই — প্রকৃত সক্ষমতার দাবি নয়, প্রকৃত সমস্যাগুলোই রিপোর্ট */
+  validateInput(spec: LipSyncJobSpec): { ok: true } | { ok: false; reason: string };
+  /** খরচ/লেটেন্সির সৎ অনুমান — অজানা হলে costKnown:false, latencyKnown:false */
+  estimateCostAndLatency(spec: LipSyncJobSpec): LipSyncEstimate;
+  /** প্রকৃত প্রক্রিয়াকরণ — অডিও-বাইট ভোগ না করে সফলতা দেওয়া নিষিদ্ধ */
+  process(spec: LipSyncJobSpec, opts?: LipSyncProcessOptions): Promise<LipSyncOutput>;
+  /** (ঐচ্ছিক) চাকরির অবস্থা */
+  getJobStatus?(jobId: string): Promise<{ status: 'unsupported' }>;
+  /** (ঐচ্ছিক) বাতিল — অসমর্থিত প্রোভাইডারে বাতিল-করার চাকরিই নেই */
+  cancel?(jobId: string): Promise<{ cancelled: false; reason: string }>;
+  /** আউটপুট-যাচাই — অসমর্থিত প্রোভাইডার যাচাইও করতে পারে না */
+  validateOutput(buffer: Buffer): Promise<{ ok: false; reason: string }>;
+}
+
+/** §৮ ৪-মাত্রিক বাধার সৎ বার্তা — runLipSync ও অসমর্থিত অ্যাডাপ্টারের
+ *  একমাত্র উৎস (বার্তার অক্ষর পরিবর্তন নিষিদ্ধ — LLM/টেস্ট চুক্তি)। */
+function lipSyncBlockageMessage(): string {
   const report = lipSyncCapabilityReport();
   const b = report.blockageDimensions;
-  throw new Error(
-    `লিপ-সিঙ্ক এখন অবরুদ্ধ — ৪টি মাত্রাতেই বাধা: (১) লাইসেন্স ${b.license} (Wav2Lip একাডেমিক-কেবল, SadTalker/MuseTalk শর্ত আলাদা); (২) প্রোভাইডার ${b.provider} (SDK-তে লিপ-সিঙ্ক API নেই); (৩) হার্ডওয়্যার ${b.hardware} (৪–১২GB VRAM দরকার, GPU নেই); (৪) ইন্টিগ্রেশন ${b.integration} (অ্যাডাপ্টার নেই; বাংলা-বেঞ্চমার্কও ${b.benchmark})। বিকল্প: সংলাপের অডিও (TTS) + AI-জেনারেটেড দৃশ্য আলাদাভাবে তৈরি করা যায় — মুখের নড়াচড়ার দাবি করা হয় না।`
-  );
+  return `লিপ-সিঙ্ক এখন অবরুদ্ধ — ৪টি মাত্রাতেই বাধা: (১) লাইসেন্স ${b.license} (Wav2Lip একাডেমিক-কেবল, SadTalker/MuseTalk শর্ত আলাদা); (২) প্রোভাইডার ${b.provider} (SDK-তে লিপ-সিঙ্ক API নেই); (৩) হার্ডওয়্যার ${b.hardware} (৪–১২GB VRAM দরকার, GPU নেই); (৪) ইন্টিগ্রেশন ${b.integration} (অ্যাডাপ্টার নেই; বাংলা-বেঞ্চমার্কও ${b.benchmark})। বিকল্প: সংলাপের অডিও (TTS) + AI-জেনারেটেড দৃশ্য আলাদাভাবে তৈরি করা যায় — মুখের নড়াচড়ার দাবি করা হয় না।`;
+}
+
+/**
+ * একমাত্র নিবন্ধিত প্রোভাইডার — সৎ-অসমর্থিত। প্রতিটি মেথড সত্য বলে:
+ * ক্ষমতা নেই, খরচ/লেটেন্সি অজানা, প্রক্রিয়াকরণ সম্ভব নয়, বাতিল/যাচাইও নয়।
+ */
+export const unsupportedLipSyncProvider: LipSyncProvider = {
+  id: 'unsupported',
+  getCapabilities: () => lipSyncCapabilityReport(),
+  validateInput: spec => {
+    if (!spec || typeof spec !== 'object') {
+      return { ok: false, reason: 'LipSyncJobSpec অনুপস্থিত' };
+    }
+    const problems: string[] = [];
+    if (!spec.characterImageArtifactId) problems.push('characterImageArtifactId অনুপস্থিত/খালি');
+    if (!spec.dialogueAudioArtifactId) problems.push('dialogueAudioArtifactId অনুপস্থিত/খালি');
+    if (!spec.language) problems.push('language অনুপস্থিত/খালি');
+    return problems.length > 0 ? { ok: false, reason: problems.join('; ') } : { ok: true };
+  },
+  estimateCostAndLatency: () => ({
+    costKnown: false,
+    latencyKnown: false,
+    note: 'কোনো লিপ-সিঙ্ক প্রোভাইডার সংযোজিত নয় — খরচ ও লেটেন্সির প্রকৃত সংখ্যা জানা নেই; বানানো সংখ্যা দেওয়া হয় না।',
+  }),
+  process: async () => {
+    throw new LipSyncProviderError('LIPSYNC_UNSUPPORTED', lipSyncBlockageMessage());
+  },
+  cancel: async () => ({
+    cancelled: false,
+    reason: 'কোনো লিপ-সিঙ্ক প্রোভাইডার নেই — বাতিল-করার চাকরিও নেই।',
+  }),
+  validateOutput: async () => ({
+    ok: false,
+    reason: 'কোনো লিপ-সিঙ্ক প্রোভাইডার নেই — আউটপুট যাচাইয়ের ক্ষমতাও নেই।',
+  }),
+};
+
+/** সক্রিয় লিপ-সিঙ্ক প্রোভাইডারের একমাত্র সত্যের উৎস — আজ অসমর্থিত;
+ *  রাউটার/ম্যাট্রিক্স/টুল সব এখান থেকেই পড়ে (স্টেল-হার্ডকোড নয়)। */
+export function activeLipSyncProvider(): LipSyncProvider {
+  return unsupportedLipSyncProvider;
+}
+
+/**
+ * লিপ-সিঙ্ক চালানোর প্রস্তাব এলে সৎ ব্যর্থতা — মিথ্যা সফলতা নয়।
+ * বার্তায় ৪-মাত্রিক বাধা + বিকল্প স্পষ্ট থাকে। পাতলা মোড়ক —
+ * বার্তার উৎস এখন unsupportedLipSyncProvider.process (অক্ষর অপরিবর্তিত)।
+ */
+export async function runLipSync(_spec: LipSyncJobSpec): Promise<never> {
+  await unsupportedLipSyncProvider.process(_spec);
+  throw new Error('unreachable: অসমর্থিত লিপ-সিঙ্ক প্রোভাইডার সবসময়ই ছুড়ে দেয়');
 }

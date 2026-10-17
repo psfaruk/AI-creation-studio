@@ -31,10 +31,12 @@
 // ============================================================
 
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
+import { createHash } from 'crypto';
 import path from 'path';
 import { encodeWav } from '@/lib/agent/audio/pcm';
 import { isEdgeVoice } from '@/lib/agent/audio/edge_tts';
+import { toneWavOfSeconds } from '../helpers/speech-wav';
 
 // ---- ফিক্সচার: প্রকৃত ডিবি-ট্রান্সক্রিপ্ট --------------------
 const FIXTURES = JSON.parse(
@@ -58,6 +60,14 @@ const edgeCalls: string[] = [];
 const zaiCalls: string[] = [];
 
 let okWav: Buffer;
+
+/** D-1: প্রকৃত রেকর্ড-ফাইলের পথ (preload-ওভাররাইডের অধীন নয়) — গার্ড-টেস্টে স্পর্শ-না-হওয়া প্রমাণ */
+const REAL_VERIFICATION_FILE = path.join(process.cwd(), 'storage', 'voice-verification.json');
+
+function sha256Of(file: string): string | null {
+  if (!existsSync(file)) return null;
+  return createHash('sha256').update(readFileSync(file)).digest('hex');
+}
 
 function wavOfSeconds(sec: number): Buffer {
   const sr = 24000;
@@ -108,7 +118,9 @@ const BN_SPEC = {
 };
 
 beforeEach(() => {
-  okWav = wavOfSeconds(2.0);
+  // D-2: টোন-ফিক্সচার (RMS ≈ −১৩.৫dB) — নীরবতা-গেটের যুগে "সুস্থ"
+  // ফিক্সচারের অবশ্যই অ-নীরব হতে হবে; বিশুদ্ধ-নীরবতা এখন REG-20j-এ প্রত্যাখ্যাত
+  okWav = toneWavOfSeconds(2.0);
   edgeMode = 'ok';
   zaiMode = 'ok';
   asrText = '';
@@ -245,5 +257,58 @@ describe('REG-20: Bengali language-integrity verification (R-FIX-1)', () => {
     expect(caught?.attempts).toBe(1);
     // চেইন-যাচাই-ক্ষয় (VERIFICATION_FAILED) পথে lastVerification থাকে — REG-1b (t1)
     // সেই চুক্তি লক করে; এখানে bn-VOICE_UNAVAILABLE চুক্তি নিশ্চিত।
+  }, 20_000);
+
+  test('REG-20j [NEW — D-2/B2-অগ্রাধিকার]: plausible-duration SILENT audio ⇒ SILENCE_DETECTED fail — even with a perfectly valid bn transcript mocked', async () => {
+    // নীরবতা-প্রমাণ ভাষা-প্রমাণের আগেই রায় দেয় (B-F04 ক্রম-নীতির নীরবতা-ভাগ):
+    // ASR-এ নিখুঁত বাংলা ট্রান্সক্রিপ্ট মক করা হলেও বিশুদ্ধ-নীরব অডিও pass/warn নয়।
+    asrText = 'বৃষ্টি ভালোই লাগে।'; // স্ক্রিপ্টের সাথে হুবহু মিল — তবু নীরবতা = fail
+    const silent = wavOfSeconds(2.0);
+    const v = await verifySpeechBuffer(silent, 'wav', BN_SPEC, 'jam', 'jam');
+    expect(v.verdict).toBe('fail');
+    expect(v.failureCode).toBe('SILENCE_DETECTED');
+    expect(v.silenceCoverage).toBeGreaterThanOrEqual(0.9);
+    expect(v.notes.some(n => n.includes('SILENCE_DETECTED'))).toBe(true);
+  }, 20_000);
+
+  test('REG-20k [NEW — D-3/B3]: other-script INPUT (Devanagari/Chinese/Arabic-only text) forced through a bn request ⇒ typed LANGUAGE_MISMATCH — never silently read', async () => {
+    // আগে :694-এর allow-list অন্য-লিপিকে চুপচাপ ঢুকতে দিত — bn+Edge পথে
+    // দৈর্ঘ্য-ঠিক হলে "pass" পর্যন্ত হয়ে যেত। এখন স্পষ্ট প্রত্যাখ্যান।
+    for (const foreign of [
+      'यह एक हिंदी पंक्ति है', // দেবনাগরী
+      '这是一行中文文本', // চীনা
+      'یہ ایک اردو جملہ ہے', // আরবি লিপি (উর্দু)
+    ]) {
+      let caught: any;
+      try {
+        await synthesizeVerifiedSpeech({ ...BN_SPEC, script: foreign, voiceId: undefined });
+      } catch (e) {
+        caught = e;
+      }
+      expect(speechErrorCode(caught)).toBe('LANGUAGE_MISMATCH');
+      expect(String(caught?.message)).toContain('অন্য লিপি');
+      expect(edgeCalls.length).toBe(0); // কোনো সংশ্লেষণ-কলই হয়নি
+      expect(zaiCalls.length).toBe(0);
+    }
+  }, 20_000);
+
+  test('REG-20guard [NEW — D-1/B1]: the REAL storage/voice-verification.json is NEVER touched by verification — records go to the isolated preload path', async () => {
+    // D-1-এর সরাসরি প্রমাণ: একটি প্রকৃত যাচাই-কল চালানো হয় (রেকর্ড-লেখাসহ),
+    // কিন্তু প্রকৃত ফাইলের sha256 অপরিবর্তিত থাকে এবং রেকর্ড preload-এর
+    // টেম্প-পথেই যায়।
+    const before = sha256Of(REAL_VERIFICATION_FILE);
+    const isolatedFile = process.env.VOICE_VERIFICATION_FILE!;
+    expect(isolatedFile).toBeDefined();
+    expect(isolatedFile).not.toBe(REAL_VERIFICATION_FILE);
+
+    asrText = 'বৃষ্টি ভালোই লাগে।';
+    await verifySpeechBuffer(okWav, 'wav', BN_SPEC, 'jam', 'jam');
+
+    const after = sha256Of(REAL_VERIFICATION_FILE);
+    expect(after).toBe(before); // প্রকৃত ফাইল স্পর্শ-অযোগ্য
+    // আইসোলেটেড পথে রেকর্ড লেখা হয়েছে (best-effort লেখা সফল ছিল)
+    const written = JSON.parse(readFileSync(isolatedFile, 'utf8')) as { records: Record<string, unknown> };
+    expect(written.records['jam']).toBeDefined();
+    expect((written.records['jam'] as { verdict: string }).verdict).toBeDefined();
   }, 20_000);
 });

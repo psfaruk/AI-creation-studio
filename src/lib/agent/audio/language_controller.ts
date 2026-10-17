@@ -22,18 +22,18 @@ import { transcribeBuffer } from '../sdk-helpers';
 // §১১: ব্যবহারকারীর পুনরাবৃত্ত TTS-অনুরোধ ডিস্ক-ক্যাশে+ডিডুপ-পথে — রেট-লিমিট-চাপ কমে
 import { cachedSynthesizeSpeech } from '../tts-cache';
 import { audioQuality } from '@/lib/media/ffmpeg';
-import type { SpeechLocale } from '@/lib/types';
+import type { SpeechLocale, SpeechLanguage } from '@/lib/types';
 import { normalizeBengaliSpeechText } from './bn-text-normalizer';
+import { isRateLimitErrorText } from '../retry';
 import { isEdgeVoice, EDGE_TTS_LABEL, recordVoiceVerification, type EdgeVoiceId } from './edge_tts';
 
-// শেয়ার্ড চুক্তির উৎস (types.ts ~:৫৫১ এলাকা) থেকে লোকেল-ধরন পুনঃরপ্তানি (B-F10)
-export type { SpeechLocale };
+// শেয়ার্ড চুক্তির উৎস (types.ts) থেকে লোকেল/ভাষা-ধরন পুনঃরপ্তানি (B-F10 + PART C)
+export type { SpeechLocale, SpeechLanguage };
 
 // ------------------------------------------------------------
 // §২.১ AudioJobSpec
 // ------------------------------------------------------------
 
-export type SpeechLanguage = 'bn' | 'en';
 export type AudioTask = 'speech' | 'singing' | 'instrumental';
 
 /** যেকোনো বৈধ কণ্ঠ — Edge-নিউরাল বা z-ai */
@@ -59,12 +59,52 @@ export interface AudioJobSpec {
 export type SpeechErrorCode =
   /** স্ক্রিপ্ট/কণ্ঠ/লোকেল — ভাষার অসামঞ্জস্য (§২/§4.2) */
   | 'LANGUAGE_MISMATCH'
+  /** অনুরোধকৃত ভাষা এই সিস্টেমে সমর্থিত নয় (C2/D-3 — নীরব ভাষা-বদল নিষিদ্ধ) */
+  | 'LANGUAGE_UNSUPPORTED'
   /** কোনো যাচাইকৃত ভাষা-সক্ষম কণ্ঠই পৌঁছানো যায়নি (§4.2-এর হুবহু বার্তা) */
   | 'VOICE_UNAVAILABLE'
   /** চেইনের সব প্রার্থীই ভাষা-যাচাইে ব্যর্থ — অডিও গ্রহণযোগ্য নয় (RC-2) */
   | 'VERIFICATION_FAILED'
   /** অনুরোধকৃত লোকেল সমর্থিত নয় / ভাষার সাথে মেলে না (B-F10 — নীরব প্রতিস্থাপন নিষিদ্ধ) */
-  | 'UNSUPPORTED_LOCALE';
+  | 'UNSUPPORTED_LOCALE'
+  // ---- C2 ত্রুটি-শ্রেণিবিন্যাস (PART C master-prompt) — ইঞ্জিন-স্তর ----
+  /** প্রোভাইডার প্রমাণীকরণ ব্যর্থ (HTTP 401/403) */
+  | 'AUTH_FAILED'
+  /** রেট-লিমিট/429 — সীমিত পুনর্চেষ্টার পরেও */
+  | 'RATE_LIMITED'
+  /** প্রোভাইডার টাইমআউট */
+  | 'PROVIDER_TIMEOUT'
+  /** নেটওয়ার্ক-স্তরের ব্যর্থতা (DNS/সংযোগ/সকেট) */
+  | 'NETWORK_ERROR'
+  // ---- C2/B2 — মিডিয়া-যাচাই শ্রেণি ----
+  /** ফাইল পার্স/ডিকোড করা যায়নি — ভাঙা/করাপ্ট অডিও */
+  | 'INVALID_AUDIO'
+  /** অডিও কার্যত সম্পূর্ণ নীরব — স্পষ্ট কথা নেই (D-2) */
+  | 'SILENCE_DETECTED'
+  /** ASR ব্যাক-চেক ভাষা/বিষয়বস্তু মেলেনি (C2-এর সূক্ষ্ম শ্রেণি; চেইন-স্তরের VERIFICATION_FAILED-এর পরিপূরক) */
+  | 'ASR_VERIFICATION_FAILED';
+
+/**
+ * প্রতি-যাচাই কাঠামোবদ্ধ ব্যর্থতার কারণ (B2: "structured failure reasons,
+ * not just 'false'") — রায় 'fail' হলে প্রথম/প্রধান কারণটি এখানে টাইপড
+ * থাকে; UI/রেকর্ড/রিপোর্ট এটি ব্যবহার করে।
+ */
+export type SpeechFailureCode = SpeechErrorCode;
+
+/**
+ * ইঞ্জিন-ব্যর্থতার বার্তা → C2-শ্রেণি (synthesizeVerifiedSpeech-এর
+ * ফলব্যাক-নোট ও exhaustion-বার্তায় টাইপড কারণ জুড়ে দেওয়ার জন্য)।
+ * শ্রেণি-অনিশ্চিত হলে null — কখনো বানানো শ্রেণি নয়।
+ */
+function classifyEngineFailure(err: unknown): SpeechErrorCode | null {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (/\b(401|403)\b/.test(msg)) return 'AUTH_FAILED';
+  if (isRateLimitErrorText(msg)) return 'RATE_LIMITED';
+  if (/timeout|timed?[- ]?out|etimedout|deadline/i.test(msg)) return 'PROVIDER_TIMEOUT';
+  if (/network|enotfound|econnrefused|econnreset|epipe|fetch failed|socket|wss|dns/i.test(msg))
+    return 'NETWORK_ERROR';
+  return null;
+}
 
 /** ভাষা-নিয়ন্ত্রকের টাইপড ব্যর্থতা — পাইপলাইন/UI `err.code` দিয়ে ধরে */
 export class SpeechSynthesisError extends Error {
@@ -111,6 +151,14 @@ export interface LanguageProfile {
   nativeSupport: 'verified' | 'partial' | 'none';
   /** ASR এই ভাষায় কতটা নির্ভরযোগ্য */
   asrSupport: 'good' | 'weak' | 'none';
+  /**
+   * (C1) এই পরিবেশে ক্ষমতার সৎ অবস্থা:
+   *  - 'live'       = লাইভ-রাউন্ড-ট্রিপ প্রমাণ আছে (en: ২০২৬-১০-১৭ ASR-রাউন্ড-ট্রিপ পাস)
+   *  - 'attempted'  = লাইভ-কল চেষ্টা হয়েছে, প্রোভাইডার-পার্শ্ব ব্যর্থতা (bn: Edge-403)
+   *  - 'unattempted'= রাউটিং-সমর্থিত কিন্তু এই পরিবেশে কখনো ডাকাই হয়নি (hi/ur/zh)
+   * "কী-কনফিগার্ড" কখনোই "ফিচার-উপলব্ধ"-এর সমান নয়।
+   */
+  environmentVerification: 'live' | 'attempted' | 'unattempted';
   notes: string[];
 }
 
@@ -156,6 +204,7 @@ export const LANGUAGE_PROFILES: Record<SpeechLanguage, LanguageProfile> = {
     },
     nativeSupport: 'verified',
     asrSupport: 'weak',
+    environmentVerification: 'attempted',
     notes: [
       `সব কণ্ঠ Microsoft-এর বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ (bn-BD: নবনীতা/প্রদীপ; bn-IN: তানিশা/ভাস্কর) — দেশীয় উচ্চারণ (${EDGE_TTS_LABEL})।`,
       'z-ai কণ্ঠ (jam/douji) বাংলা-প্রশিক্ষিত নয় — ২০২৬-১০-১৬-এর রানে চীনা-আবর্জনা প্রমাণিত; তাই bn-চেইনে আর নেই। Edge অচল হলে সৎ ফলাফল = VOICE_UNAVAILABLE (§৪.২)।',
@@ -177,9 +226,62 @@ export const LANGUAGE_PROFILES: Record<SpeechLanguage, LanguageProfile> = {
     },
     nativeSupport: 'verified',
     asrSupport: 'good',
+    environmentVerification: 'live',
     notes: [
       `প্রধান কণ্ঠগুলো Microsoft-নিউরাল (আরিয়া/গাই/সোনিয়া); z-ai jam/tongtong/kazi/xiaochen ইংরেজি-ফলব্যাক (${EDGE_TTS_LABEL}-অচল হলে)।`,
       'ASR ইংরেজি ভালো বোঝে — রাউন্ড-ট্রিপ সাদৃশ্য + শব্দ-আবৃত্তি-যাচাই কার্যকর (B-F05: সাদৃশ্য একা প্রমাণ নয়)।',
+    ],
+  },
+  // ---- PART C: hi/ur/zh — রাউটিং-সমর্থিত, সৎ-UNVERIFIED ক্ষমতা ----
+  hi: {
+    code: 'hi',
+    name: 'হিন্দি',
+    voices: ['hi-IN-SwaraNeural', 'hi-IN-MadhurNeural'],
+    voiceCapabilities: {
+      'hi-IN-SwaraNeural': { engine: 'edge', languages: ['hi'], locale: 'hi-IN' },
+      'hi-IN-MadhurNeural': { engine: 'edge', languages: ['hi'], locale: 'hi-IN' },
+    },
+    nativeSupport: 'none',
+    asrSupport: 'none',
+    environmentVerification: 'unattempted',
+    notes: [
+      `হিন্দি-প্রশিক্ষিত Edge-নিউরাল কণ্ঠ (স্বরা/মধুর, hi-IN) — মাইক্রোসফট-ক্যাটালগ-নথিভুক্ত; এই পরিবেশে এখনো লাইভ-যাচাই হয়নি (UNVERIFIED — C1)।`,
+      'z-ai কণ্ঠ হিন্দি-সক্ষম প্রমাণিত নয় — নীরব ভাষা-ভাঙা ফলব্যাক নিষিদ্ধ; Edge অচল হলে সৎ ফলাফল = VOICE_UNAVAILABLE।',
+    ],
+  },
+  ur: {
+    code: 'ur',
+    name: 'উর্দু',
+    voices: ['ur-PK-UzmaNeural', 'ur-PK-AsadNeural'],
+    voiceCapabilities: {
+      'ur-PK-UzmaNeural': { engine: 'edge', languages: ['ur'], locale: 'ur-PK' },
+      'ur-PK-AsadNeural': { engine: 'edge', languages: ['ur'], locale: 'ur-PK' },
+    },
+    nativeSupport: 'none',
+    asrSupport: 'none',
+    environmentVerification: 'unattempted',
+    notes: [
+      'উর্দু-প্রশিক্ষিত Edge-নিউরাল কণ্ঠ (উজমা/আসাদ, ur-PK) — মাইক্রোসফট-ক্যাটালগ-নথিভুক্ত; এই পরিবেশে এখনো লাইভ-যাচাই হয়নি (UNVERIFIED — C1)।',
+      'লিপি-সতর্কতা: পার্সো-আরবি লিপি থেকে উর্দু বনাম অন্য আরবি-লিপির ভাষা নিশ্চিতভাবে আলাদা করা যায় না — অনুরোধকৃত-ভাষার মেটাডেটার সাথে মিলিয়েই যাচাই (মাস্টার-প্রম্পট B3)।',
+    ],
+  },
+  zh: {
+    code: 'zh',
+    name: 'চীনা',
+    voices: ['zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-HK-HiuMaanNeural', 'zh-TW-HsiaoChenNeural'],
+    voiceCapabilities: {
+      'zh-CN-XiaoxiaoNeural': { engine: 'edge', languages: ['zh'], locale: 'zh-CN' },
+      'zh-CN-YunxiNeural': { engine: 'edge', languages: ['zh'], locale: 'zh-CN' },
+      'zh-HK-HiuMaanNeural': { engine: 'edge', languages: ['zh'], locale: 'zh-HK' },
+      'zh-TW-HsiaoChenNeural': { engine: 'edge', languages: ['zh'], locale: 'zh-TW' },
+    },
+    nativeSupport: 'none',
+    asrSupport: 'none',
+    environmentVerification: 'unattempted',
+    notes: [
+      'চীনা Edge-নিউরাল কণ্ঠ — সরলীকৃত ম্যান্ডারিন zh-CN (শিয়াওশিয়াও/ইউনশি), ক্যান্টনিজ zh-HK (হিউমান), প্রথাগত ম্যান্ডারিন zh-TW (শিয়াওচেন); এই পরিবেশে এখনো লাইভ-যাচাই হয়নি (UNVERIFIED — C1)।',
+      'Hans/Hant-পার্থক্য লিপি-শনাক্তকরণে নির্ভরযোগ্য নয় — লোকেল-মাত্রা (zh-CN/zh-TW/zh-HK) সেই নির্বাচন বহন করে; প্রতিটি কণ্ঠের লেবেলে রূপভেদ স্পষ্ট।',
+      'z-ai SDK-র কণ্ঠগুলো চীনা-প্রশিক্ষিত হলেও চীনা-সক্ষম ট্যাগ পায় না — লাইভ-যাচাইকৃত প্রমাণ ছাড়া দাবি অসৎ (C1); Edge অচল হলে সৎ VOICE_UNAVAILABLE।',
     ],
   },
 };
@@ -188,13 +290,23 @@ export const LANGUAGE_PROFILES: Record<SpeechLanguage, LanguageProfile> = {
 // স্ক্রিপ্ট-ভিত্তিক ভাষা শনাক্তকরণ
 // ------------------------------------------------------------
 
+export type DetectedScriptLanguage = SpeechLanguage | 'ar-script' | 'mixed' | 'unknown' | 'other-script';
+
 export interface LanguageDetection {
-  language: SpeechLanguage | 'mixed' | 'unknown' | 'other-script';
+  language: DetectedScriptLanguage;
   confidence: number; // 0–1
   bnRatio: number;
   latinRatio: number;
   /** বাংলা/লাতিন বাদে অন্য সব লিপির অক্ষর-অনুপাত (CJK/দেবনাগরী/আরবি…) */
   otherScriptRatio: number;
+  /** দেবনাগরী-অক্ষর অনুপাত (হিন্দি-লিপি; PART C) */
+  devaRatio: number;
+  /** পার্সো-আরবি অক্ষর অনুপাত (উর্দু/আরবি লিপি — লিপি দেখে ভাষা নির্ধারণ
+   *  �যায় না, তাই শ্রেণি-নাম 'ar-script'; উর্দু-অনুরোধেই কেবল সামঞ্জস্যপূর্ণ) */
+  arabicRatio: number;
+  /** CJK-অক্ষর অনুপাত (চীনা; Hans/Hant আলাদা করা নির্ভরযোগ্য নয় —
+   *  লোকেল-মাত্রা zh-CN/zh-TW/zh-HK-ই সেই পার্থক্য বহন করে) */
+  cjkRatio: number;
 }
 
 /**
@@ -204,35 +316,71 @@ export interface LanguageDetection {
  * 踢踢踢…") পুরোনো যাচাইকারীর চোখে "en" হয়ে যেত (মোট গণনাতেই ছিল না)।
  * এখন অন্য-লিপির অক্ষর ২৫% ছাড়ালে ভাষা = 'other-script'।
  */
-export function detectLanguage(text: string): LanguageDetection {
+export function detectLanguage(text: string, opts?: { recognize?: readonly string[] }): LanguageDetection {
   const t = text ?? '';
   const bn = (t.match(/[\u0980-\u09FF]/g) ?? []).length;
   const latin = (t.match(/[A-Za-z]/g) ?? []).length;
+  // PART C লিপি-পরিবার: দেবনাগরী (হিন্দি), পার্সো-আরবি (উর্দু/আরবি), CJK (চীনা)
+  const deva = (t.match(/[\u0900-\u097F]/g) ?? []).length;
+  const arabic = (t.match(/[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/g) ?? []).length;
+  const cjk = (t.match(/[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/g) ?? []).length;
   const allLetters = (t.match(/\p{L}/gu) ?? []).length;
-  const other = Math.max(0, allLetters - bn - latin);
+  // সতর্কতা (REG-20a-শোধন): স্বীকৃত-কিন্তু-এই-প্রসঙ্গে-অচ্ছেদিত লিপি-পরিবারও
+  // প্রসঙ্গহীন পথে 'অন্য-লিপি' হিসেবেই গণ্য — নইলে চীনা ট্রান্সক্রিপ্টের
+  // ২টি ল্যাতিন অক্ষর পুরোটাকে "en" বানিয়ে দিত (২০২৬-১০-১৭-এর প্রকৃত বাগ)।
+  const recFamilies = opts?.recognize ?? [];
+  const unseenDeva = recFamilies.includes('hi') ? 0 : deva;
+  const unseenArabic = recFamilies.includes('ur') ? 0 : arabic;
+  const unseenCjk = recFamilies.includes('zh') ? 0 : cjk;
+  // 'অন্য-লিপি' = সত্যিই অজানা লিপি + এই-প্রসঙ্গে-অচ্ছেদিত পরিচিত পরিবার
+  const trulyUnknown = Math.max(0, allLetters - bn - latin - deva - arabic - cjk);
+  const other = trulyUnknown + unseenDeva + unseenArabic + unseenCjk;
   const otherScriptRatio = allLetters > 0 ? other / allLetters : 0;
+  const devaRatio = allLetters > 0 ? deva / allLetters : 0;
+  const arabicRatio = allLetters > 0 ? arabic / allLetters : 0;
+  const cjkRatio = allLetters > 0 ? cjk / allLetters : 0;
   const total = bn + latin;
-  if (total === 0 && other === 0) {
-    return { language: 'unknown', confidence: 0, bnRatio: 0, latinRatio: 0, otherScriptRatio: 0 };
+  if (total === 0 && other === 0 && deva === 0 && arabic === 0 && cjk === 0) {
+    return { language: 'unknown', confidence: 0, bnRatio: 0, latinRatio: 0, otherScriptRatio: 0, devaRatio: 0, arabicRatio: 0, cjkRatio: 0 };
   }
   const bnRatio = total > 0 ? bn / total : 0;
   const latinRatio = total > 0 ? latin / total : 0;
-  if (otherScriptRatio >= 0.25) {
-    return { language: 'other-script', confidence: otherScriptRatio, bnRatio, latinRatio, otherScriptRatio };
+  // C-ব্যাচ (PART C): স্বীকৃত-অনুরোধের প্রসঙ্গে নিজ-লিপি-পরিবার চেনা হয় —
+  // কোনো-প্রসঙ্গ-কলে (ট্রান্সক্রিপ্ট-যাচাই) পুরনো চুক্তি অপরিবর্তিত থাকে
+  // (bn/en-অনুরোধে চীনা/দেবনাগরী/আরবি = 'other-script' রায় আগের মতোই)।
+  const rec = opts?.recognize ?? [];
+  if (rec.includes('hi') && devaRatio >= 0.5) {
+    return { language: 'hi', confidence: devaRatio, bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
   }
-  if (bnRatio >= 0.7) return { language: 'bn', confidence: bnRatio, bnRatio, latinRatio, otherScriptRatio };
-  if (latinRatio >= 0.7) return { language: 'en', confidence: latinRatio, bnRatio, latinRatio, otherScriptRatio };
+  if (rec.includes('ur') && arabicRatio >= 0.5) {
+    return { language: 'ar-script', confidence: arabicRatio, bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
+  }
+  if (rec.includes('zh') && cjkRatio >= 0.5) {
+    return { language: 'zh', confidence: cjkRatio, bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
+  }
+  if (otherScriptRatio >= 0.25) {
+    return { language: 'other-script', confidence: otherScriptRatio, bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
+  }
+  if (bnRatio >= 0.7) return { language: 'bn', confidence: bnRatio, bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
+  if (latinRatio >= 0.7) return { language: 'en', confidence: latinRatio, bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
   if (total === 0) {
     // ২৫%-এর কম অন্য-লিপি কিন্তু বাংলা/লাতিন একেবারেই নেই — এটিও অন্য-লিপি
-    return { language: 'other-script', confidence: otherScriptRatio, bnRatio: 0, latinRatio: 0, otherScriptRatio };
+    return { language: 'other-script', confidence: otherScriptRatio, bnRatio: 0, latinRatio: 0, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
   }
-  return { language: 'mixed', confidence: Math.max(bnRatio, latinRatio), bnRatio, latinRatio, otherScriptRatio };
+  return { language: 'mixed', confidence: Math.max(bnRatio, latinRatio), bnRatio, latinRatio, otherScriptRatio, devaRatio, arabicRatio, cjkRatio };
 }
 
 /** আনুমানিক কথার দৈর্ঘ্য (সেকেন্ডে) — দৈর্ঘ্য-স্বাস্থ্য যাচাইয়ের ভিত্তি */
 export function estimateSpeechSec(text: string, language: SpeechLanguage): number {
-  const words = (text ?? '').trim().split(/\s+/).filter(Boolean).length;
-  const wps = language === 'bn' ? 2.0 : 2.5; // বাংলা কিছুটা ধীরে পড়া হয়
+  const t = (text ?? '').trim();
+  if (language === 'zh') {
+    // চীনা: শব্দ-বিভাজন নেই — অক্ষর-ভিত্তিক গতি (≈৪.৩ অক্ষর/সে. ম্যান্ডারিন পাঠ)
+    const chars = (t.match(/[\u4E00-\u9FFF\u3400-\u4DBF]/g) ?? []).length || t.length;
+    return Math.max(0.8, chars / 4.3);
+  }
+  const words = t.split(/\s+/).filter(Boolean).length;
+  // bn/hi/ur কিছুটা ধীরে পড়া হয়; en দ্রুত
+  const wps = language === 'bn' ? 2.0 : language === 'hi' || language === 'ur' ? 2.1 : 2.5;
   return Math.max(0.8, words / wps);
 }
 
@@ -272,10 +420,13 @@ export function assignCharacterVoices(
   language: SpeechLanguage,
   locale?: SpeechLocale
 ): Record<string, SpeechVoice> {
-  const neural = (
-    language === 'bn'
+  // PART C: প্রোফাইল-চালিত সাধারণায়ন — প্রতিটি ভাষার নিজ Edge-নিউরাল
+  // কণ্ঠগুলোই বণ্টনে যায় (bn/en-এর তালিকা হুবহু আগের মতোই থাকে)
+  const neural = (language === 'bn' || language === 'en'
+    ? language === 'bn'
       ? ['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural']
       : ['en-US-AriaNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural', 'en-GB-RyanNeural']
+    : LANGUAGE_PROFILES[language].voices.filter(v => isEdgeVoice(v))
   ) as SpeechVoice[];
   if (locale) {
     const score = (v: string) => (voiceCapabilityOf(v)?.locale === locale ? 1 : 0);
@@ -335,10 +486,12 @@ export function transcriptSimilarity(script: string, transcript: string, languag
   return allChars > 0 ? bnChars / allChars : 0;
 }
 
-/** ট্রান্সক্রিপ্ট থেকে শনাক্ত ভাষা (B-F04: 'other-script' শ্রেণিসহ) */
+/** ট্রান্সক্রিপ্ট থেকে শনাক্ত ভাষা (B-F04: 'other-script' শ্রেণিসহ)।
+ * 'ar-script' টাইপে আছে কারণ detectLanguage-এর প্রসঙ্গ-কল recognize-চালিত —
+ * ট্রান্সক্রিপ্ট-পথ (প্রসঙ্নহীন) কখনো সেটি দেয় না, তবে টাইপ সৎ। */
 export function detectTranscriptLanguage(
   transcript: string
-): SpeechLanguage | 'mixed' | 'unknown' | 'silence' | 'other-script' {
+): SpeechLanguage | 'ar-script' | 'mixed' | 'unknown' | 'silence' | 'other-script' {
   if (!transcript?.trim()) return 'silence';
   return detectLanguage(transcript).language;
 }
@@ -421,9 +574,15 @@ export interface SpeechVerification {
   expectedSec: number;
   durationOk: boolean;
   peakDb?: number;
+  /** RMS (dBFS) — D-2 নীরবতা/শান্ত-অডিও যাচাইয়ের ভিত্তি */
+  rmsDb?: number;
+  /** মোট স্থানজুড়ে নীরবতার অংশ (0–1) — D-2 */
+  silenceCoverage?: number;
   silenceRanges: { start: number; end: number }[];
   /** pass = যন্ত্র-যাচাইকৃত ঠিক; warn = সম্ভাব্য কিন্তু মানব-শ্রবণ দরকার; fail = ব্যর্থ */
   verdict: 'pass' | 'warn' | 'fail';
+  /** রায় fail হলে টাইপড কাঠামোবদ্ধ কারণ (B2) — undefined = ব্যর্থ নয় */
+  failureCode?: SpeechFailureCode;
   notes: string[];
 }
 
@@ -483,6 +642,18 @@ export async function verifySpeechBuffer(
   const durationOk = durationSec >= expectedSec * 0.4 && durationSec <= expectedSec * 2.6;
   const silenceRanges = quality?.silenceRanges ?? [];
 
+  // ---- D-2 (B2): স্তর-বিভাজিত অডিও-যাচাইয়ের নতুন গেটগুলো ----
+  // ক্যালিব্রেশন-প্রমাণ (ffmpeg 7.1.5, 2026-10-17): বিশুদ্ধ ডিজিটাল-নীরবতা →
+  // RMS/peak −inf + silencedetect(-45dB) পুরো ফাইল জুড়ে; ffmpeg-sine →
+  // peak −১৮dB / RMS −২১dB। শান্ত-কিন্তু-বৈধ কথা (RMS −৪০dB-ওয়ালা ফিসফিস)
+  // প্রত্যাখ্যান করা হয় না — কেবল সতর্কতা-নোট (নিচে)।
+  const silenceCoveredSec = silenceRanges.reduce((s, r) => s + (r.end - r.start), 0);
+  const silenceCoverage = durationSec > 0 ? Math.min(1, silenceCoveredSec / durationSec) : 1;
+  const rmsDb = quality?.rmsDb;
+  // নীরবতা-রায়: RMS −৫০dB-এর নিচে (বা −∞) = কথা নেই; অথবা স্থায়িত্বের ≥৯০% নীরব
+  const audioEffectivelySilent =
+    rmsDb === -Infinity || (typeof rmsDb === 'number' && rmsDb < -50) || silenceCoverage >= 0.9;
+
   // ASR ব্যাক-চেক — কেবল যেখানে অর্থবহ: ইংরেজিতে ASR নির্ভরযোগ্য।
   // বাংলায় ASR বোঝেই না — Edge-নিউরাল বাংলা কণ্ঠ এমনিতেই বাংলা-প্রশিক্ষিত,
   // তাই বাংলা+Edge হলে ASR-কল বাদ (দ্রুততা + খরচ), দৈর্ঘ্য-যাচাইই রায়।
@@ -504,35 +675,63 @@ export async function verifySpeechBuffer(
   // সবসময় প্রাধান্য পায় — দৈর্ঘ্য-সতর্কতা যেন সেটিকে ঢেকে "warn" বানাতে না
   // পারে (২০২৬-১০-১৬-এর প্রকৃত রানে চীনা-আবর্জনা ট্রান্সক্রিপ্ট দৈর্ঘ্য-ঠিক
   // থাকায় "warn" হয়ে মিশে গিয়েছিল)।
+  let failureCode: SpeechFailureCode | undefined;
+  const failWith = (code: SpeechFailureCode, note: string): 'fail' => {
+    if (!failureCode) failureCode = code;
+    notes.push(note);
+    return 'fail';
+  };
   let verdict: SpeechVerification['verdict'];
-  if (buffer.length === 0 || durationSec < Math.max(0.6, expectedSec * 0.35)) {
-    verdict = 'fail';
-    notes.push('অডিওর দৈর্ঘ্য প্রত্যাশার চেয়ে অনেক কম — স্ক্রিপ্ট সম্পূর্ণ পড়া হয়নি।');
+  if (quality === null) {
+    // D-2/B2-স্তর ১: ফাইল অস্তিত্ব/পার্সযোগ্যতা — ffprobe/astats নিজেই
+    // ব্যর্থ = ভাঙা/করাপ্ট অডিও (আগে এটি ব্যাখ্যাহীন "দৈর্ঘ্য-কম" ফেল হতো)
+    verdict = failWith(
+      'INVALID_AUDIO',
+      'অডিও-ফাইল পার্স/ডিকোড করা যায়নি — সম্ভবত ভাঙা বা করাপ্ট ফাইল (INVALID_AUDIO)।'
+    );
+  } else if (buffer.length === 0 || durationSec < Math.max(0.6, expectedSec * 0.35)) {
+    verdict = failWith(
+      'INVALID_AUDIO',
+      'অডিওর দৈর্ঘ্য প্রত্যাশার চেয়ে অনেক কম — স্ক্রিপ্ট সম্পূর্ণ পড়া হয়নি।'
+    );
+  } else if (audioEffectivelySilent) {
+    // D-2/B2-স্তর ৫: নীরবতা-শনাক্তকরণ — যুক্তিসংগত দৈর্ঘ্যের নীরব অডিও
+    // আর "pass" হতে পারে না (পুরনো REG-1h এই গর্তটিই লক করেছিল —
+    // 2.0s বিশুদ্ধ-নীরবতা "pass" হতো)।
+    verdict = failWith(
+      'SILENCE_DETECTED',
+      `অডিও কার্যত সম্পূর্ণ নীরব (নীরবতা-আবরণ ${Math.round(silenceCoverage * 100)}%, RMS ${
+        rmsDb === -Infinity || rmsDb == null ? '−∞' : `${Math.round(rmsDb)}dB`
+      }) — স্পষ্ট কথা নেই (SILENCE_DETECTED)।`
+    );
   } else if (asrUseful && !asrError) {
     // ট্রান্সক্রিপ্ট-ভিত্তিক কঠোর-ব্যর্থতা — bn ও en উভয় ক্ষেত্রেই প্রযোজ্য
     verdict = 'warn'; // নিচের কোনো শর্ত ধরলে fail হয়ে যাবে
     if (detectedLanguage === 'other-script') {
       // §4.2/B-F04(ক): চীনা/অন্য লিপির আউটপুট = ভাষা-যাচাই ব্যর্থ (প্রকৃত রানের
       // "可真的，可真的，踢踢踢…" ট্রান্সক্রিপ্ট পুরোনো যাচাইকারীর চোখে "en" ছিল)
-      verdict = 'fail';
-      notes.push('ট্রান্সক্রিপ্টে বাংলা/ইংরেজি নয় এমন লিপি (যেমন চীনা অক্ষর) — কণ্ঠটি ভুল ভাষায় পড়েছে (§4.2)।');
+      verdict = failWith(
+        'LANGUAGE_MISMATCH',
+        'ট্রান্সক্রিপ্টে বাংলা/ইংরেজি নয় এমন লিপি (যেমন চীনা অক্ষর) — কণ্ঠটি ভুল ভাষায় পড়েছে (§4.2)।'
+      );
     }
     const repetition = detectTrivialRepetition(transcript);
     if (repetition.repeated) {
       // B-F04(খ): তুচ্ছ পুনরাবৃত্তি — ASR-আবর্জনা প্রায়ই একই টোকেন ঘোরায়
-      verdict = 'fail';
-      notes.push(
+      verdict = failWith(
+        'ASR_VERIFICATION_FAILED',
         `ট্রান্সক্রিপ্টে তুচ্ছ পুনরাবৃত্তি (শীর্ষ টোকেন "${repetition.topToken}" — টোকেনের ${Math.round(repetition.topRatio * 100)}%) — অর্থহীন সিলেবল ঘুরছে।`
       );
     }
     if (detectedLanguage === 'silence' || !transcript.trim()) {
       // §4.4-৪: খালি ট্রান্সক্রিপ্ট = স্পষ্ট কথাই নেই
-      verdict = 'fail';
-      notes.push('ASR কোনো কথা শনাক্ত করতে পারেনি — অডিওতে স্পষ্ট কথা নেই।');
+      verdict = failWith('ASR_VERIFICATION_FAILED', 'ASR কোনো কথা শনাক্ত করতে পারেনি — অডিওতে স্পষ্ট কথা নেই।');
     } else if (spec.language === 'bn' && similarity === 0) {
       // B-F04(গ): bn-রায়ে সাদৃশ্য-মান এখন ব্যবহৃত — শূন্য মিল = ব্যর্থ
-      verdict = 'fail';
-      notes.push('ট্রান্সক্রিপ্টের সাথে মূল স্ক্রিপ্টের কোনো মিল নেই (সাদৃশ্য ০) — সম্ভবত সঠিক বাংলা পাঠ হয়নি।');
+      verdict = failWith(
+        'ASR_VERIFICATION_FAILED',
+        'ট্রান্সক্রিপ্টের সাথে মূল স্ক্রিপ্টের কোনো মিল নেই (সাদৃশ্য ০) — সম্ভবত সঠিক বাংলা পাঠ হয়নি।'
+      );
     }
     if (verdict !== 'fail' && spec.language === 'bn') {
       // bn + ASR-পথে ঢুকলে কণ্ঠটি অবশ্যই z-ai (bn+Edge নকশা-অনুযায়ী ASR-কল বাদ) —
@@ -566,21 +765,28 @@ export async function verifySpeechBuffer(
         verdict = 'warn';
         notes.push(`ASR সাদৃশ্য মাঝারি (${Math.round(similarity * 100)}%) — প্রিভিউ শুনে নিশ্চিত করুন।`);
       } else {
-        verdict = 'fail';
-        notes.push('ASR ট্রান্সক্রিপ্ট মূল স্ক্রিপ্টের সাথে মিলছে না — সম্ভবত সঠিক ইংরেজি পাঠ হয়নি।');
+        verdict = failWith(
+          'ASR_VERIFICATION_FAILED',
+          'ASR ট্রান্সক্রিপ্ট মূল স্ক্রিপ্টের সাথে মিলছে না — সম্ভবত সঠিক ইংরেজি পাঠ হয়নি।'
+        );
       }
     }
   } else if (durationSec > expectedSec * 3) {
-    verdict = 'fail';
-    notes.push('অডিওর দৈর্ঘ্য অস্বাভাবিক দীর্ঘ — কণ্ঠটি স্ক্রিপ্ট সঠিকভাবে পড়তে পারেনি।');
+    verdict = failWith(
+      'INVALID_AUDIO',
+      'অডিওর দৈর্ঘ্য অস্বাভাবিক দীর্ঘ — কণ্ঠটি স্ক্রিপ্ট সঠিকভাবে পড়তে পারেনি।'
+    );
   } else if (!durationOk) {
     verdict = 'warn';
     notes.push('দৈর্ঘ্য প্রত্যাশার সীমার বাইরে — প্রিভিউ শুনে নিশ্চিত করুন।');
-  } else if (spec.language === 'bn' && edgeVoice) {
-    // বাংলা + Edge-নিউরাল: কণ্ঠই বাংলা-প্রশিক্ষিত — দৈর্ঘ্য-সুস্থ হলে রায় যাচাইকৃত
+  } else if (edgeVoice && spec.language !== 'en') {
+    // দেশীয়-ভাষা + Edge-নিউরাল (bn/hi/ur/zh): কণ্ই সেই ভাষায়-প্রশিক্ষিত —
+    // দৈর্ঘ্য+নীরবতা-সুস্থ হলে রায় যাচাইকৃত (D-2 গেট আগেই নীরবতা কাটিয়েছে)।
+    // bn-বার্তাটি হুবহু আগের মতোই থাকে (REG-1h-চুক্তি)।
     verdict = 'pass';
+    const langName = LANGUAGE_PROFILES[spec.language].name;
     notes.push(
-      `বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ (${voice}) — দেশীয় উচ্চারণ; দৈর্ঘ্য-যাচাই স্বাভাবিক (${durationSec.toFixed(1)} সে.)।`
+      `${langName}-প্রশিক্ষিত নিউরাল কণ্ঠ (${voice}) — দেশীয় উচ্চারণ; দৈর্ঘ্য-যাচাই স্বাভাবিক (${durationSec.toFixed(1)} সে.)।`
     );
   } else if (asrError) {
     verdict = 'warn';
@@ -607,6 +813,17 @@ export async function verifySpeechBuffer(
 
   if (quality?.peakDb != null && quality.peakDb > -0.1) {
     notes.push('সতর্কতা: অডিও পিক প্রায় ০ dB — সম্ভাব্য ক্লিপিং।');
+    // D-2/B2-স্তর ৬: ক্লিপিং — "pass" দাবি ক্লিপ-সন্দেহে সর্বোচ্চ "warn"
+    if (verdict === 'pass') {
+      verdict = 'warn';
+      notes.push('সম্ভাব্য ক্লিপিং-এর কারণে রায় "সতর্কতা"-য় নামানো হলো — প্রিভিউ শুনে নিশ্চিত করুন।');
+    }
+  }
+  // D-2/B2-স্তর ৫-খ: শান্ত-কিন্তু-বৈধ কথা — প্রত্যাখ্যান নয় (ক্যালিব্রেশন:
+  // নীরবতা < −৫০dB; শান্ত-ওয়ার্ন < −৩৮dB) — সৎ নোটসহ সতর্কতা-রায়
+  if (verdict === 'pass' && typeof rmsDb === 'number' && rmsDb > -Infinity && rmsDb < -38) {
+    verdict = 'warn';
+    notes.push(`অডিও খুব শান্ত (RMS ${Math.round(rmsDb)}dB) — স্পষ্ট কথা আছে তবে ভলিউম কম; প্রিভিউ শুনে নিশ্চিত করুন।`);
   }
   const longSilence = silenceRanges.find(r => r.end - r.start > 1.5);
   if (longSilence) {
@@ -628,23 +845,31 @@ export async function verifySpeechBuffer(
     expectedSec: Math.round(expectedSec * 10) / 10,
     durationOk,
     peakDb: quality?.peakDb,
+    rmsDb: rmsDb != null && rmsDb !== -Infinity && Number.isFinite(rmsDb) ? rmsDb : undefined,
+    silenceCoverage: Math.round(silenceCoverage * 100) / 100,
     silenceRanges,
     verdict,
+    failureCode: verdict === 'fail' ? failureCode : undefined,
     notes,
   };
 
   // B-F07: প্রতি-কণ্ঠ যাচাই-রেকর্ড — storage/voice-verification.json-এ
   // (best-effort; রেকর্ড-লেখা কখনো যাচাই-ফলাফলকে ব্যর্থ করবে না)
+  // D-1-নোট: টেস্ট-স্যুট bunfig-preload-এর মাধ্যমে এই পথ টেম্প-ডিরেক্টরিতে
+  // রাউট হয় — প্রকৃত ফাইল স্পর্শ হয় না।
   await recordVoiceVerification({
     voice,
     engine,
     language: spec.language,
     verdict,
+    failureCode: result.failureCode,
     transcript: transcript.slice(0, 200),
     similarity: result.similarity,
     detectedLanguage: String(detectedLanguage),
     durationSec: result.durationSec,
     expectedSec: result.expectedSec,
+    rmsDb: result.rmsDb,
+    silenceCoverage: result.silenceCoverage,
     note: notes[0]?.slice(0, 160),
   });
 
@@ -672,29 +897,68 @@ export async function synthesizeVerifiedSpeech(
   const verify = opts?.verify !== false;
 
   // ০. লোকেল-যাচাই (B-F10) — নীরব প্রতিস্থাপন নিষিদ্ধ: অসমর্থিত/ভাষা-বিরোধী
-  // লোকেল সৎভাবে প্রত্যাখ্যান করা হয়
+  // লোকেল সৎভাবে প্রত্যাখ্যান করা হয়। PART C: এখন ডেটা-চালিত — প্রোফাইলের
+  // কণ্ঠ-লোকেলগুলোই বৈধ-সেট (bn: bn-BD/bn-IN; hi: hi-IN; ur: ur-PK;
+  // zh: zh-CN/zh-HK/zh-TW; en-কণ্ঠে লোকেল-মাত্রা প্রযোজ্য নয়)।
   if (spec.locale !== undefined) {
-    const valid = spec.language === 'bn' && (spec.locale === 'bn-BD' || spec.locale === 'bn-IN');
-    if (!valid) {
+    const localeProfile = LANGUAGE_PROFILES[spec.language];
+    const validLocales = new Set(
+      Object.values(localeProfile.voiceCapabilities)
+        .map(c => c.locale)
+        .filter((l): l is string => !!l)
+    );
+    if (!validLocales.has(spec.locale)) {
       throw new SpeechSynthesisError(
         'UNSUPPORTED_LOCALE',
-        `অনুরোধকৃত লোকেল "${spec.locale}" সমর্থিত নয় — বাংলায় শুধু bn-BD / bn-IN লোকেল চালু (${spec.language === 'en' ? 'ইংরেজি অনুরোধে লোকেল-মাত্রা প্রযোজ্য নয়' : '§4.2: নীরব লোকেল-প্রতিস্থাপন নিষিদ্ধ'})।`
+        `অনুরোধকৃত লোকেল "${spec.locale}" সমর্থিত নয় — ${localeProfile.name} ভাষায় চালু লোকেল: ${[...validLocales].join(' / ')} (${spec.language === 'en' ? 'ইংরেজি অনুরোধে লোকেল-মাত্রা প্রযোজ্য নয়' : '§4.2: নীরব লোকেল-প্রতিস্থাপন নিষিদ্ধ'})।`
       );
     }
   }
 
-  // ১. স্ক্রিপ্টের ভাষা নির্বাচিত ভাষার সাথে মিল আছে কি না
-  const det = detectLanguage(spec.script);
+  // ১. স্ক্রিপ্টের ভাষা নির্বাচিত ভাষার সাথে মিল আছে কি না। PART C: অনুরোধকৃত
+  // ভাষার প্রসঙ্গে নিজ-লিপি-পরিবার চেনা হয় (recognize) — hi/ur/zh-এর
+  // লিপি প্রসঙ্গহীন কলে সংজ্ঞাগতভাবে 'other-script' থাকে।
+  const det = detectLanguage(spec.script, { recognize: [spec.language] });
   if (det.language === 'unknown') {
     throw new SpeechSynthesisError(
       'LANGUAGE_MISMATCH',
-      'স্ক্রিপ্টে বাংলা বা ইংরেজি কোনো অক্ষর পাওয়া যায়নি — ভাষা নির্ধারণ করা যাচ্ছে না।'
+      'স্ক্রিপ্টে কোনো পরিচিত অক্ষর পাওয়া যায়নি — ভাষা নির্ধারণ করা যাচ্ছে না।'
     );
   }
-  if (det.language !== 'mixed' && det.language !== 'other-script' && det.language !== spec.language) {
+  // D-3 (B3): অন্য লিপির টেক্সট (চীনা/দেবনাগরী/আরবি/…) বাধ্যতামূলক bn/en
+  // সেটিংসে আগে নীরবে ঢুকে যেত — এখন স্পষ্ট প্রত্যাখ্যান। mixed বৈধ
+  // (বাংলা-ইংরেজি মিশ্র লেখা), কিন্তু সম্পূর্ণ অন্য লিপি কখনো নয়।
+  if (det.language === 'other-script') {
     throw new SpeechSynthesisError(
       'LANGUAGE_MISMATCH',
-      `ভাষার অসামঞ্জস্য: স্ক্রিপ্টটি ${det.language === 'bn' ? 'বাংলা' : 'ইংরেজি'} লেখায়, কিন্তু নির্বাচিত ভাষা ${spec.language === 'bn' ? 'বাংলা' : 'ইংরেজি'}। সঠিক ভাষা বেছে নিন — ভুল ভাষায় পাঠ করলে অডিও বোঝা যাবে না (§২ নিয়ম)।`
+      `ভাষার অসামঞ্জস্য: স্ক্রিপ্টটি বাংলা বা ইংরেজি কোনোটিরও লিপিতে নয় (শনাক্ত: অন্য লিপি — যেমন চীনা/দেবনাগরী/আরবি), কিন্তু নির্বাচিত ভাষা ${
+        spec.language === 'bn' ? 'বাংলা' : 'ইংরেজি'
+      }। এই লিপির টেক্সট নির্বাচিত ভাষার কণ্ঠে পড়া যায় না — সঠিক ভাষা/লিপি নিশ্চিত করুন (§২ নিয়ম: নীরব ভাষা-বদল নিষিদ্ধ)।`
+    );
+  }
+  // (B3) লিপি-পরিবার ↔ ভাষার সামঞ্জস্য-মানচিত্র: উর্দুর লিপি-শ্রেণি
+  // 'ar-script' (পার্সো-আরবি লিপি থেকে ভাষা নিশ্চিত হওয়া যায় না — কেবল
+  // অনুরোধকৃত-ভাষার মেটাডেটার সাথে মিলিয়েই গ্রহণযোগ্য)। mixed কেবল bn/en-এ।
+  const SCRIPT_LANGUAGE: Record<SpeechLanguage, DetectedScriptLanguage> = {
+    bn: 'bn',
+    en: 'en',
+    hi: 'hi',
+    ur: 'ar-script',
+    zh: 'zh',
+  };
+  const DETECTED_LABEL: Record<string, string> = {
+    bn: 'বাংলা',
+    en: 'ইংরেজি',
+    hi: 'হিন্দি (দেবনাগরী)',
+    'ar-script': 'পার্সো-আরবি লিপি (উর্দু/আরবি)',
+    zh: 'চীনা',
+    mixed: 'মিশ্র বাংলা-ইংরেজি',
+  };
+  const mixedAllowed = spec.language === 'bn' || spec.language === 'en';
+  if (det.language !== SCRIPT_LANGUAGE[spec.language] && !(det.language === 'mixed' && mixedAllowed)) {
+    throw new SpeechSynthesisError(
+      'LANGUAGE_MISMATCH',
+      `ভাষার অসামঞ্জস্য: স্ক্রিপ্টটি ${DETECTED_LABEL[det.language] ?? det.language} লেখায়, কিন্তু নির্বাচিত ভাষা ${LANGUAGE_PROFILES[spec.language].name}। সঠিক ভাষা বেছে নিন — ভুল ভাষায় পাঠ করলে অডিও বোঝা যাবে না (§২ নিয়ম)।`
     );
   }
 
@@ -750,12 +1014,15 @@ export async function synthesizeVerifiedSpeech(
       speech = await cachedSynthesizeSpeech(speakScript, voice, spec.speed ?? 1);
     } catch (err) {
       // P0-BUG-01 fix #1: ইঞ্জিন-স্তরের ব্যর্থতা চেইন ভাঙে না — ইঞ্জিন অচল
-      // ঘোষিত, ব্যর্থতার সৎ বিবরণ জমা, পরের কণ্ঠ/ইঞ্জিনে এগোনো হয়
+      // ঘোষিত, ব্যর্থতার সৎ বিবরণ জমা, পরের কণ্ঠ/ইঞ্জিনে এগোনো হয়।
+      // C2: ব্যর্থতার টাইপড শ্রেণিও জমা থাকে (AUTH_FAILED/RATE_LIMITED/
+      // PROVIDER_TIMEOUT/NETWORK_ERROR — শ্রেণি-অনিশ্চিত হলে নোটে শুধু বার্তা)
+      const failureCode = classifyEngineFailure(err);
       deadEngines.add(engineOf(voice));
       engineFailures.push(
-        `${engineOf(voice) === 'edge' ? EDGE_TTS_LABEL : 'z-ai TTS'}: ${
-          err instanceof Error ? err.message : String(err)
-        }`.slice(0, 160)
+        `${engineOf(voice) === 'edge' ? EDGE_TTS_LABEL : 'z-ai TTS'}${
+          failureCode ? ` [${failureCode}]` : ''
+        }: ${err instanceof Error ? err.message : String(err)}`.slice(0, 160)
       );
       continue;
     }
@@ -838,6 +1105,21 @@ export async function synthesizeVerifiedSpeech(
         verification.notes.push(
           'ইঞ্জিন-ফলব্যাকের পরে পাওয়া ফল — রায় সর্বোচ্চ "সতর্কতা" (B-F05): প্রিভিউ শুনে নিশ্চিত করুন।'
         );
+        // রেকর্ড-consistency (D-1-অডিটের পার্শ্ব-অনুসন্ধান): রেকর্ড চূড়ান্ত
+        // (ক্যাপ-করা) রায় বহন করবে — রিটার্ন-মান আর সংরক্ষিত রেকর্ড আর
+        // কখনো স্ববিরোধী হবে না
+        await recordVoiceVerification({
+          voice,
+          engine: actualEngine,
+          language: spec.language,
+          verdict: 'warn',
+          transcript: verification.transcript.slice(0, 200),
+          similarity: verification.similarity,
+          detectedLanguage: String(verification.detectedLanguage),
+          durationSec: verification.durationSec,
+          expectedSec: verification.expectedSec,
+          note: 'ইঞ্জিন-ফলব্যাকের পরে রায় সর্বোচ্চ সতর্কতা (B-F05)',
+        }).catch(() => {});
       }
       return lastResult;
     }
@@ -856,7 +1138,10 @@ export async function synthesizeVerifiedSpeech(
         spec.language === 'bn'
           ? // §4.2-এর হুবহু বার্তা — ব্যবহারকারীকে সৎভাবে জানানো হয়
             `VOICE_UNAVAILABLE: No verified voice is available for the requested Bengali locale. (বাংলা-প্রশিক্ষিত কণ্ঠগুলো — Microsoft Edge-নিউরাল bn-BD/bn-IN — এই মুহূর্তে পৌঁছানো যাচ্ছে না${detail ? `: ${detail}` : ''}; z-ai কণ্ঠ বাংলা পড়তে পারে না বলে ভুল-ভাষার নীরব ফলব্যাক নিষিদ্ধ — §৪.২)`
-          : `VOICE_UNAVAILABLE: এই মুহূর্তে কোনো যাচাইকৃত ইংরেজি কণ্ঠই পৌঁছানো যাচ্ছে না — সব TTS ইঞ্জিন অচল${detail ? ` (${detail})` : ''}`,
+          : spec.language === 'en'
+            ? `VOICE_UNAVAILABLE: এই মুহূর্তে কোনো যাচাইকৃত ইংরেজি কণ্ঠই পৌঁছানো যাচ্ছে না — সব TTS ইঞ্জিন অচল${detail ? ` (${detail})` : ''}`
+            : // PART C: hi/ur/zh — সৎ বার্তা (কণ্ঠ ক্যাটালগে আছে, পৌঁছানো যাচ্ছে না)
+              `VOICE_UNAVAILABLE: ${LANGUAGE_PROFILES[spec.language].name} ভাষার কণ্ঠ (Microsoft Edge-নিউরাল) এই মুহূর্তে পৌঁছানো যাচ্ছে না${detail ? `: ${detail}` : ''}; z-ai কণ্ঠ এই ভাষায় সক্ষম-প্রমাণিত নয় বলে ভুল-ভাষার নীরব ফলব্যাক নিষিদ্ধ (§৪.২)। বিকল্প: সাবটাইটেল-কেবল মোড বা ভিন্ন ভাষায় অনুরোধ।`,
         { attempts }
       );
     }

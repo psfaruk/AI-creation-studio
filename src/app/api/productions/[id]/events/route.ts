@@ -172,11 +172,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       }, POLL_MS);
 
       const cleanup = () => {
-        if (closed) return;
-        closed = true;
+        // (MP4-F) টাইমার + bus-শ্রোতা সবসময় মুক্ত — natural-close পথেও
+        // (production_finished → closed=true হলে আগের প্রথম-লাইনের
+        // `if (closed) return` ঘড়ি/শ্রোতা চিরকাল ঝুলিয়ে রাখত: রেফ-হোল্ডিং
+        // ইন্টারভাল প্রসেস-প্রস্থান আটকাত ও bus-ম্যাপে মৃত শ্রোতা জমত)।
+        // তারের আচরণ অপরিবর্তিত — এগুলোর কলব্যাক/send এমনিতেই closed-দশায়
+        // নিঃশব্দ ছিল; এখন রেফারেন্সও ছাড়ে।
         clearInterval(pingTimer);
         clearInterval(pollTimer);
         unsubscribe();
+        if (closed) return;
+        closed = true;
         try {
           controller.close();
         } catch {

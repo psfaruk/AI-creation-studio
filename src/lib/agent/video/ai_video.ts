@@ -467,13 +467,187 @@ function noteCompletion(startedAtMs: number): void {
   s.nextAllowedAt = Math.max(s.nextAllowedAt, now + AI_VIDEO_LIMITS.postCompletionCooldownMs);
 }
 
-/** URL থেকে ভিডিও ডাউনলোড */
-export async function downloadVideo(url: string): Promise<Buffer> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`ভিডিও ডাউনলোড ব্যর্থ: HTTP ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+// ------------------------------------------------------------
+// ডাউনলোড-সীমাবদ্ধতা (D-4/B4) — প্রোভাইডার-ফেরানো URL-ও আন্বিশ্বাস্য:
+// স্কিম-যাচাই, টাইমআউট, সর্বোচ্চ-আকার-সীমা, কনটেন্ট-টাইপ-যাচাই ও
+// কেবল-পুনঃপ্রচেষ্টাযোগ্য-ত্রুটিতে সীমাবদ্ধ রিট্রাই।
+// ------------------------------------------------------------
+
+/** একটি ডাউনলোড-প্রচেষ্টার সর্বোচ্চ সময় */
+export const DOWNLOAD_TIMEOUT_MS = 120_000;
+/** ডাউনলোডের সর্বোচ্চ আকার (256 MiB — শট-ক্যাশের একই মাত্রার সীমা) */
+export const DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024;
+/** পুনঃপ্রচেষ্টার স্থির বিরতি (২টি রিট্রাই = মোট ৩ প্রচেষ্টা) */
+const DOWNLOAD_RETRY_DELAYS_MS = [500, 1000];
+
+/** D-4: ডাউনলোড-ত্রুটির টাইপড শ্রেণি — retryable-পতাকাসহ (অন্ধ রিট্রাই নয়) */
+export type ProviderDownloadErrorCode =
+  | 'INVALID_URL'
+  | 'DOWNLOAD_TOO_LARGE'
+  | 'INVALID_CONTENT_TYPE'
+  | 'DOWNLOAD_HTTP_ERROR'
+  | 'DOWNLOAD_TIMEOUT'
+  | 'DOWNLOAD_NETWORK';
+
+/** টাইপড ডাউনলোড-ত্রুটি (কোড + পুনঃপ্রচেষ্টাযোগ্যতা + HTTP-স্ট্যাটাস) */
+export class ProviderDownloadError extends Error {
+  readonly code: ProviderDownloadErrorCode;
+  readonly retryable: boolean;
+  readonly status?: number;
+  constructor(code: ProviderDownloadErrorCode, message: string, opts?: { retryable?: boolean; status?: number }) {
+    super(message);
+    this.name = 'ProviderDownloadError';
+    this.code = code;
+    this.retryable = opts?.retryable === true;
+    this.status = opts?.status;
+  }
+}
+
+/**
+ * ডাউনলোড-URL-এর স্কিম-যাচাই। কেবল `https:` (উৎপাদন) ও `mock:`
+ * (হার্নেস-স্কিম — ৫টি রিগ্রেশন-টেস্ট এই পথ দিয়েই ডাউনলোড-মক চালায়)
+ * অনুমোদিত; `http:`/`file:`/`data:` ইত্যাদি ও URL-এ এমবেডেড
+ * ক্রেডেনশিয়াল (userinfo) সোজা প্রত্যাখ্যান। উৎপাদনে প্রোভাইডার
+ * `mock://` ফেরালে প্রকৃত fetch-ই সেটি সৎভাবে ব্যর্থ করে।
+ */
+export function assertProviderDownloadUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new ProviderDownloadError('INVALID_URL', 'ভিডিও ডাউনলোড ব্যর্থ: URL-এর গঠন পার্স করা যায়নি');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'mock:') {
+    throw new ProviderDownloadError(
+      'INVALID_URL',
+      `ভিডিও ডাউনলোড ব্যর্থ: অননুমোদিত URL-স্কিম (${parsed.protocol} — কেবল https: গ্রহণযোগ্য)`
+    );
+  }
+  if (parsed.username || parsed.password) {
+    throw new ProviderDownloadError(
+      'INVALID_URL',
+      'ভিডিও ডাউনলোড ব্যর্থ: URL-এ এমবেডেড ক্রেডেনশিয়াল (userinfo) থাকতে পারে না'
+    );
+  }
+}
+
+/** কনটেন্ট-টাইপ গ্রহণযোগ্য কি না — ভিডিও বা অ-নামবিশিষ্ট বাইনারি */
+function isAcceptableDownloadContentType(contentType: string): boolean {
+  const ct = contentType.trim().toLowerCase();
+  return ct.startsWith('video/') || ct === 'application/octet-stream' || ct === 'binary/octet-stream';
+}
+
+/** বডি স্ট্রিমিংযোগ্য হলে চাঙ্ক-ধরে-সীমা-যাচাই করে পড়া; নইলে arrayBuffer-ফলব্যাক */
+async function readBodyCapped(res: Response, maxBytes: number): Promise<Buffer> {
+  const body: unknown = (res as { body?: unknown }).body;
+  if (body && typeof (body as ReadableStream<Uint8Array>).getReader === 'function') {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          // সীমা ছাড়ালেই বাতিল — পুরো ফাইল নামানো হয় না
+          throw new ProviderDownloadError(
+            'DOWNLOAD_TOO_LARGE',
+            `ভিডিও ডাউনলোড ব্যর্থ: স্ট্রিম সীমার চেয়ে বড় (${total} > ${maxBytes} বাইট — মাঝপথে বাতিল)`
+          );
+        }
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined); // সংযোগ-বন্ধ (সফল/ব্যর্থ উভয় ক্ষেত্রেই)
+    }
+    return Buffer.concat(chunks.map(c => Buffer.from(c)));
+  }
+  // ফলব্যাক: বডি-স্ট্রিম নেই (কিছু টেস্ট-মক সাধারণ অবজেক্ট ফেরায়) — এক-টাকায় সীমা-যাচাই
+  const ab = await res.arrayBuffer();
+  if (ab.byteLength > maxBytes) {
+    throw new ProviderDownloadError(
+      'DOWNLOAD_TOO_LARGE',
+      `ভিডিও ডাউনলোড ব্যর্থ: ফাইল সীমার চেয়ে বড় (${ab.byteLength} > ${maxBytes} বাইট)`
+    );
+  }
+  return Buffer.from(ab);
+}
+
+/** একটি ডাউনলোড-প্রচেষ্টা (টাইমআউট + সীমা + কনটেন্ট-টাইপ-যাচাইসহ) */
+async function downloadVideoAttempt(url: string, maxBytes: number, timeoutMs: number): Promise<Buffer> {
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err: any) {
+    const name = String(err?.name ?? '');
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new ProviderDownloadError(
+        'DOWNLOAD_TIMEOUT',
+        `ভিডিও ডাউনলোড সময়সীমা অতিক্রম (${Math.round(timeoutMs / 1000)} সে.)`,
+        { retryable: true }
+      );
+    }
+    // fetch-স্তরের নেটওয়ার্ক-ত্রুটি (ক্যানোনিকালি TypeError; কিছু রানটাইম সাধারণ Error-ও দেয়)
+    throw new ProviderDownloadError(
+      'DOWNLOAD_NETWORK',
+      `ভিডিও ডাউনলোড নেটওয়ার্ক-ত্রুটি: ${String(err?.message ?? err).slice(0, 160)}`,
+      { retryable: true }
+    );
+  }
+  if (!res.ok) {
+    const status = res.status;
+    // কেবল স্পষ্ট-ক্ষণস্থায়ী HTTP-ত্রুটিই পুনঃপ্রচেষ্টাযোগ্য (5xx/408/429)
+    const retryable = status >= 500 || status === 408 || status === 429;
+    throw new ProviderDownloadError('DOWNLOAD_HTTP_ERROR', `ভিডিও ডাউনলোড ব্যর্থ: HTTP ${status}`, {
+      retryable,
+      status,
+    });
+  }
+  // কনটেন্ট-টাইপ ভুল হলে বডি নামানোর আগেই প্রত্যাখ্যান (text/html ডাউনলোড করে লাভ নেই)
+  const contentType = res.headers.get('content-type');
+  if (contentType && !isAcceptableDownloadContentType(contentType)) {
+    throw new ProviderDownloadError(
+      'INVALID_CONTENT_TYPE',
+      `ভিডিও ডাউনলোড ব্যর্থ: ভিডিও-নয় এমন কনটেন্ট-টাইপ (${contentType})`
+    );
+  }
+  // ঘোষিত content-length সীমার চেয়ে বড় হলে একবাইটও নামানো হয় না
+  const declaredLength = Number(res.headers.get('content-length') ?? Number.NaN);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new ProviderDownloadError(
+      'DOWNLOAD_TOO_LARGE',
+      `ভিডিও ডাউনলোড ব্যর্থ: ঘোষিত আকার সীমার চেয়ে বড় (${declaredLength} > ${maxBytes} বাইট)`
+    );
+  }
+  const buf = await readBodyCapped(res, maxBytes);
   if (buf.length < 50_000) throw new Error(`ভিডিও-ফাইল অস্বাভাবিক ছোট (${buf.length} বাইট)`);
   return buf;
+}
+
+/** URL থেকে ভিডিও ডাউনলোড (সীমাবদ্ধ: স্কিম/সময়/আকার/কনটেন্ট-টাইপ; কেবল
+ *  পুনঃপ্রচেষ্টাযোগ্য ত্রুটিতে সর্বোচ্চ ২টি রিট্রাই — ডুপ্লিকেট-বিলিং নয়) */
+export async function downloadVideo(url: string, opts?: { maxBytes?: number; timeoutMs?: number }): Promise<Buffer> {
+  assertProviderDownloadUrl(url);
+  const maxBytes = opts?.maxBytes ?? DOWNLOAD_MAX_BYTES;
+  const timeoutMs = opts?.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
+  let lastError: ProviderDownloadError | undefined;
+  for (let attempt = 0; attempt <= DOWNLOAD_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await downloadVideoAttempt(url, maxBytes, timeoutMs);
+    } catch (err) {
+      if (!(err instanceof ProviderDownloadError) || !err.retryable) throw err;
+      lastError = err;
+      if (attempt < DOWNLOAD_RETRY_DELAYS_MS.length) await sleep(DOWNLOAD_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw (
+    lastError ??
+    new ProviderDownloadError('DOWNLOAD_NETWORK', 'ভিডিও ডাউনলোড ব্যর্থ (অজানা নেটওয়ার্ক-ত্রুটি)', {
+      retryable: true,
+    })
+  );
 }
 
 /** বাফারের প্রযুক্তি-যাচাই (§১১ স্তর A) — অডিও-স্ট্রিমের প্রতিবেদনসহ */

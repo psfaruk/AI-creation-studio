@@ -28,6 +28,7 @@ import { describe, expect, test, mock, beforeEach, afterAll } from 'bun:test';
 import path from 'path';
 import { mkdir } from 'fs/promises';
 import { encodeWav } from '@/lib/agent/audio/pcm';
+import { toneWavOfSeconds } from '../helpers/speech-wav';
 
 let submitCount = 0;
 const submittedBodies: Record<string, unknown>[] = [];
@@ -57,6 +58,13 @@ function wavOfSeconds(sec: number): Buffer {
   const n = Math.round(sec * sr);
   return encodeWav(new Float32Array(n), new Float32Array(n), sr);
 }
+
+/**
+ * D-2: সুস্থ-পথের ফিক্সচার এখন অ-নীরব টোন (RMS ≈ −১৩.৫dB) —
+ * যাচাইকারী নীরবতা প্রত্যাখ্যান করে বলে বিশুদ্ধ-নীরব WAV আর
+ * "duration-healthy" হতে পারে না। tinyWav (০.০৫সে.) নীরবই থাকতে পারে —
+ * সেটি দৈর্ঘ্য-গেটেই ব্যর্থ হয়।
+ */
 
 mock.module('@/lib/agent/llm', () => ({
   getZAI: async () => ({
@@ -249,9 +257,9 @@ afterAll(async () => {
   const dir = await freshDir('reg21-fixture');
   fixtureMp4 = await buildFixtureMp4(dir, 'clip.mp4');
   fixturePng = await buildPng(dir, 'frame.png');
-  okWav = wavOfSeconds(1.2);
+  okWav = toneWavOfSeconds(1.2);
   tinyWav = wavOfSeconds(0.05);
-  longWav = wavOfSeconds(11);
+  longWav = toneWavOfSeconds(11);
   AI_VIDEO_LIMITS.pollIntervalMs = 250;
   AI_VIDEO_LIMITS.postCompletionCooldownMs = 0;
 }

@@ -143,6 +143,13 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
       throw new Error('স্ক্রিপ্ট থেকে উচ্চারণযোগ্য কোনো অংশ পাওয়া যায়নি।');
     }
     // §২ — লেখার অক্ষর-অনুপাত থেকে ভাষা শনাক্তকরণ; অসামঞ্জস্যে স্পষ্ট ব্যাখ্যা
+    const SPEECH_LANGUAGE_LABEL: Record<string, string> = {
+      bn: 'বাংলা',
+      en: 'ইংরেজি',
+      hi: 'হিন্দি',
+      ur: 'উর্দু',
+      zh: 'চীনা',
+    };
     const det = detectLanguage(text);
     let language: SpeechLanguage = ctx.spec.language ?? 'bn';
     const notes: string[] = [];
@@ -153,6 +160,23 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
       notes.push(
         `ভাষা-শনাক্তকরণ: লেখায় বাংলা/লাতিন বাদে অন্য লিপির অক্ষর (${toBn(Math.round((det.otherScriptRatio ?? 0) * 100))}%) রয়েছে — নির্বাচিত ভাষাতেই (${language === 'bn' ? 'বাংলা' : 'ইংরেজি'}) চেষ্টা হবে; ভাষা-নিয়ন্ত্রক অসমঞ্জস্য ধরলে সৎভাবে থামবে।`
       );
+    } else if (det.language === 'hi' || det.language === 'zh') {
+      // PART C: হিন্দি/চীনা লিপি স্বীকৃত — নির্বাচিত ভাষা যদি অন্য হয় তবে
+      // শনাক্ত ভাষাতেই সৎ ব্যাখ্যাসহ যাওয়া হয় (নীরব বদল নয়)
+      if (det.language !== language) {
+        notes.push(
+          `ভাষা-শনাক্তকরণ: স্ক্রিপ্টটি ${det.language === 'hi' ? 'হিন্দি (দেবনাগরী)' : 'চীনা'} লেখায় ধরা পড়েছে — শনাক্ত ভাষাতেই তৈরি করা হলো (ভুল ভাষায় পড়লে অডিও বোঝা যেত না)।`
+        );
+        language = det.language;
+      }
+    } else if (det.language === 'ar-script') {
+      // পার্সো-আরবি লিপি — উর্দু বনাম অন্য আরবি-লিপির ভাষা লিপি দেখে নির্ধারণ
+      // করা যায় না (B3) — নির্বাচিত ভাষাই বহাল; নিয়ন্ত্রক অসামঞ্জস্য ধরলে থামবে
+      if (language !== 'ur') {
+        notes.push(
+          'ভাষা-শনাক্তকরণ: লেখায় পার্সো-আরবি লিপির অক্ষর রয়েছে — লিপি থেকে উর্দু/অন্য আরবি-লিপির ভাষা আলাদা করা যায় না; নির্বাচিত ভাষাতেই চেষ্টা হবে এবং ভাষা-নিয়ন্ত্রক অসামঞ্জস্য ধরলে সৎভাবে থামবে।'
+        );
+      }
     } else if (det.language !== 'unknown' && det.language !== 'mixed' && det.language !== language) {
       const detectedLabel =
         det.language === 'bn'
@@ -173,7 +197,7 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
       );
     }
     await step.setDetail(
-      `স্ক্রিপ্ট ${toBn(text.length)} অক্ষর → ${toBn(parts.length)}টি অংশ · ভাষা: ${language === 'bn' ? 'বাংলা' : 'ইংরেজি'} · কণ্ঠ: ${voice}${notes.length ? ` · ${notes[0].slice(0, 80)}…` : ''}`
+      `স্ক্রিপ্ট ${toBn(text.length)} অক্ষর → ${toBn(parts.length)}টি অংশ · ভাষা: ${SPEECH_LANGUAGE_LABEL[language] ?? language} · কণ্ঠ: ${voice}${notes.length ? ` · ${notes[0].slice(0, 80)}…` : ''}`
     );
     return { parts, language, voice, notes };
   });

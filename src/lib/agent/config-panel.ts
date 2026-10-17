@@ -96,7 +96,13 @@ export interface ConfigPanelSchema {
 // শেয়ার্ড লেবেল-ম্যাপ (production-card-এর সাথে সামঞ্জস্যপূর্ণ পাঠ)
 // ------------------------------------------------------------
 
-const LANGUAGE_LABELS: Record<SpeechLanguage, string> = { bn: 'বাংলা', en: 'ইংরেজি' };
+const LANGUAGE_LABELS: Record<SpeechLanguage, string> = {
+  bn: 'বাংলা',
+  en: 'ইংরেজি',
+  hi: 'হিন্দি',
+  ur: 'উর্দু',
+  zh: 'চীনা',
+};
 const ASPECT_LABELS: Record<AspectRatio, string> = {
   '9:16': '৯:১৬ — ভার্টিকাল (Shorts/Reels)',
   '16:9': '১৬:৯ — ল্যান্ডস্কেপ (YouTube)',

@@ -148,6 +148,10 @@ model Production {
   parent              Production?     @relation("Revisions", fields: [parentProductionId], references: [id], onDelete: SetNull)
   revisions           Production[]    @relation("Revisions")
   createdAt           DateTime        @default(now())
+  // (D-8/B6) ব্যবহারকারীর নিশ্চিতকরণের মুহূর্ত — confirm রাউট লেখে।
+  // null = ঐতিহাসিক সারি (কলাম-যোগের আগে) বা অ-নিশ্চিত — মেট্রিকসে
+  // সৎ-null (confirmationHoldMs=null), কখনো কাল্পনিক নয়।
+  confirmedAt         DateTime?
   startedAt           DateTime?
   finishedAt          DateTime?
   steps               ProductionStep[]

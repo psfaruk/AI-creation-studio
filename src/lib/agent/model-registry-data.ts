@@ -226,7 +226,7 @@ export const MODEL_SEED: SeedModelEntry[] = [
   {
     // B-F12 (R-FIX-1): bn-পথের প্রকৃত প্রাথমিক ইঞ্জিন এতদিন রেজিস্ট্রিতে অনুপস্থিত ছিল
     key: 'microsoft-edge-neural',
-    name: 'Microsoft Edge Neural TTS (bn-BD/bn-IN — বাংলা-প্রধান)',
+    name: 'Microsoft Edge Neural TTS (bn/hi/ur/zh — বাংলা-প্রধান)',
     category: 'audio',
     provider: 'WSS speech.platform.bing.com (edge_tts.ts অ্যাডাপ্টার)',
     license: 'Microsoft Edge পরিষেবা-শর্ত (প্রাতিষ্ঠানিক পথ — বাণিজ্যিক ব্যবহারে সীমাবদ্ধতা প্রযোজ্য হতে পারে)',
@@ -244,10 +244,17 @@ export const MODEL_SEED: SeedModelEntry[] = [
     tools: ['speech_synthesis', 'text_to_speech', 'audio পাইপলাইন (voiceover)', 'short_film সংলাপ/বর্ণনা-ধাপ'],
     capabilities: {
       task_type: 'speech',
-      voices: ['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural'],
+      voices: [
+        'bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural',
+        'hi-IN-SwaraNeural', 'hi-IN-MadhurNeural', 'ur-PK-UzmaNeural', 'ur-PK-AsadNeural',
+        'zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-HK-HiuMaanNeural', 'zh-TW-HsiaoChenNeural',
+      ],
       supported_languages: {
         bn: 'বাংলা-প্রশিক্ষিত (bn-BD/bn-IN) — Edge সক্রিয় কালে দৈর্ঘ্য-যাচাইসহ রায় "যাচাইকৃত"',
         en: 'en-US/en-GB নিউরাল কণ্ঠও আছে (en-চেইনে প্রাথমিক)',
+        hi: 'হিন্দি (hi-IN স্বরা/মধুর) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে UNVERIFIED (লাইভ-যাচাই হয়নি)',
+        ur: 'উর্দু (ur-PK উজমা/আসাদ) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে UNVERIFIED (লাইভ-যাচাই হয়নি)',
+        zh: 'চীনা (zh-CN সরলীকৃত, zh-HK ক্যান্টনিজ, zh-TW প্রথাগত) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে UNVERIFIED (লাইভ-যাচাই হয়নি)',
       },
       inputLimitChars: 1000,
       formats: ['wav'],

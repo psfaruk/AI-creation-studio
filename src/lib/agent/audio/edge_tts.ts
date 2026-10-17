@@ -44,7 +44,9 @@ export const EDGE_TTS_PROVIDER = 'microsoft-edge-neural';
 export interface EdgeVoiceInfo {
   id: string;
   labelBn: string;
-  language: 'bn' | 'en';
+  /** C-ব্যাচ (PART C): bn/en-এর পাশাপাশি hi/ur/zh — সবই প্রামাণ্যিক
+   *  মাইক্রোসফট-ক্যাটালগ কণ্ঠ; এই পরিবেশে hi/ur/zh এখনো লাইভ-যাচাই হয়নি */
+  language: 'bn' | 'en' | 'hi' | 'ur' | 'zh';
   gender: 'female' | 'male';
   locale: string;
   noteBn: string;
@@ -115,6 +117,70 @@ export const EDGE_VOICES: EdgeVoiceInfo[] = [
     locale: 'en-GB',
     noteBn: 'ব্রিটিশ ইংরেজি নিউরাল কণ্ঠ (পুরুষ)',
   },
+  {
+    id: 'hi-IN-SwaraNeural',
+    labelBn: 'স্বরা (হিন্দি, ভারত)',
+    language: 'hi',
+    gender: 'female',
+    locale: 'hi-IN',
+    noteBn: 'হিন্দি-প্রশিক্ষিত নিউরাল কণ্ঠ (নারী) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'hi-IN-MadhurNeural',
+    labelBn: 'মধুর (হিন্দি, ভারত)',
+    language: 'hi',
+    gender: 'male',
+    locale: 'hi-IN',
+    noteBn: 'হিন্দি-প্রশিক্ষিত নিউরাল কণ্ঠ (পুরুষ) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'ur-PK-UzmaNeural',
+    labelBn: 'উজমা (উর্দু, পাকিস্তান)',
+    language: 'ur',
+    gender: 'female',
+    locale: 'ur-PK',
+    noteBn: 'উর্দু-প্রশিক্ষিত নিউরাল কণ্ঠ (নারী) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'ur-PK-AsadNeural',
+    labelBn: 'আসাদ (উর্দু, পাকিস্তান)',
+    language: 'ur',
+    gender: 'male',
+    locale: 'ur-PK',
+    noteBn: 'উর্দু-প্রশিক্ষিত নিউরাল কণ্ঠ (পুরুষ) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'zh-CN-XiaoxiaoNeural',
+    labelBn: 'শিয়াওশিয়াও (ম্যান্ডারিন সরলীকৃত, চীন)',
+    language: 'zh',
+    gender: 'female',
+    locale: 'zh-CN',
+    noteBn: 'সরলীকৃত-চীনা (zh-Hans) নিউরাল কণ্ঠ (নারী) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'zh-CN-YunxiNeural',
+    labelBn: 'ইউনশি (ম্যান্ডারিন সরলীকৃত, চীন)',
+    language: 'zh',
+    gender: 'male',
+    locale: 'zh-CN',
+    noteBn: 'সরলীকৃত-চীনা (zh-Hans) নিউরাল কণ্ঠ (পুরুষ) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'zh-HK-HiuMaanNeural',
+    labelBn: 'হিউমান (ক্যান্টনিজ, হংকং)',
+    language: 'zh',
+    gender: 'female',
+    locale: 'zh-HK',
+    noteBn: 'ক্যান্টনিজ (zh-HK) নিউরাল কণ্ঠ (নারী) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
+  {
+    id: 'zh-TW-HsiaoChenNeural',
+    labelBn: 'শিয়াওচেন (ম্যান্ডারিন প্রথাগত, তাইওয়ান)',
+    language: 'zh',
+    gender: 'female',
+    locale: 'zh-TW',
+    noteBn: 'প্রথাগত-চীনা (zh-Hant) নিউরাল কণ্ঠ (নারী) — ক্যাটালগ-নথিভুক্ত, এই পরিবেশে অপরীক্ষিত (UNVERIFIED)',
+  },
 ];
 
 export type EdgeVoiceId = (typeof EDGE_VOICES)[number]['id'];
@@ -127,7 +193,7 @@ export function isEdgeVoice(voice: string): voice is EdgeVoiceId {
 }
 
 /** ভাষা অনুযায়ী Edge-কণ্ঠের তালিকা */
-export function edgeVoicesFor(language: 'bn' | 'en'): EdgeVoiceInfo[] {
+export function edgeVoicesFor(language: 'bn' | 'en' | 'hi' | 'ur' | 'zh'): EdgeVoiceInfo[] {
   return EDGE_VOICES.filter(v => v.language === language);
 }
 
@@ -218,8 +284,9 @@ export function splitForEdge(text: string, limit = SEGMENT_CHAR_LIMIT): string[]
   if (t.length <= limit) return t ? [t] : [];
   const parts: string[] = [];
   let buf = '';
-  // বাক্য-সীমা: দাঁড়ি, ?, !, দাঁড়ি-বিন্দু, নতুন-লাইন
-  for (const piece of t.split(/(?<=[।!?\.])\s+/)) {
+  // বাক্য-সীমা: দাঁড়ি, ?, !, দাঁড়ি-বিন্দু, নতুন-লাইন +
+  // C-ব্যাচ (PART C): চীনা 。！？、 উর্দু/আরবি ۔؟ দেবনাগরী ॥
+  for (const piece of t.split(/(?<=[।!?\.。！？、۔؟॥])\s*/)) {
     if ((buf + ' ' + piece).trim().length > limit && buf) {
       parts.push(buf.trim());
       buf = piece;
@@ -431,11 +498,17 @@ export interface VoiceVerificationRecord {
   engine: 'edge' | 'zai';
   language: string;
   verdict: 'pass' | 'warn' | 'fail';
+  /** রায় fail হলে টাইপড কাঠামোবদ্ধ কারণ (B2/D-2) — পুরনো রেকর্ডে নেই (ঐচ্ছিক) */
+  failureCode?: string;
   transcript: string;
   similarity: number;
   detectedLanguage: string;
   durationSec: number;
   expectedSec: number;
+  /** RMS (dBFS) — সসীম মান এলেই জমা (−∞ JSON-এ লেখা যায় না) */
+  rmsDb?: number;
+  /** মোট স্থায়িত্বের নীরবতার অংশ (0–1) */
+  silenceCoverage?: number;
   note?: string;
   verifiedAt: string;
 }

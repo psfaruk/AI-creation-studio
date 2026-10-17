@@ -363,7 +363,7 @@ export function Composer() {
           <input
             ref={audioInputRef}
             type="file"
-            accept="audio/*"
+            accept="audio/wav,audio/mpeg,audio/ogg"
             multiple
             hidden
             aria-hidden="true"
@@ -375,7 +375,7 @@ export function Composer() {
           <input
             ref={videoInputRef}
             type="file"
-            accept="video/mp4,video/webm,video/quicktime,video/x-matroska,video/*"
+            accept="video/mp4,video/quicktime"
             multiple
             hidden
             aria-hidden="true"

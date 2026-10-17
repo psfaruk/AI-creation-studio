@@ -11,8 +11,9 @@
 //    transcript; no live ASR). Mock behavior is switched through
 //    mutable mode variables read at call time.
 //  - REAL (no mock): bn-text-normalizer, edge_tts (pure routing
-//    helpers; the best-effort voice-verification record may write to
-//    gitignored storage/ — tolerable, never fails the verdict),
+//    helpers; the best-effort voice-verification record is isolated
+//    to a temp dir via the suite preload — D-1: tests can NEVER
+//    mutate the real storage/voice-verification.json),
 //    pcm.encodeWav, and ffmpeg audioQuality on real temp WAV files.
 //  - No network calls of any kind.
 //
@@ -40,6 +41,7 @@
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
 import { encodeWav } from '@/lib/agent/audio/pcm';
 import { isEdgeVoice } from '@/lib/agent/audio/edge_tts';
+import { toneWavOfSeconds } from '../helpers/speech-wav';
 
 // ------------------------------------------------------------
 // Mock engine routing — installed BEFORE importing the module
@@ -57,7 +59,7 @@ const edgeCalls: MockCall[] = [];
 const zaiCalls: MockCall[] = [];
 
 /** Mock behavior switch for Edge voices (read at call time). */
-let edgeMode: 'throw403' | 'shortWav' | 'okWav' = 'throw403';
+let edgeMode: 'throw403' | 'shortWav' | 'okWav' | 'silentWav' = 'throw403';
 /** Mock behavior switch for z-ai voices (read at call time). */
 let zaiMode: 'ok' | 'throw' = 'ok';
 /** ASR transcript switch (read at call time) — bn sample / en echo. */
@@ -65,10 +67,14 @@ let asrMode: 'bnSample' | 'enEcho' = 'bnSample';
 
 /** 0.2s stereo silence — verifiable but far too short (verdict: fail) */
 let shortWav: Buffer;
-/** 1.6s stereo silence — z-ai duration-OK path (en scripts) */
+/** 1.6s non-silent tone (amp 0.3 → RMS ≈ −13.5dB) — z-ai duration-OK path (en scripts) */
 let okWav: Buffer;
-/** 2.0s stereo silence — Edge healthy path (bn scripts: 4.0s expected → window [1.6, 10.4]) */
+/** 2.0s non-silent tone — Edge healthy path (bn scripts: 4.0s expected → window [1.6, 10.4]).
+ *  D-2: আগে এটি বিশুদ্ধ নীরবতা ছিল — নীরবতা-গেট নেই বলেই "pass" হতো;
+ *  এখন অ-নীরব টোন (প্রকৃত কথা-সদৃশ শর্ত) এবং নীরবতা-প্রত্যাখ্যান REG-1j-এ লক। */
 let edgeOkWav: Buffer;
+/** 2.0s বিশুদ্ধ নীরবতা — D-2 নেতিবাচক ফিক্সচার (SILENCE_DETECTED) */
+let edgeSilentWav: Buffer;
 
 const EN_TEXT = 'This is a short English test line for synthesis.';
 
@@ -79,7 +85,6 @@ function wavOfSeconds(sec: number): Buffer {
   const R = new Float32Array(n);
   return encodeWav(L, R, sr);
 }
-
 mock.module('@/lib/agent/tts-cache', () => {
   return {
     // route by voice name, exactly like the real engine selector:
@@ -93,6 +98,11 @@ mock.module('@/lib/agent/tts-cache', () => {
         }
         if (edgeMode === 'shortWav') {
           return { buffer: shortWav, mimeType: 'audio/wav', ext: 'wav' };
+        }
+        if (edgeMode === 'silentWav') {
+          // D-2 নেতিবাচক ফিক্সচার: যুক্তিসংগত দৈর্ঘ্যের বিশুদ্ধ নীরবতা —
+          // পুরনো যাচাইকারী এটিকে "pass" করত (গর্তটি REG-1j লক করে)
+          return { buffer: edgeSilentWav, mimeType: 'audio/wav', ext: 'wav' };
         }
         return { buffer: edgeOkWav, mimeType: 'audio/wav', ext: 'wav' };
       }
@@ -121,6 +131,7 @@ mock.module('@/lib/agent/sdk-helpers', () => {
 // module under test — imported AFTER the mocks above
 const {
   synthesizeVerifiedSpeech,
+  verifySpeechBuffer,
   resolveVoice,
   detectLanguage,
   LANGUAGE_PROFILES,
@@ -150,8 +161,9 @@ const EN_SPEC = {
 
 beforeEach(() => {
   shortWav = wavOfSeconds(0.2);
-  okWav = wavOfSeconds(1.6);
-  edgeOkWav = wavOfSeconds(2.0);
+  okWav = toneWavOfSeconds(1.6);
+  edgeOkWav = toneWavOfSeconds(2.0);
+  edgeSilentWav = wavOfSeconds(2.0);
   edgeCalls.length = 0;
   zaiCalls.length = 0;
   edgeMode = 'throw403';
@@ -334,6 +346,66 @@ describe('REG-1: Bengali TTS fallback when Edge returns 403 (R-FIX-1 contract)',
       expect(result.verification.verdict).toBe('warn');
       expect(result.verification.notes.some((n) => n.includes('ইঞ্জিন-ফলব্যাক'))).toBe(true);
       expect(result.verification.notes.some((n) => n.includes('সর্বোচ্চ'))).toBe(true);
+    },
+    20_000
+  );
+
+  test(
+    'REG-1j [NEW — D-2/B2]: plausible-duration SILENT audio can NEVER pass — every chain candidate fails SILENCE_DETECTED ⇒ typed VERIFICATION_FAILED',
+    async () => {
+      // পুরনো গর্ত (D-2): 2.0s বিশুদ্ধ-নীরবতা বাংলা+Edge পথে "pass" হতো —
+      // দৈর্ঘ্যই যথেষ্ট ছিল, নীরবতা-গেট ছিল না। এখন নীরবতা-গেট প্রতিটি
+      // প্রার্থীকে fail করে (SILENCE_DETECTED) এবং চেইন-ক্ষয় typed
+      // VERIFICATION_FAILED-এ শেষ হয় — lastVerification-এ কাঠামোবদ্ধ কারণসহ।
+      edgeMode = 'silentWav';
+      let caught: any;
+      try {
+        await synthesizeVerifiedSpeech(BN_SPEC, { verify: true });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeDefined();
+      expect(speechErrorCode(caught)).toBe('VERIFICATION_FAILED');
+      expect(String(caught?.message)).toContain('VERIFICATION_FAILED');
+      // সবগুলো প্রার্থীই নীরবতায় ব্যর্থ — ৪টি Edge কণ্ঠ হাঁটা হয়েছে
+      expect(caught?.attempts).toBe(4);
+      // কাঠামোবদ্ধ ব্যর্থতার কারণ (B2: "not just 'false'")
+      expect(caught?.lastVerification?.failureCode).toBe('SILENCE_DETECTED');
+      expect(String(caught?.lastVerification?.notes?.[0] ?? '')).toContain('SILENCE_DETECTED');
+      expect(caught?.lastVerification?.silenceCoverage).toBeGreaterThanOrEqual(0.9);
+      expect(zaiCalls.length).toBe(0); // ভাষা-ভাঙা ফলব্যাক নয়
+    },
+    20_000
+  );
+
+  test(
+    'REG-1k [NEW — D-2/B2-স্তর ১]: corrupt/unparseable audio ⇒ fail with typed INVALID_AUDIO (not a misleading duration note)',
+    async () => {
+      // করাপ্ট বাইট-গাদা — ffprobe/astats নিজেই ব্যর্থ → quality=null →
+      // আগে এটি ব্যাখ্যাহীন "দৈর্ঘ্য-কম" ফেল হতো; এখন টাইপড INVALID_AUDIO
+      const corrupt = Buffer.from('এটি কোনো অডিও ফাইল নয় — শুধু টেক্সট-বাইট।'.repeat(20));
+      const v = await verifySpeechBuffer(corrupt, 'wav', BN_SPEC, 'bn-BD-NabanitaNeural');
+      expect(v.verdict).toBe('fail');
+      expect(v.failureCode).toBe('INVALID_AUDIO');
+      expect(v.notes.some((n) => n.includes('পার্স/ডিকোড'))).toBe(true);
+      expect(v.silenceCoverage).toBe(1); // durationSec=0 → সংজ্ঞাগত সম্পূর্ণ-নীরব
+    },
+    20_000
+  );
+
+  test(
+    'REG-1l [NEW — D-2/B2-ক্যালিব্রেশন]: quiet-but-valid speech (RMS −৪০dB-এর কাছে) is NOT rejected — honest warn only',
+    async () => {
+      // "Do not reject legitimate quiet speech solely because it is
+      // quiet" — শান্ত টোন (amp 0.015 → RMS ≈ −৩৯.৫dB, নীরবতা-সীমা −৫০dB-এর
+      // উপরে) প্রত্যাখ্যাত নয়; রায় সৎ "সতর্কতা" + খুব-শান্ত নোট।
+      const quiet = toneWavOfSeconds(2.0, { amplitude: 0.015 });
+      const v = await verifySpeechBuffer(quiet, 'wav', BN_SPEC, 'bn-BD-NabanitaNeural');
+      expect(v.verdict).toBe('warn');
+      expect(v.failureCode).toBeUndefined(); // প্রত্যাখ্যাত নয়
+      expect(v.notes.some((n) => n.includes('খুব শান্ত'))).toBe(true);
+      expect(v.rmsDb).toBeLessThan(-38);
+      expect(v.rmsDb).toBeGreaterThan(-50);
     },
     20_000
   );

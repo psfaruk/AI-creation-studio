@@ -323,10 +323,25 @@ export function validateSpec(raw: unknown): SpecValidationResult {
   }
 
   // --- নতুন মাস্টার প্ল্যানের ফিল্ডগুলো ---
-  if (input.language === 'bn' || input.language === 'en') {
+  // (D-3/B3 + PART C) ভাষা-গেট: সমর্থিত bn/en/hi/ur/zh গ্রহণ; পরিচিত-কিন্তু-
+  // অসমর্থিত ভাষা স্পষ্ট প্রত্যাখ্যান (নীরব বাংলা-বদল নয়); পরিচিত উপনাম
+  // দৃশ্যমান সমন্বয়ে কোডে; অজানা আবর্জনা-মান ডিফল্ট-সমন্বয় (আগের আচরণ)।
+  if (input.language === 'bn' || input.language === 'en' || input.language === 'hi' || input.language === 'ur' || input.language === 'zh') {
     spec.language = input.language;
+  } else if (input.language === 'zh-Hans' || input.language === 'zh-Hant') {
+    // চীনা রূপভেদ — SpeechLanguage 'zh' + লোকেল-মাত্রা সেই পার্থক্য বহন করে
+    adjustments.push({ field: 'language', from: input.language, to: 'zh', reason: 'চীনা রূপভেদ zh-কোডে একীভূত — কণ্ঠ-নির্বাচনে লোকেল (zh-CN/zh-TW/zh-HK) রূপভেদ ঠিক রাখে' });
+    spec.language = 'zh';
+  } else if (['hindi', 'urdu', 'chinese', 'mandarin'].includes(String(input.language).toLowerCase())) {
+    const code = { hindi: 'hi', urdu: 'ur', chinese: 'zh', mandarin: 'zh' }[String(input.language).toLowerCase()] as 'hi' | 'ur' | 'zh';
+    adjustments.push({ field: 'language', from: String(input.language), to: code, reason: 'ভাষার ইংরেজি নাম → কোড' });
+    spec.language = code;
+  } else if (typeof input.language === 'string' && /^[a-z]{2}(-[A-Za-z]{2,4})?$/.test(input.language)) {
+    // দেখতে-ভাষাকোড-এর মতো কিন্তু সমর্থিত নয় (fr/ta/ar…) — স্পষ্ট প্রত্যাখ্যান
+    errors.push(`LANGUAGE_UNSUPPORTED: ভাষা "${input.language}" এই স্টুডিওতে সমর্থিত নয় — নীরবে বাংলায় বদলানো হয় না। সমর্থিত: bn (বাংলা), en (ইংরেজি), hi (হিন্দি), ur (উর্দু), zh (চীনা)।`);
+    alternatives.push('সমর্থিত ভাষা: bn, en, hi, ur, zh');
   } else if (input.language != null) {
-    adjustments.push({ field: 'language', from: String(input.language), to: 'bn', reason: 'শুধু bn/en সমর্থিত — ডিফল্ট বাংলা' });
+    adjustments.push({ field: 'language', from: String(input.language), to: 'bn', reason: 'অজানা ভাষা-মান — ডিফল্ট বাংলা' });
     spec.language = 'bn';
   }
   if (input.videoEngine === 'ai_diffusion' || input.videoEngine === 'cinematic_motion') {

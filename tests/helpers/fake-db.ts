@@ -87,6 +87,22 @@ export interface FakeProduction {
   resultJson: string | null;
   parentProductionId: string | null;
   createdAt: Date;
+  /** (D-8/B6 — MP4-F) নিশ্চিতকরণের মুহূর্ত; null = ঐতিহাসিক/অ-নিশ্চিত */
+  confirmedAt: Date | null;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+}
+
+/** (MP4-F) প্রোডাকশন-ধাপ-রো — SSE-রিপ্লে/রানার-জীবনচক্র টেস্টের জন্য */
+export interface FakeProductionStep {
+  id: string;
+  productionId: string;
+  seq: number;
+  key: string;
+  title: string;
+  status: string;
+  detail: string | null;
+  error: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
 }
@@ -98,6 +114,7 @@ interface FakeDbState {
   toolCalls: Map<string, FakeToolCall>;
   artifacts: Map<string, FakeArtifact>;
   productions: Map<string, FakeProduction>;
+  productionSteps: Map<string, FakeProductionStep>;
   seq: number;
   /** agentRun.create calls — duplicate-submission evidence */
   agentRunCreateCalls: Array<Record<string, unknown>>;
@@ -114,6 +131,7 @@ export function state(): FakeDbState {
       toolCalls: new Map(),
       artifacts: new Map(),
       productions: new Map(),
+      productionSteps: new Map(),
       seq: 0,
       agentRunCreateCalls: [],
     };
@@ -130,6 +148,7 @@ export function resetFakeDb(): void {
   s.toolCalls.clear();
   s.artifacts.clear();
   s.productions.clear();
+  s.productionSteps.clear();
   s.seq = 0;
   s.agentRunCreateCalls = [];
 }
@@ -249,11 +268,38 @@ export function seedProduction(
     resultJson: null,
     parentProductionId: null,
     createdAt: new Date(Date.now() - 30_000),
+    confirmedAt: null,
     startedAt: null,
     finishedAt: null,
     ...overrides,
   };
   state().productions.set(id, row);
+  return row;
+}
+
+/** (MP4-F) প্রোডাকশন-ধাপ বপন — SSE-রিপ্লে/রানার-টেস্টের জন্য।
+ *  ডিফল্ট seq = এই প্রোডাকশনের পরবর্তী ক্রমিক। */
+export function seedProductionStep(
+  productionId: string,
+  key: string,
+  overrides: Partial<FakeProductionStep> = {}
+): FakeProductionStep {
+  const id = overrides.id ?? nextId('pstep');
+  const existing = [...state().productionSteps.values()].filter(r => r.productionId === productionId);
+  const row: FakeProductionStep = {
+    id,
+    productionId,
+    seq: overrides.seq ?? existing.length + 1,
+    key,
+    title: overrides.title ?? key,
+    status: 'done',
+    detail: null,
+    error: null,
+    startedAt: new Date(Date.now() - 5_000),
+    finishedAt: new Date(Date.now() - 2_000),
+    ...overrides,
+  };
+  state().productionSteps.set(id, row);
   return row;
 }
 
@@ -429,6 +475,15 @@ export function createFakeDb() {
         );
         return orderBy ? sortedByCreatedAtAsc(rows) : rows;
       },
+      /** (MP4-F) রানারের metrics-finalization db.artifact.count কোয়েরি */
+      count: async ({ where }: { where?: Record<string, unknown> }) => {
+        let n = 0;
+        for (const row of s().artifacts.values()) {
+          if (where && !matches(row as unknown as Record<string, unknown>, where)) continue;
+          n++;
+        }
+        return n;
+      },
       /** Phase-4: createProduction-এর অটো-ওয়্যার কোয়েরি (সর্বশেষ আপলোড) */
       findFirst: async ({
         where,
@@ -488,14 +543,40 @@ export function createFakeDb() {
           resultJson: null,
           parentProductionId: data.parentProductionId ?? null,
           createdAt: new Date(),
+          confirmedAt: data.confirmedAt ?? null,
           startedAt: null,
           finishedAt: null,
         };
         s().productions.set(id, row);
         return row;
       },
-      findUnique: async ({ where }: { where: { id: string } }) =>
-        s().productions.get(where.id) ?? null,
+      /** (MP4-F) include সমর্থন — SSE-রাউট/confirm-রাউটের steps+artifacts
+       *  রিলেশন কোয়েরি; include না দিলে আগের মতোই খালি রো (t14-চুক্তি)। */
+      findUnique: async ({
+        where,
+        include,
+      }: {
+        where: { id: string };
+        include?: { steps?: { orderBy?: { seq?: 'asc' | 'desc' } } | boolean; artifacts?: boolean };
+      }) => {
+        const row = s().productions.get(where.id);
+        if (!row) return null;
+        if (!include) return row;
+        const withRels = { ...row } as FakeProduction & { steps?: FakeProductionStep[]; artifacts?: FakeArtifact[] };
+        if (include.steps) {
+          const steps = [...s().productionSteps.values()].filter(st => st.productionId === where.id);
+          const desc = include.steps !== true && include.steps.orderBy?.seq === 'desc';
+          steps.sort((a, b) => (desc ? b.seq - a.seq : a.seq - b.seq));
+          withRels.steps = steps;
+        }
+        if (include.artifacts) {
+          const arts = [...s().artifacts.values()]
+            .filter(a => a.productionId === where.id)
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+          withRels.artifacts = arts;
+        }
+        return withRels;
+      },
       findMany: async ({ where }: { where: Record<string, unknown> }) => {
         const rows = [...s().productions.values()].filter(row =>
           matches(row as unknown as Record<string, unknown>, where)
@@ -522,6 +603,43 @@ export function createFakeDb() {
         Object.assign(row, data);
         // include: { steps, artifacts, _count } — রাউট-ভিউ সিরিয়ালাইজারের চুক্তি
         return { ...row, steps: [], artifacts: [], _count: { artifacts: 0 } };
+      },
+    },
+    // ---- (MP4-F) productionStep মডেল — রানার-জীবনচক্র/মেট্রিকস টেস্ট ----
+    productionStep: {
+      create: async ({ data }: { data: Partial<FakeProductionStep> }) => {
+        const id = nextId('pstep');
+        const row: FakeProductionStep = {
+          id,
+          productionId: data.productionId ?? '',
+          seq: data.seq ?? 0,
+          key: data.key ?? '',
+          title: data.title ?? '',
+          status: data.status ?? 'pending',
+          detail: null,
+          error: null,
+          startedAt: data.startedAt ?? null,
+          finishedAt: null,
+        };
+        s().productionSteps.set(id, row);
+        return row;
+      },
+      update: async ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: Partial<FakeProductionStep>;
+      }) => {
+        const row = s().productionSteps.get(where.id);
+        if (!row) throw new Error('fake productionStep not found');
+        Object.assign(row, data);
+        return row;
+      },
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        return [...s().productionSteps.values()].filter(row =>
+          matches(row as unknown as Record<string, unknown>, where)
+        );
       },
     },
   };

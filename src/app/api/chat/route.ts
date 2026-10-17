@@ -7,6 +7,7 @@ import { startAgentRun, STALE_RUN_MS } from '@/lib/agent/orchestrator';
 import { isValidChatModelId } from '@/lib/agent/chat-models';
 import { buildMessageView, toAttachmentView } from '@/lib/agent/serialize';
 import { saveArtifactFile } from '@/lib/agent/storage';
+import { attachmentMismatchError } from '@/lib/agent/media-sniff';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
 import type { ChatMode } from '@/lib/types';
 
@@ -30,6 +31,8 @@ interface IncomingAttachment {
   kind: 'image' | 'audio' | 'video';
   name: string;
   dataUrl: string;
+  /** ভ্যালিডেশন-সময়েই ডিকোড করা বাইট — স্নিফ + সংরক্ষণ একই বাফার */
+  buf: Buffer;
 }
 
 function extFromMime(mime: string, name: string): string {
@@ -137,7 +140,17 @@ export async function POST(req: Request) {
     if (match[2].length > limit) {
       return NextResponse.json({ error: `অ্যাটাচমেন্ট খুব বড় (সর্বোচ্চ ${limitLabel})` }, { status: 400 });
     }
-    attachments.push({ kind: a.kind, name: a.name.slice(0, 200), dataUrl: a.dataUrl });
+    // H-3 (এন্ট্রি-টাইম ম্যাজিক-বাইট শনিফ): ডিকোড করা বাইটের প্রকৃত
+    // স্বভাব ঘোষিত kind/MIME-পরিবারের সাথে না মিললে সৎ 400 — ভুল-
+    // লেবেল করা বাইনারি আর ভুল ধরনের আর্টিফ্যাক্ট হতে পারে না। এই
+    // গার্ড কথোপকথন/বার্তা তৈরির আগেই, তাই প্রত্যাখ্যাত জমা কিছুই
+    // দূষিত করে না।
+    const buf = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+    const sniffError = attachmentMismatchError(a.kind, match[1].toLowerCase(), buf);
+    if (sniffError) {
+      return NextResponse.json({ error: sniffError }, { status: 400 });
+    }
+    attachments.push({ kind: a.kind, name: a.name.slice(0, 200), dataUrl: a.dataUrl, buf });
   }
 
   // conversation রিজলভ / তৈরি
@@ -209,11 +222,11 @@ export async function POST(req: Request) {
     await db.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
   }
 
-  // অ্যাটাচমেন্ট ফাইল → artifact rows (origin 'user_upload', message-এর সাথে লিংকড)
+  // অ্যাটাচমেন্ট ফাইল → artifact rows (origin 'user_upload', message-এর সাথে লিংকড)।
+  // বাইটগুলো ভ্যালিডেশন-সময়েই ডিকোড+স্নিফ করা (H-3) — একই বাফারই জমা হয়।
   const attachmentViews: { kind: 'image' | 'audio' | 'video'; name: string; url: string }[] = [];
   for (const att of attachments) {
-    const b64 = att.dataUrl.slice(att.dataUrl.indexOf(',') + 1).replace(/\s+/g, '');
-    const buf = Buffer.from(b64, 'base64');
+    const buf = att.buf;
     const mime = /^data:([^;]+);/.exec(att.dataUrl)?.[1] ?? (att.kind === 'image' ? 'image/png' : att.kind === 'video' ? 'video/mp4' : 'audio/mpeg');
     const ext = extFromMime(mime, att.name);
     const { storagePath } = await saveArtifactFile(buf, ext);

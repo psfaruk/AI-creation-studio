@@ -3,7 +3,13 @@
 // ব্যবহারকারীর অনুরোধের ধরন অনুযায়ী সঠিক টুল বেছে নেওয়া
 // বাধ্যতামূলক। FFmpeg-কে কখনো Text-to-Video মডেল হিসেবে দেখানো
 // হয় না — নিচের টেবিলটিই একমাত্র সত্যের উৎস (প্রম্পট + UI উভয়ে)।
+//
+// D-5/B5: lip_sync-রাউটের স্ট্যাটাস সরাসরি লিপ-সিঙ্ক-প্রোভাইডারের
+// ক্ষমতা-প্রতিবেদন থেকে উদ্ভূত (activeLipSyncProvider) — হার্ডকোডেড
+// স্টেল-লিটারেল নয়; প্রকৃত অ্যাডাপ্টার একদিন যোগ হলে টেবিল নিজেই সৎ হয়ে যাবে।
 // ============================================================
+
+import { activeLipSyncProvider } from './lip_sync_module';
 
 export type VideoRequestKind =
   | 'image_to_video' // ছবি থেকে ভিডিও
@@ -57,7 +63,8 @@ export const CAPABILITY_ROUTES: Record<VideoRequestKind, CapabilityRoute> = {
     tool: 'lip_sync',
     engine: 'লিপ-সিঙ্ক মডেল নেই (MuseTalk প্রার্থী, এই পরিবেশে স্থাপিত নয়)',
     realAiGeneration: false,
-    status: 'unavailable',
+    // স্ট্যাটাস প্রোভাইডার-ক্ষমতা থেকে উদ্ভূত (আজ available:false → 'unavailable')
+    status: activeLipSyncProvider().getCapabilities().available ? 'ready' : 'unavailable',
     note: 'লিপ-সিঙ্ক ছাড়া কখনো "গায়কের মুখ নড়ছে" দাবি করা হয় না।',
   },
   edit_cut: {

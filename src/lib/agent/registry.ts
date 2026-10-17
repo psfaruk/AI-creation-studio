@@ -275,14 +275,25 @@ const textToSpeechSpec: ToolSpec<{ text: string; voice?: 'tongtong' | 'jam' | 'k
     // B-F08 (R-FIX-1): আগে এখানে সরাসরি zai.audio.tts.create ডাকা হতো —
     // ভাষা-নিয়ন্ত্রক, ক্ষমতা-ট্যাগ-চেইন ও যাচাই সব বাইপাস হয়ে ভুল-ভাষার
     // অডিও সাধারণ সাফল্য হয়ে যেত। এখন §২-নিয়ন্ত্রকের সুরক্ষিত পথেই।
-    const det = detectLanguage(input.text);
-    if (det.language !== 'bn' && det.language !== 'en' && det.language !== 'mixed') {
+    // PART C: স্বীকৃত-প্রসঙ্গে hi/zh-লিপি চেনা হয় (লিপি→ভাষা আনুমানিক — bn/en-
+    // স্বয়ংক্রিয়-শনাক্তকরণের মতোই); পার্সো-আরবি লিপি সৎ-প্রত্যাখ্যান (লিপি থেকে
+    // উর্দু/আরবি/ফার্সি নির্ধারণ অনির্ভরযোগ্য — স্পষ্ট ভাষা-নির্বাচনসহ speech_synthesis)
+    const det = detectLanguage(input.text, { recognize: ['hi', 'zh'] });
+    if (det.language !== 'bn' && det.language !== 'en' && det.language !== 'mixed' && det.language !== 'hi' && det.language !== 'zh') {
       throw new Error(
-        'টেক্সটের ভাষা শনাক্ত করা যায়নি — text_to_speech বাংলা বা ইংরেজি লেখায় কাজ করে (§২ ভাষা-নিয়ন্ত্রক)।'
+        det.language === 'other-script'
+          ? 'টেক্সটের লিপি সমর্থিত নয় — text_to_speech বাংলা/ইংরেজি/হিন্দি/চীনা লেখায় কাজ করে। পার্সো-আরবি লিপি হলে স্পষ্ট ভাষা-নির্বাচনসহ speech_synthesis ব্যবহার করুন (লিপি থেকে উর্দু/আরবি আলাদা করা যায় না — §২ ভাষা-নিয়ন্ত্রক)।'
+          : 'টেক্সটের ভাষা শনাক্ত করা যায়নি — text_to_speech বাংলা বা ইংরেজি লেখায় কাজ করে (§২ ভাষা-নিয়ন্ত্রক)।'
       );
     }
     const language: SpeechLanguage =
-      det.language === 'mixed' ? (det.bnRatio >= det.latinRatio ? 'bn' : 'en') : det.language;
+      det.language === 'mixed'
+        ? det.bnRatio >= det.latinRatio
+          ? 'bn'
+          : 'en'
+        : det.language === 'hi' || det.language === 'zh'
+          ? det.language
+          : det.language;
     const result = await synthesizeVerifiedSpeech(
       {
         task: 'speech',
