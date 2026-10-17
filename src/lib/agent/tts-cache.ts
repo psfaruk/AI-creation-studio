@@ -21,10 +21,15 @@ import path from 'node:path';
 import { synthesizeSpeech } from './sdk-helpers';
 import type { SpeechResult, TtsVoice } from './sdk-helpers';
 import { isEdgeVoice, synthesizeEdgeSpeech, type EdgeVoiceId } from './audio/edge_tts';
+import { isGoogVoice, synthesizeGoogleSpeech } from './audio/google_tts';
 
 const PROJECT_ROOT = process.cwd();
-/** ক্যাশ-গুচ্ছ: storage/tts-cache/<প্রথম২>/<পরের২>/<পূর্ণহ্যাশ>.<ext> + .meta.json */
-const TTS_CACHE_DIR = path.join(PROJECT_ROOT, 'storage', 'tts-cache');
+/** ক্যাশ-গুচ্ছ: storage/tts-cache/<প্রথম২>/<পরের২>/<পূর্ণহ্যাশ>.<ext> + .meta.json
+ *  (LF-0: TTS_CACHE_DIR এনভায়রনমেন্ট-ওভাররাইড — টেস্ট-স্যুট প্রিলোড এটিকে
+ *  টেম্প-ডিরেক্টরিতে রাউট করে, যাতে কোনো টেস্ট-ফিক্সচার কখনো প্রকৃত
+ *  ক্যাশে ভুয়া অডিও বসিয়ে প্রকৃত সংশ্লেষণকে বিষ-না-করে — voice-verification
+ *  প্রিলোড-আইসোলেশনের (D-1) সম্পূরক) */
+const TTS_CACHE_DIR = process.env.TTS_CACHE_DIR ?? path.join(PROJECT_ROOT, 'storage', 'tts-cache');
 
 export interface TtsCacheStats {
   /** ডিস্ক-ক্যাশ থেকে ফেরত আসা কল */
@@ -37,7 +42,8 @@ export interface TtsCacheStats {
 
 interface TtsCacheMeta {
   voice: string;
-  engine: 'edge' | 'zai';
+  /** LF-0: 'goog' = Google-Translate TTS (বাংলা কথা) */
+  engine: 'edge' | 'zai' | 'goog';
   speed: number;
   mimeType: string;
   ext: string;
@@ -98,7 +104,7 @@ async function writeToCache(
   hash: string,
   text: string,
   voice: string,
-  engine: 'edge' | 'zai',
+  engine: 'edge' | 'zai' | 'goog',
   speed: number,
   result: SpeechResult
 ): Promise<void> {
@@ -193,12 +199,23 @@ async function sweepCacheIfLarge(): Promise<void> {
 
 /**
  * কণ্ঠ-অনুযায়ী ইঞ্জিন-নির্বাচন ছাড়াই মূল সংশ্লেষণ:
- * Edge-নিউরাল নাম → Microsoft Edge TTS; অন্য সব → z-ai SDK।
+ * Edge-নিউরাল নাম → Microsoft Edge TTS; Google-নাম → Google-Translate
+ * TTS (LF-0: এই sandbox-এ লাইভ-যাচাইকৃত বাংলা প্রোভাইডার); বাকি সব → z-ai SDK।
  */
-async function synthRaw(text: string, voice: string, speed: number): Promise<SpeechResult & { engine: 'edge' | 'zai' }> {
+async function synthRaw(
+  text: string,
+  voice: string,
+  speed: number
+): Promise<SpeechResult & { engine: 'edge' | 'zai' | 'goog' }> {
   if (isEdgeVoice(voice)) {
     const res = await synthesizeEdgeSpeech(text, voice as EdgeVoiceId, { speed });
     return { buffer: res.buffer, mimeType: res.mimeType, ext: res.ext, engine: 'edge' };
+  }
+  if (isGoogVoice(voice)) {
+    // LF-0: Google-Translate TTS — speed>1 হলে প্রোভাইডার গতি মানে না
+    // (speedUnsupported-পতাকা)। সৎ-নোট ভাষা-নিয়ন্ত্রকের নোট-ব্যবস্থায় যায়।
+    const res = await synthesizeGoogleSpeech(text, voice, { speed });
+    return { buffer: res.buffer, mimeType: res.mimeType, ext: res.ext, engine: 'goog' };
   }
   const res = await synthesizeSpeech(text, voice as TtsVoice, speed);
   return { ...res, engine: 'zai' };

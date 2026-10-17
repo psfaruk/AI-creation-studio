@@ -24,6 +24,7 @@ import type { CreativeJobSpec } from '@/lib/types';
 import type { CinematicPlan, CinematicPlanSummary, PlanBeatSource } from './types';
 import { BEAT_SOURCE_LABELS_BN } from './types';
 import { applyOverrides, planMusicVideo, planShortFilmSkeleton, summarizePlan } from './planner';
+import { reviewNarrative, type NarrativeReview } from './narrative';
 
 export interface PlanPreviewResult {
   plan: CinematicPlan;
@@ -32,6 +33,8 @@ export interface PlanPreviewResult {
   beatSourceLabel: string;
   /** অডিও-বিশ্লেষণের সৎ নোট (আপলোড গানে থাকে; বাকিতে অনুপস্থিত) */
   analysisLabel?: string;
+  /** LF-3 (§3.2): ন্যারেটিভ-ক্রমের সৎ পর্যালোচনা — সতর্কতা-পতাকাসহ */
+  narrativeReview: NarrativeReview;
 }
 
 // ------------------------------------------------------------
@@ -174,6 +177,8 @@ export async function buildMusicVideoPlanPreview(opts: {
     plan,
     summary: summarizePlan(plan, engine),
     beatSourceLabel: BEAT_SOURCE_LABELS_BN[plan.beatSource],
+    // LF-3 (§3.2): ন্যারেটিভ-পর্যালোচনা — প্রিভিউতেই সতর্কতা-পতাকা দেখা যায়
+    narrativeReview: reviewNarrative(plan),
     ...(analysisLabel ? { analysisLabel } : {}),
   };
 }
@@ -200,5 +205,6 @@ export function buildShortFilmPlanPreview(opts: { spec: CreativeJobSpec }): Plan
     plan,
     summary,
     beatSourceLabel: BEAT_SOURCE_LABELS_BN[plan.beatSource],
+    narrativeReview: reviewNarrative(plan),
   };
 }

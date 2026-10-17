@@ -27,6 +27,7 @@ import {
   detectLanguage,
   resolveVoice,
   verdictLabel,
+  languageStatusLabel,
   type SpeechVerification,
   type SpeechLanguage,
 } from '../../audio/language_controller';
@@ -320,7 +321,7 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
       return null;
     }
     await step.setDetail(
-      `রায়: ${verdictLabel(v.verdict)} · সাদৃশ্য ${toBn(Math.round(v.similarity * 100))}% · দৈর্ঘ্য ${toBn(v.durationSec.toFixed(1))}/${toBn(v.expectedSec.toFixed(1))} সে. · ASR-ভাষা: ${v.detectedLanguage}`
+      `রায়: ${verdictLabel(v.verdict)} · ${languageStatusLabel(v.languageStatus)} · সাদৃশ্য ${toBn(Math.round(v.similarity * 100))}% · দৈর্ঘ্য ${toBn(v.durationSec.toFixed(1))}/${toBn(v.expectedSec.toFixed(1))} সে. · ASR-ভাষা: ${v.detectedLanguage}`
     );
     if (v.verdict === 'fail') {
       ctx.partialNotes.push(
@@ -348,6 +349,8 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
         ? {
             verdict: verification.verdict,
             verdictLabel: verdictLabel(verification.verdict),
+            languageStatus: verification.languageStatus ?? 'LANGUAGE_UNVERIFIED',
+            languageStatusLabel: languageStatusLabel(verification.languageStatus),
             similarity: verification.similarity,
             detectedLanguage: verification.detectedLanguage,
             durationSec: verification.durationSec,
@@ -380,6 +383,8 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
         ? {
             verdict: verification.verdict,
             verdictLabel: verdictLabel(verification.verdict),
+            languageStatus: verification.languageStatus ?? 'LANGUAGE_UNVERIFIED',
+            languageStatusLabel: languageStatusLabel(verification.languageStatus),
             similarity: verification.similarity,
             detectedLanguage: verification.detectedLanguage,
             notes: verification.notes,

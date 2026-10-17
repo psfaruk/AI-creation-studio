@@ -424,7 +424,7 @@ const speechSynthesisSpec: ToolSpec<{
   }),
   timeoutMs: 300_000,
   usage:
-    'speech_synthesis — ভাষা-নিশ্চিত কণ্ঠ তৈরি (§২ ভাষা-নিয়ন্ত্রক): স্ক্রিপ্টের ভাষা শনাক্ত করে সেই ভাষার উপযোগী কণ্ঠ বাছে, TTS চালায়, তারপর ASR ব্যাক-চেক ও দৈর্ঘ্য-যাচাই করে রায় দেয় (যাচাইকৃত/সতর্কতা/ব্যর্থ)। বাংলা লেখা বা ইংরেজি লেখা — দুটোই চলে; ভাষা মিললে স্পষ্ট ত্রুটি দেয়। ট্রান্সক্রিপ্ট ও রায়-নোটসহ প্রিভিউ-মেটাডেটা ফেরত আসে। arguments: {"script": string (১–২০০০ অক্ষর), "language"?: "bn"|"en" (না দিলে স্বয়ংক্রিয় শনাক্ত), "voice"?: string (bn: bn-BD-NabanitaNeural/bn-BD-PradeepNeural সুপারিশকৃত, en: en-US-AriaNeural/Guy; ফলব্যাক z-ai jam/douji/tongtong/kazi/xiaochen), "speed"?: number (০.৫–২), "verify"?: boolean (ডিফল্ট true)}',
+    'speech_synthesis — ভাষা-নিশ্চিত কণ্ঠ তৈরি (§২ ভাষা-নিয়ন্ত্রক): স্ক্রিপ্টের ভাষা শনাক্ত করে সেই ভাষার উপযোগী কণ্ঠ বাছে, TTS চালায়, তারপর ASR ব্যাক-চেক ও দৈর্ঘ্য-যাচাই করে রায় দেয় (যাচাইকৃত/সতর্কতা/ব্যর্থ)। বাংলা লেখা বা ইংরেজি লেখা — দুটোই চলে; ভাষা মিললে স্পষ্ট ত্রুটি দেয়। ট্রান্সক্রিপ্ট ও রায়-নোটসহ প্রিভিউ-মেটাডেটা ফেরত আসে। arguments: {"script": string (১–২০০০ অক্ষর), "language"?: "bn"|"en" (না দিলে স্বয়ংক্রিয় শনাক্ত), "voice"?: string (bn: bn-BD-NabanitaNeural/bn-BD-PradeepNeural সুপারিশকৃত — Edge অচল হলে গুগল-অনুবাদ bn-GOOG-Default সৎ ফলব্যাক; en: en-US-AriaNeural/Guy; en-ফলব্যাক z-ai jam/douji/tongtong/kazi/xiaochen), "speed"?: number (০.৫–২), "verify"?: boolean (ডিফল্ট true)}',
   inputSummary: i => {
     const det = detectLanguage(i.script);
     const lang = i.language ?? det.language;

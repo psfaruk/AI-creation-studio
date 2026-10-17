@@ -237,10 +237,12 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 /**
  * B-F06: কণ্ঠ-আইডি থেকে ইঞ্জিনের সৎ অনুমান (প্রতিরক্ষামূলক — নিয়ন্ত্রকের
  * নতুন `engine` ক্ষেত্র না-থাকলে পুরোনো/নতুন উভয় নিয়ন্ত্রকের সাথেই চলে)।
- * Edge-নিউরাল আইডি 'bn-…Neural'/'en-…Neural' — বাকি সবাই z-ai।
+ * Edge-নিউরাল আইডি 'bn-…Neural'/'en-…Neural', Google-আইডি 'bn-GOOG-…' —
+ * বাকি সবাই z-ai। (LF-0: 'goog' ইঞ্জিন-লেবেল)
  */
-function engineOfVoiceHeuristic(voice: string): 'edge' | 'zai' {
-  return /^(bn|en)-[A-Z]{2}-\w+Neural$/.test(voice) ? 'edge' : 'zai';
+function engineOfVoiceHeuristic(voice: string): 'edge' | 'zai' | 'goog' {
+  if (/^(bn|en)-[A-Z]{2}-\w+Neural$/.test(voice)) return 'edge';
+  return /^bn-GOOG-/.test(voice) ? 'goog' : 'zai';
 }
 
 const FILM_MODE_DIRECTION: Record<FilmMode, string> = {
@@ -918,7 +920,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
               (speech.verification as (SpeechVerification & { actualVoice?: string }) | null)?.actualVoice ??
               speech.voice;
             const narrEngine =
-              (speech as { engine?: 'edge' | 'zai' }).engine ?? engineOfVoiceHeuristic(narrActualVoice);
+              (speech as { engine?: 'edge' | 'zai' | 'goog' }).engine ?? engineOfVoiceHeuristic(narrActualVoice);
             await ctx.registerArtifact({
               buffer: speech.buffer,
               kind: 'audio',
@@ -973,7 +975,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
       let ext = 'wav';
       let verification: SpeechVerification | null = null;
       let actualVoice = useVoice;
-      let actualEngine: 'edge' | 'zai' = engineOfVoiceHeuristic(useVoice);
+      let actualEngine: 'edge' | 'zai' | 'goog' = engineOfVoiceHeuristic(useVoice);
       try {
         if (isFirstOfVoice) {
           const out = await synthesizeVerifiedSpeech(
@@ -1012,7 +1014,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           verification = out.verification;
           // B-F06: প্রকৃত কণ্ঠ/ইঞ্জিন (নিয়ন্ত্রকের নতুন ক্ষেত্র থাকলে সেটি, নইলে আউট. voice)
           actualVoice = (out.verification as SpeechVerification & { actualVoice?: string })?.actualVoice ?? out.voice;
-          actualEngine = (out as { engine?: 'edge' | 'zai' }).engine ?? engineOfVoiceHeuristic(actualVoice);
+          actualEngine = (out as { engine?: 'edge' | 'zai' | 'goog' }).engine ?? engineOfVoiceHeuristic(actualVoice);
           verifiedVoices.add(voice);
           effectiveVoice.set(d.character, out.voice);
           if (out.verification?.verdict === 'warn') speechWarnCount++;
@@ -1034,7 +1036,7 @@ export const shortFilmPipeline: PipelineFn = async ctx => {
           buffer = out.buffer;
           ext = out.ext;
           actualVoice = (out.verification as SpeechVerification & { actualVoice?: string })?.actualVoice ?? out.voice;
-          actualEngine = (out as { engine?: 'edge' | 'zai' }).engine ?? engineOfVoiceHeuristic(actualVoice);
+          actualEngine = (out as { engine?: 'edge' | 'zai' | 'goog' }).engine ?? engineOfVoiceHeuristic(actualVoice);
           effectiveVoice.set(d.character, out.voice);
         }
       } catch (err) {

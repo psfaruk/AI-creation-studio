@@ -1,0 +1,14 @@
+{
+  "created": 1792259017,
+  "id": "20261018014337b0dd0d967c914dc9",
+  "request_id": "20261018014337b0dd0d967c914dc9",
+  "text": "To to, to dean, to dean, to dean, to dean.",
+  "usage": {
+    "completion_tokens": 20,
+    "prompt_tokens": 110,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 130
+  }
+}

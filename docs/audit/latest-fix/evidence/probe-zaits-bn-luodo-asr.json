@@ -1,0 +1,14 @@
+{
+  "created": 1792259017,
+  "id": "202610180143370150b7250a9a4352",
+  "request_id": "202610180143370150b7250a9a4352",
+  "text": "Pap, pap, pap, pap, I, pap, pap, pap, pap, pap.",
+  "usage": {
+    "completion_tokens": 22,
+    "prompt_tokens": 153,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 175
+  }
+}

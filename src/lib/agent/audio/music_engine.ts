@@ -38,7 +38,10 @@ const execFileAsync = promisify(execFileCb);
 const midiHz = midiHzShared;
 
 export const MUSIC_ENGINE_LABEL =
-  'প্রসিডিউরাল সংগীত-সংশ্লেষণ v2 — কারপ্লাস-স্ট্রং তার, মোটিফ-মেলোডি, ভাইব্রেটো-মানবিকরণ, রিভার্ব (পরীক্ষামূলক — নিউরাল মিউজিক-মডেল নয়)';
+  'প্রসিডিউরাল সংগীত-সংশ্লেষণ v2 [PROCEDURAL_INSTRUMENTAL] — কারপ্লাস-স্ট্রং তার, মোটিফ-মেলোডি, ভাইব্রেটো-মানবিকরণ, রিভার্ব (পরীক্ষামূলক — নিউরাল মিউজিক-মডেল নয়, গাওয়া কণ্ঠ নয়)';
+// LF-2 (§2.1): ক্যানোনিক্যাল ইংরেজি টোকেন PROCEDURAL_INSTRUMENTAL — মেশিন-
+// পাঠযোগ্য ক্ষমতা-লেবেল; মাস্টার-প্রম্পট §2.1-এর নির্দেশ (instrumental-কে
+// কখনো গান বলে দাবি নয়)।
 
 export type MusicMood = 'sad' | 'romantic' | 'joyful' | 'suspense' | 'action' | 'peaceful';
 

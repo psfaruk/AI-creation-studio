@@ -114,8 +114,10 @@ describe('REG-25: Multilingual speech routing — bn/en + hi/ur/zh (PART C)', ()
         expect(p.voiceCapabilities[v]?.languages).toContain(code); // fail-closed ট্যাগ
       }
     }
-    // bn/en-এর সৎ-অবস্থা আগের মতোই (bn: attempted — লাইভ-চেষ্টিত 403; en: live)
-    expect(LANGUAGE_PROFILES.bn.environmentVerification).toBe('attempted');
+    // bn/en-এর সৎ-অবস্থা (LF-0, ২০২৬-১০-১৭): bn এখন 'live' — Edge-403 থাকলেও
+    // Google-Translate বাংলা কণ্ঠ এই পরিবেশে লাইভ-যাচাইকৃত (baseline-report §৩.৩);
+    // en আগের মতোই 'live' (ASR রাউন্ড-ট্রিপ-প্রমাণ)।
+    expect(LANGUAGE_PROFILES.bn.environmentVerification).toBe('live');
     expect(LANGUAGE_PROFILES.en.environmentVerification).toBe('live');
   });
 

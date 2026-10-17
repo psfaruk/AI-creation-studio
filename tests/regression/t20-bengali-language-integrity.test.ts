@@ -36,6 +36,7 @@ import { createHash } from 'crypto';
 import path from 'path';
 import { encodeWav } from '@/lib/agent/audio/pcm';
 import { isEdgeVoice } from '@/lib/agent/audio/edge_tts';
+import { isGoogVoice } from '@/lib/agent/audio/google_tts';
 import { toneWavOfSeconds } from '../helpers/speech-wav';
 
 // ---- ফিক্সচার: প্রকৃত ডিবি-ট্রান্সক্রিপ্ট --------------------
@@ -52,12 +53,14 @@ const FIXTURES = JSON.parse(
 const BN_GARBAGE = FIXTURES.cases.find(c => c.id === 'bn-jam-chinese-garbage')!;
 const EN_GARBAGE = FIXTURES.cases.find(c => c.id === 'en-tongtong-romanized-garbage')!;
 
-// ---- ইঞ্জিন-সীমানা মক (t1-প্যাটার্ন) --------------------------
+// ---- ইঞ্জিন-সীমানা মক (t1-প্যাটার্ন + LF-0 goog-বাকেট) ----------
 let edgeMode: 'ok' | 'throw403' = 'ok';
 let zaiMode: 'ok' | 'throw' = 'ok';
+let googMode: 'ok' | 'throw' = 'throw'; // LF-0: এই ফাইলের সাফল্য-পথ Edge-ই; ক্ষয়-পরীক্ষায় Google-ও অচল
 let asrText = '';
 const edgeCalls: string[] = [];
 const zaiCalls: string[] = [];
+const googCalls: string[] = [];
 
 let okWav: Buffer;
 
@@ -82,6 +85,11 @@ mock.module('@/lib/agent/tts-cache', () => ({
       if (edgeMode === 'throw403') {
         throw new Error('Edge TTS সংযোগ-ত্রুটি: Unexpected server response: 403');
       }
+      return { buffer: okWav, mimeType: 'audio/wav', ext: 'wav' };
+    }
+    if (isGoogVoice(voice)) {
+      googCalls.push(voice);
+      if (googMode === 'throw') throw new Error('Google TTS ব্যর্থ — রেট-লিমিট (HTTP 429)');
       return { buffer: okWav, mimeType: 'audio/wav', ext: 'wav' };
     }
     zaiCalls.push(voice);
@@ -245,8 +253,9 @@ describe('REG-20: Bengali language-integrity verification (R-FIX-1)', () => {
     expect(zaiCalls.length).toBe(0);
   }, 20_000);
 
-  test('REG-20i [RC-2]: chain verification-exhaustion carries lastVerification evidence (typed VERIFICATION_FAILED)', async () => {
-    edgeMode = 'throw403'; // bn-চেইনে Edge-ই একমাত্র — সব মরে গেলে VOICE_UNAVAILABLE
+  test('REG-20i [RC-2 + LF-0]: chain exhaustion carries lastVerification evidence — bn VOICE_UNAVAILABLE now requires BOTH providers dead', async () => {
+    edgeMode = 'throw403';
+    googMode = 'throw'; // LF-0: Google-ও অচল হলে তবেই bn-চেইন ক্ষয়
     let caught: any;
     try {
       await synthesizeVerifiedSpeech({ ...BN_SPEC, voiceId: undefined }, { verify: true });
@@ -254,7 +263,9 @@ describe('REG-20: Bengali language-integrity verification (R-FIX-1)', () => {
       caught = e;
     }
     expect(speechErrorCode(caught)).toBe('VOICE_UNAVAILABLE');
-    expect(caught?.attempts).toBe(1);
+    expect(caught?.attempts).toBe(2); // ১টি Edge (ইঞ্জিন-মৃত্যু) + ১টি Google
+    expect(edgeCalls.length).toBe(1);
+    expect(googCalls.length).toBe(1);
     // চেইন-যাচাই-ক্ষয় (VERIFICATION_FAILED) পথে lastVerification থাকে — REG-1b (t1)
     // সেই চুক্তি লক করে; এখানে bn-VOICE_UNAVAILABLE চুক্তি নিশ্চিত।
   }, 20_000);

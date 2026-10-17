@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "type": "music_video",
+  "beatSource": "bpm_grid_estimate",
+  "totalPlannedSec": 30,
+  "scenes": [
+    {
+      "sceneId": "SC1",
+      "purpose": "পরিচিতি ও পরিবেশ",
+      "narrativeBeat": "গানের জগৎ পরিচিতি — এস্টাব্লিশিং মুহূর্ত",
+      "environment": "the world of the song",
+      "lightingMood": "mood-matched cinematic lighting"
+    },
+    {
+      "sceneId": "SC2",
+      "purpose": "মূল-প্রবাহ",
+      "narrativeBeat": "গানের মূল প্রবাহ — দৃশ্য ও আবেগ",
+      "environment": "the world of the song",
+      "lightingMood": "mood-matched cinematic lighting"
+    }
+  ],
+  "shots": [
+    {
+      "shotId": "S01",
+      "sceneId": "SC1",
+      "order": 0,
+      "subject": "environment",
+      "size": "establishing_wide",
+      "angle": "eye_level",
+      "movement": "zoom_in",
+      "fallbackMove": "zoom_in",
+      "delivery": "prompt_guided",
+      "actionEn": "A wide establishing shot of a serene riverbank at sunset. The setting sun casts a warm, orange glow across the water, which is calm and reflective. In the middle ground, a young musician sits on the grass, a guitar resting in his lap. The silhouette of distant trees frames the scene.",
+      "lightingMood": "balanced natural lighting",
+      "labelBn": "নদীর ধারে সন্ধ্যা",
+      "startSec": 0,
+      "endSec": 9.71,
+      "targetDurationSec": 9.71
+    },
+    {
+      "shotId": "S02",
+      "sceneId": "SC2",
+      "order": 1,
+      "subject": "scene",
+      "size": "medium",
+      "angle": "eye_level",
+      "movement": "pan_right",
+      "fallbackMove": "pan_right",
+      "delivery": "prompt_guided",
+      "actionEn": "A medium shot focusing on the musician. He is gently strumming the guitar, his expression peaceful and lost in the music. The warm sunset light illuminates his face and upper body. The calm water of the river is visible in the background slightly out of focus.",
+      "lightingMood": "balanced natural lighting",
+      "labelBn": "�িল্পীর পারফরম্যান্স",
+      "startSec": 9.71,
+      "endSec": 19.41,
+      "targetDurationSec": 9.7
+    },
+    {
+      "shotId": "S03",
+      "sceneId": "SC2",
+      "order": 2,
+      "subject": "scene",
+      "size": "wide",
+      "angle": "eye_level",
+      "movement": "zoom_out",
+      "fallbackMove": "zoom_out",
+      "delivery": "prompt_guided",
+      "actionEn": "A wide shot of the entire riverbank. The musician is now a smaller figure in the frame, emphasizing the vastness of the natural environment. He continues to play as the camera tilts upwards to reveal the evening sky. A flock of birds flies across the colorful sky, completing the tranquil scene.",
+      "lightingMood": "balanced natural lighting",
+      "labelBn": "আকাশের দিকে",
+      "startSec": 19.41,
+      "endSec": 30,
+      "targetDurationSec": 10.59
+    }
+  ],
+  "adjustments": [],
+  "visualStyle": "warm, serene, golden hour lighting, soft focus, cinematic"
+}

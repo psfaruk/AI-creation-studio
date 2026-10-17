@@ -1310,6 +1310,27 @@ function ShotPlanPreview({
               {shotPlan.analysisLabel && (
                 <p className="text-muted-foreground">অডিও-বিশ্লেষণ: {shotPlan.analysisLabel}</p>
               )}
+              {shotPlan.narrativeReview && shotPlan.narrativeReview.warnings.length > 0 && (
+                <div
+                  className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2"
+                  role="alert"
+                  aria-label="ন্যারেটিভ-পর্যালোচনা সতর্কতা"
+                >
+                  <p className="font-medium text-amber-700 dark:text-amber-400">
+                    ⚠ ন্যারেটিভ-পর্যালোচনা: {toBnDigits(shotPlan.narrativeReview.warnings.length)}টি সতর্কতা (ক্রম/
+                    ধারাবাহিকতার সম্পর্ক-যাচাই)
+                  </p>
+                  <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto pl-4 text-muted-foreground">
+                    {shotPlan.narrativeReview.warnings.map((w, i) => (
+                      <li key={`${w.code}-${i}`} className="list-disc">
+                        <span className="font-mono text-[10px] text-muted-foreground/80">{w.shotId ?? ''}</span>{' '}
+                        {w.messageBn}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{shotPlan.narrativeReview.scopeNoteBn}</p>
+                </div>
+              )}
               <div>
                 <p className="font-medium">শট-তালিকা (ক্রমে):</p>
                 <ul className={cn('mt-1 max-h-72 space-y-1.5 overflow-y-auto', THIN_SCROLL)} aria-label="শট-তালিকা">

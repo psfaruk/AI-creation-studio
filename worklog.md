@@ -2178,3 +2178,92 @@ Work Log:
 
 Stage Summary:
 - জেনারেশন-ব্লকেজ সমাধান: (১) Prisma Client regenerate — confirm-API এখন 200; (২) voiceover text-ফলব্যাক — প্রস্তাবিত প্রতিশ্রুতি এখন বাস্তব। বাংলা TTS জেনারেশন পরিবেশে Edge-403-এর কারণে সৎ-ব্লকড (কোড-সংশোধনের বাইরে)। কমিট: audio.ts ফিক্স + এই worklog; ব্যবহারকারীর সুস্পষ্ট অনুমোদনে origin/main-এ fast-forward push।
+
+---
+Task ID: LF-0 + LF-1 (main agent — latest-fix Phase 0 + Phase 1)
+Agent: main (Z.ai Code)
+Task: "AI Creation Studio — Latest GitHub Baseline Audit & Real Audio/Video Repair" — Phase 0 (baseline report) + Phase 1 (বাংলা TTS-এর স্থায়ী সমাধান: Google-Translate TTS provider সংযুক্তি, languageStatus সততা-স্তর, রিগ্রেশন-টেস্ট, লাইভ E2E)।
+
+Work Log:
+- Phase 0: baseline যাচাই — HEAD=origin/main=49d9b29 (push পূর্বেই সম্পন্ন ছিল), ট্রি পরিষ্কার, git diff --check পরিষ্কার; docs/audit/latest-fix/baseline-report.md + evidence/ তৈরি।
+- লাইভ প্রোব (নতুন প্রমাণ): z-ai TTS-এর ৭ কণ্ঠের কেউই বাংলা পড়ে না (ASR-রাউন্ড-ট্রিপ আবর্জনা; en/zh control নিখুঁত → পদ্ধতি বৈধ); z-ai ASR বাংলা বোঝে কিন্তু চীনা অনুবাদ দেয় (script-preserving নয়); **Google Translate TTS tl=bn প্রকৃত বাংলা কথা দেয়** (200 + বৈধ MP3 + ৫.০৪ সে. + RMS −১৯dB + ASR-সেম্যান্টিক-রাউন্ড-ট্রিপ); Edge TTS এখনও 403; SDK-তে video.generations আছে।
+- LF-0 (নতুন ফাইল src/lib/agent/audio/google_tts.ts): সম্পূর্ণ নতুন প্রোভাইডার-মডিউল — বাক্য-সীমানা চাঙ্কিং (≤১৮০), প্রতি-অংশ ৩-পুনঃচেষ্টা (429-এ দীর্ঘ অপেক্ষা), টাইপড ত্রুটি-শ্রেণি (429/403/timeout/network), MP3 ফ্রেম-সিঙ্ক+content-type+আকার-যাচাই (HTML-ব্লক/করাপ্ট প্রত্যাখ্যান), স্বাস্থ্য-পরীক্ষা (৫-মিনিট ক্যাশ + voice-verification রেকর্ড), সৎ সীমা-লেবেল (অপ্রাতিষ্ঠানিক/একক কণ্ঠ/গতি>১ অসমর্থিত/কথা-শুধু)। কোনো key/পেমেন্ট নেই।
+- tts-cache.ts: synthRaw-এ goog-রাউটিং + TTS_CACHE_DIR env-ওভাররাইড; edge_tts.ts: engine-ইউনিয়নে 'goog'; language_controller.ts: bn-প্রোফাইলে GOOG কণ্ঠ (ক্ষমতা-ট্যাগসহ, চেইনের শেষে), deadEngines ত্রি-ইঞ্জিন, ইঞ্জিন-লেবেল, VOICE_UNAVAILABLE বার্তায় উভয় প্রোভাইডার, googNotes (গতি/লোকেল-সীমা), phoneticEnglish এখন কেবল z-ai-কণ্ঠে (Google বাংলা লিপি পড়ে!), resolveVoice-এ গুগল-পছন্দ সম্মানিত।
+- LF-1 (§1.4 সততা-স্তর): SpeechVerification-এ languageStatus: ASR_VERIFIED | AUDIO_VALIDATION_ONLY | LANGUAGE_UNVERIFIED — bn+Edge/bn+goog ফল সৎভাবে AUDIO_VALIDATION_ONLY (script-preserving বাংলা ASR পরিবেশে নেই); languageStatusLabel helper; pipeline verify-ধাপ/আর্টিফ্যাক্ট-মেটা/ফলাফলে প্রবাহিত; artifact-view.tsx-এ ভাষা-স্ট্যাটাস ব্যাজ (emerald/amber/zinc)।
+- সারফেস-আপডেট: api/system (googleTtsHealth), capabilities.ts নোট, config-panel নোট, prompts, tools/audio বিবরণ, model-registry-data (নতুন google-translate-tts এন্ট্রি: healthy + লাইভ-প্রোব-নোট), short_film.ts engineOfVoiceHeuristic 'goog'।
+- টেস্ট: নতুন t26-google-tts-provider (১৬ টেস্ট: সাফল্য/চাঙ্কিং/429/403/HTML-ব্লক/করাপ্ট/ছোট/নেটওয়ার্ক/টাইমআউট/পুনঃচেষ্টা/খালি-লেখা/গতি-পতাকা/কঠোর-ভাঙন/রেজিস্ট্রি/স্বাস্থ্য + রেকর্ড) + t0-google-tts-cache-routing (মক-মুক্ত প্রকৃত tts-cache রাউটিং + ক্যাশ-ডিডুপ — bun-এর একই-প্রসেস মক-লিকেজ এড়াতে বর্ণমালায়-আগে চলা আলাদা ফাইল)। t1/t8/t20/t25 চুক্তি-শক্তিশালীকরণ (Edge-403+Google-অচল ⇒ VOICE_UNAVAILABLE; Edge-403+Google-সুস্থ ⇒ সৎ ফলব্যাক; attempts ৪→৫)। টেস্ট-ইনফ্রা: preload এখন TTS_CACHE_DIR-ও টেম্পে রাউট (কোনো টেস্ট-ফিক্সচার প্রকৃত ক্যাশ বিষ-করতে পারবে না)।
+- **লাইভ E2E Test A (প্রকৃত অ্যাপ, dev server রিস্টার্টের পরে)**: POST /api/productions (voiceover, bn) → confirm 200 → **completed ১০০%** — prepare (কণ্ঠ নবনীতা) → synthesize (Edge-403 [AUTH_FAILED] → গুগল-ফলব্যাক) → verify (রায় warn + "অডিও-যাচাইকৃত · ভাষা অ-যাচাকৃত" + দৈর্ঘ্য ৫.০/৪.০) → master (loudnorm −১৬ LUFS) → validate। ২টি আর্টিফ্যাক্ট: WAV ৮৮৯KB (pcm_s16le 44.1kHz স্টেরিও ৫.০৪s, RMS −১৯.৯dB, peak −৩.৩dB, নীরবতা-গ্যাপ ০) + MP3 122KB (192k)। মেটাডেটা: voice bn-GOOG-Default, languageStatus AUDIO_VALIDATION_ONLY, পূর্ণ ফলব্যাক-প্রোভেনেন্স-নোট। চূড়ান্ত মাস্টারের ASR-সেম্যান্টিক-রাউন্ড-ট্রিপ: "今天，巴基斯坦的天空非常干净。" (অর্থ মিলেছে)। ব্রাউজারে সম্পন্ন-কার্ড + অডিও-প্লেয়ার রেন্ডার, console নির্ভুল। Evidence: docs/audit/latest-fix/evidence/test-a-*।
+- গেট: পূর্ণ স্যুট ২৫৯/২৫৯ পাস (২৫৪৪ expects, ২৮ ফাইল — বেসলাইন ২৪২ থেকে +১৭), tsc ০, lint ০।
+
+Stage Summary:
+- বাংলা TTS এই পরিবেশে আর ব্লকড নয়: Edge-403 হলে চেইন সৎভাবে গুগল-অনুবাদ বাংলা কণ্ঠে পড়ে (প্রমাণিত লাইভ প্রোডাকশন), উভয় অচল হলে VOICE_UNAVAILABLE (উভয়ের নামসহ), z-ai কখনোই নয়। ভাষা-দাবি এখন §1.4-সৎ (AUDIO_VALIDATION_ONLY লেবেল প্রতিটি আর্টিফ্যাক্টে)। গান/লিপ-সিঙ্ক পরবর্তী ফেজ।
+---
+Task ID: LF-2-R
+Agent: general-purpose (singing provider research)
+Task: Phase 2.2 — গাওয়া গান/sung-vocals প্রোভাইডার গবেষণা
+
+Work Log:
+- Context পড়া: worklog-এর RECOVERY-PUSH + LF-0+LF-1 এন্ট্রি এবং baseline-report.md-এর স্টাইল; পরিবেশ যাচাই (nproc=2, RAM 3.9GB, GPU নেই)।
+- web_search (z-ai CLI) ২০+ কোয়েরি: ACE-Step (v1/1.5/XL), YuE (v1/YuE2), MusicGen, Suno API, Udio API, Stable Audio (2.x/3.0/open), DiffRhythm, Google Lyria, fal.ai/Replicate/HF Inference hosting, বাংলা AI-গানের প্রমাণ, fal free-credits, HF free tier, ACE-Step/YuE ভাষা-তালিকা।
+- সরাসরি উৎস-fetch: GitHub raw README (ACE-Step-1.5, YuE main + YuE-v1 branch, ACE-Step v1), HF model cards (facebook/musicgen-large, ACE-Step/acestep-transcriber, Ace-Step1.5), arXiv 2602.00744 (ACE-Step 1.5 paper), HF API (`api/models?search=ace-step|diffrhythm` → সবগুলোর inferenceProviderMapping=none), Gemini docs (Lyria), map-yue.github.io।
+- **Live probe:** official ACE-Step HF Space (ACE-Step/Ace-Step-v1.5, RUNNING on zero-a10g) — anonymous Gradio API খোলা (HTTP 200, /generation_wrapper 49-param, simple_vocal_language parameter); দুইবার anonymous generation-call (Bengali folk-song request, custom + simple mode) — দুটোই তাৎক্ষণিক `event: error, data: null` → keyless generation ব্যবহারিকভাবে ব্যর্থ।
+- রিপোর্ট লেখা: docs/audit/latest-fix/singing-provider-research.md (প্রতি-প্রোভাইডার evidence URL, বাংলা-প্রমাণ সারণি, summary matrix, সৎ চূড়ান্ত রায়)। কোনো source code স্পর্শ হয়নি।
+
+Stage Summary:
+- Vocals-সক্ষম প্রোভাইডার আছে: ACE-Step 1.5 (MIT, ≤6GB VRAM min, "50+ languages" দাবি), YuE/YuE2 (v1 Apache-2.0, YuE2 weights CC BY-NC 4.0, 24GB VRAM), DiffRhythm (Apache 2.0, 16GB), Suno/Udio (cloud, কোনো official public API নেই — Suno partner-only), Google Lyria 3/3.5 (Gemini API, paid preview $0.08/song), Stable Audio open weights = instrumental-only, MusicGen = instrumental-only (model card-এ লেখা vocals চলে না)।
+- বাংলা গান: বাণিজ্যিক প্ল্যাটফর্মে প্রমাণ আছে (brev.ai ৩৩, musichero ১৯০ বাংলা AI-ট্র্যাক; Soundverse টিউটোরিয়াল) কিন্তু সব paid/web-only; ACE-Step-এর transcriber-এ Bengali (bn) আছে কিন্তু সেটি গায়ক-মডেল নয়; YuE-এ শুধু en/zh/ja/ko — অতএব যেকোনো free/local পথে "Bengali singing supported" দাবি = UNVERIFIED।
+- চূড়ান্ত রায়: এই sandbox-এ বিনামূল্য/keyless প্রকৃত sung-vocals generation এখন **সম্ভব নয়** — (১) local সব মডেল GPU চায় এবং সবচেয়ে ছোটটির weights (≈4.7GB) sandbox RAM (3.9GB)-এর বাইরে; (২) সব hosted vocals-API-তে key+পেমেন্ট (fal free credits API-তে ব্যবহারযোগ্য নয়); (৩) HF Inference Providers কোনো lyrics-to-song মডেলই serve করে না (API-যাচাইকৃত; free tier মাসে $0.10); (৪) একমাত্র keyless কন্টেন্ডার ACE-Step HF Space-এর anonymous generation live-probe-এ ব্যর্থ। সুপারিশ: বর্তমান honest instrumental-only অবস্থান বজায়; GPU/key এলে প্রথম পছন্দ ACE-Step 1.5 (MIT) + বাধ্যতামূলক Bengali live-verification টেস্ট, তার আগে কোনো ভাষা-দাবি নয়।
+---
+Task ID: LF-4-R
+Agent: general-purpose (lip-sync provider research)
+Task: Phase 4 — লিপ-সিঙ্ক প্রোভাইডার গবেষণা ও ব্লকেজ-মাত্রা পুনঃযাচাই
+
+Work Log:
+- প্রেক্ষাপট পঠিত: worklog-এর LF-0+LF-1 এন্ট্রি + docs/audit/recovery-phase-1-5/lipsync-capability-audit.md (৪-মাত্রিক ব্লকেজ-ঘোষণা: license needs_review / provider not_exposed_by_sdk / hardware unavailable_hardware / integration not_integrated) + latest-fix/baseline-report.md-এর ফরম্যাট।
+- web-search skill দিয়ে ২৩টি কোয়েরি (Wav2Lip/Wav2Lip-HQ লাইসেন্স+hosted, SadTalker, MuseTalk/LivePortrait, LatentSync, D-ID/HeyGen/sync.so/Hedra মূল্য, "lip sync API 2026", নতুন ওপেন-সোর্স, বাংলা-প্রমাণ, কথা-বনাম-গান বেঞ্চমার্ক, HF ZeroGPU-কোটা, fal/Replicate ফ্রি-টায়ার)।
+- Primary-source সরাসরি ফেচ ও যাচাই: GitHub raw README/LICENSE — Rudrabha/Wav2Lip (নন-কমার্শিয়াল দাবি হুবহু অক্ষত + নতুন "Commercial Version"=sync.so সেকশন), OpenTalker/SadTalker (Apache-2.0 + "removed the non-commercial restriction" — পরিবর্তন), TMElyralab/MuseTalk (MIT কোড + ওয়েট "any purpose, even commercially" — 1.5 রিলিজ, পরিবর্তন), KwaiVGI→KlingAIResearch/LivePortrait (MIT; ভিডিও-চালিত reenactment), bytedance/LatentSync (Apache-2.0 কোড; v1.5=8GB/v1.6=18GB VRAM), MeiGen-AI/InfiniteTalk (Apache-2.0 মডেলসহ)।
+- Hosted-দাম যাচাই model-page billing-JSON থেকে: Replicate — kling-lip-sync $0.014/s, wan-2.2-s2v $0.02/s, heygen lipsync-speed $0.0333/s, sync/lipsync-2 $0.05/s, lipsync-precision $0.0667/s, omni-human $0.14/s, latentsync ≈$0.10/run, musetalk(douwantech) ≈$0.054/run, sadtalker ≈$0.13/run; fal.ai sync-lipsync $0.70/min (partner); sync.so pricing+billing docs — ফ্রি অ্যাকাউন্টে ৩ জেনারেশন/মাস, lipsync-2 $0.05/s, lipsync-1.9 $0.025/s, sync-3 $0.1334/s; HeyGen help-center — Feb 2026 থেকে ফ্রি API ক্রেডিট নেই, Speed-LipSync $0.81/min, Precision $1.50/min; D-ID 14-দিনের ট্রায়াল; Hedra Character-3 ≈$0.025–0.0625/s (তৃতীয়-পক্ষ)। "Sana GeniusRP" — কোনো ফলাফল নেই → UNVERIFIED।
+- HF API যাচাই: LatentSync-1.6 ওয়েট license:openrail++, MuseTalk license:mit, Wan2.2-S2V-14B license:apache-2.0, LTX-2.3-DubIt license:other, OmniHuman HF রিপো gated।
+- বাংলা-প্রমাণ অনুসন্ধান: TRAVID (arXiv 2309.11338) English→Bengali/Hindi/Nepali/Telugu লিপ-সিঙ্কড ডাবিং (পরোক্ষ-প্রমাণ); IEEE Access 2025 (DOI 10.1109/ACCESS.2025.3562883, DOAJ API) Wav2Lip-ডাবিং Tamil/Telugu/Hindi/English-এ পরীক্ষিত (বাংলা নয়); বাংলা গানে লিপ-সিঙ্কের কোনো প্রমাণ নেই। কথা-বনাম-গান: Hi-Singers (arXiv 2609.22264, সেপ্টেম্বর ২০২৬) — speech-trained মডেল গানে rhythmic drift-এ ভোগে, প্রথম বড় গান-হেড ডেটাসেট+বেঞ্চমার্ক (২৯,৬০৮ ক্লিপ/১৭০ ঘণ্টা)।
+- SDK+হার্ডওয়্যার পুনঃযাচাই: z-ai-web-dev-sdk npm-এও 0.0.18-ই latest; CreateVideoGenerationBody-তে অডিও-ইনপুট নেই, lip/viseme/talking/avatar/reenact → ০ ম্যাচ; sandbox ২ CPU/৪GB RAM/GPU-বিহীন (/proc/driver/nvidia অনুপস্থিত) প্রত্যয়িত; lip_sync_module.ts আজও সৎ-থ্রোইং (available:false, ৪-মাত্রিক ঘোষণা), registry-এন্ট্রি অপরিবর্তিত।
+- রিপোর্ট লেখা: docs/audit/latest-fix/lipsync-provider-research.md (১৩ সেকশন — প্রতি-প্রোভাইডার evidence URL, সারাংশ-ম্যাট্রিক্স, ৪-মাত্রিক চূড়ান্ত রায়)। কোনো source code পরিবর্তন নেই, কোনো commit নেই।
+
+Stage Summary:
+- License মাত্রা — আংশিক পরিবর্তন: Wav2Lip-এর একাডেমিক-কেবল দাবি ২০২৬-এও সঠিক; কিন্তু MuseTalk (MIT কোড+commercial ওয়েট), SadTalker (Apache-2.0, নন-কমার্শিয়াল শর্ত প্রত্যাহৃত), LatentSync (Apache কোড+OpenRAIL++ ওয়েট), Wan2.2-S2V/InfiniteTalk (Apache-2.0) এখন commercial-clear — প্রার্থী-শ্রেণিতে লাইসেন্স আর প্রধান ব্লক নয়।
+- Provider মাত্রা — এখনও BLOCKED (কারণ-স্পষ্টীকরণসহ): SDK v0.0.18 এখনো latest, লিপ-সিঙ্ক/অডিও-কন্ডিশনিং নেই; বাইরে hosted API প্রচুর ($0.014/s থেকে) ও sync.so-তে সত্যিকারের ফ্রি ৩-জেনারেশন/মাস কোটাও আছে — কিন্তু প্রতিটিতে account+API key লাগে; একমাত্র keyless পথ HF ZeroGPU anonymous ২ মিনিট/দিন — অনির্ভরযোগ্য, production-অযোগ্য → এই পরিবেশে credential-ব্লকড।
+- Hardware মাত্রা — এখনও BLOCKED: সব বর্তমান মডেল CUDA-GPU চায় (MuseTalk-এর নথিভুক্ত ন্যূনতম 4GB-VRAM GPU, fp16-এ ৮সে≈৫মি); LatentSync ৮–১৮GB; এই ২-CPU/GPU-বিহীন sandbox-এ স্ব-হোস্টিং অসম্ভব।
+- Integration মাত্রা — এখনও BLOCKED: কোনো adapter/অনুমোদিত প্রোভাইডার নেই; সৎ-গেট অপরিবর্তিত।
+- চূড়ান্ত রায়: paid credential ছাড়া ও GPU ছাড়া এই sandbox-এ প্রকৃত লিপ-সিঙ্ক অসম্ভব — সামগ্রিক BLOCKED বৈধ; বাস্তব পথ = ব্যবহারকারীর অনুমোদনে hosted provider+key+বাজেট (MuseTalk/LatentSync-ক্লাস, বাংলা কথা আগে পরীক্ষা; বাংলা গানে প্রমাণ শূন্য — singingStatus কখনো দাবি করা যাবে না)।
+
+---
+Task ID: LF-2 + LF-3 + LF-4 + LF-5 (main agent — Phase 2-5)
+Agent: main (Z.ai Code)
+Task: Phase 2 (ক্ষমতা-বিচ্ছেদ + গান-প্রোভাইডার গবেষণা), Phase 3 (ন্যারেটিভ-ক্রম পর্যালোচনা), Phase 4 (লিপ-সিঙ্ক পুনঃযাচাই), Phase 5 (নির্ভরযোগ্যতা-অডিট + TTS-ক্যাশ আইসোলেশন)।
+
+Work Log:
+- LF-2-R (সাবএজেন্ট, web-search): singing-provider-research.md — ACE-Step/YuE/MusicGen/Suno/Udio/Stable Audio/Lyria/DiffRhythm/HF-Inference। রায়: এই পরিবেশে গাওয়া-গান BLOCKED (সব ভোকাল-API key+পেমেন্ট; লোকাল মডেল GPU-চাহিত — হালকাতম ACE-Step-এর ওজনও sandbox RAM-এর চেয়ে বড়; HF-Inference-এ lyrics-to-song সেবা নেই; একমাত্র keyless প্রার্থী ACE-Step HF Space দুইবার লাইভ-প্রোবে error)। ভবিষ্যৎ-প্রার্থী: ACE-Step 1.5 (MIT) + বাংলা-গাওয়ার লাইভ-যাচাই বাধ্যতামূলক। MusicGen instrumental-only (মডেল-কার্ড-প্রমাণ)।
+- LF-2 কোড: MUSIC_ENGINE_LABEL-এ ক্যানোনিক্যাল [PROCEDURAL_INSTRUMENTAL] টোকেন; sung-song intent-পথের সৎ-প্রকাশনা নথিভুক্ত-যাচাইকৃত।
+- LF-4-R (সাবএজেন্ট, web-search): lipsync-provider-research.md — Wav2Lip একাডেমিক-কেবল অবশিষ্ট-সঠিক; MuseTalk 1.5 এখন MIT (ওজন-সহ বাণিজ্যিক-OK), SadTalker Apache-2.0 (লাইসেন্স-মাত্রা আংশিক-বদলেছে); provider (সব হোস্টেড API key+পেমেন্ট)/hardware (GPU)/integration ব্লকেজ বহাল → সামগ্রিক BLOCKED অপরিবর্তিত। lip_sync_module.ts-এর ঘোষণা প্রমাণ-সামঞ্জস্যপূর্ণ করে হালনাগাদ।
+- LF-3 কোড: নতুন cinematic/narrative.ts — reviewNarrative() ৫ ধরনের সতর্কতা (OPENING_NOT_ESTABLISHING/SCENE_INTERLEAVED/REACTION_BEFORE_ACTION/VERY_SHORT_SHOT_CHAIN/SCENE_BOUNDARY_WITHOUT_NOTE) + সৎ scope-নোট (দৃশ্য-কাস্ট-তালিকা ডেটা-মডেলে নেই — সদস্যপদ-যাচাই অসম্ভব, সৎভাবে ঘোষিত)। preview-ফলাফলে narrativeReview + production-card-এ ⚠ ব্লক। ৭ নতুন টেস্ট (REG-16Na…Ng)।
+- LF-5: TTS_CACHE_DIR env-ওভাররাইড + প্রিলোড-আইসোলেশন (কোনো ভবিষ্যৎ টেস্ট প্রকৃত TTS-ক্যাশ বিষ-করতে পারবে না); শট-ক্যাশ ফিঙ্গারপ্রিন্ট {v,model,prompt,duration,quality,image,withAudio,size} ও TTS-কী {voice,speed,text} যাচাইকৃত (§5-ক্যাশ-কী চাহিদা)।
+- Phase-7 গেট: পূর্ণ স্যুট ২৬৬/২৬৬ পাস (২৫৫৯ expects, ২৮ ফাইল — আজকের শুরু ২৪২ → +২৪), tsc ০, lint ০, prisma validate বৈধ, git diff --check পরিষ্কার। bun run build = NOT RUN (পরিবেশ-নিয়ম)।
+- Phase-6 Test C+D লাইভ-রান চালু: মিউজিক ভিডিও cmvcsgzwa000jsmrz2ffuqrwj (৩০ সে., CogVideoX-3, ৩ শট) — song_input/visual_plan/characters সম্পন্ন; শট ১-২ সম্পন্ন, শট ৩ কুলডাউনে।
+
+Stage Summary:
+- গান ও লিপ-সিঙ্ক প্রোভাইডার-গবেষণা সাক্ষ্যপূর্ণ (উভয়ই environment-BLOCKED, সৎ-ঘোষণা হালনাগাদ); ইনস্ট্রুমেন্টাল-লেবেল ক্যানোনিক্যাল-টোকেনসহ; ন্যারেটিভ-পর্যালোচনা নতুন স্তর; ক্যাশ-আইসোলেশন সক্রিয়। পরবর্তী: Test C+D সমাপ্তি + বাকি deliverable-নথি।
+
+---
+Task ID: LF-6 + LF-7 + LF-DELIVERABLES (main agent — Phase 6-7 সমাপ্তি ও সব নথি)
+Agent: main (Z.ai Code)
+Task: Phase 6 (বাস্তব E2E Test A-D), Phase 7 (গুণমান-গেট), এবং docs/audit/latest-fix/-এর ৮টি deliverable।
+
+Work Log:
+- **Test C+D (লাইভ, মক-মুক্ত):** মিউজিক ভিডিও cmvcsgzwa000jsmrz2ffuqrwj (৩০ সে., CogVideoX-3) — song_input (প্রসিডিউরাল ৬৮ BPM, সৎ-লেবেল) → visual_plan → characters (প্রকৃত ইমেজ-জেনারেশনে "শিল্পী" পোর্ট্রেট) → generate_shots ৩/৩ প্রকৃত AI (রেট-লিমিট-কুলডাউন সহ্যসহ, ~২৮ মিনিট) → timeline ২৯.৫ সে. → final_qc। চূড়ান্ত MP4: h264 1920×1080@30fps + AAC 44.1kHz stereo, 22.3MB — ffprobe-যাচাইকৃত। মেটাডেটা-সততা: musicEngine "procedural_instrumental", [PROCEDURAL_INSTRUMENTAL] নোট, lipSync:false + "গায়কের মুখ নড়াচড়া বা গাওয়ার দাবি করা হয় না", honestLabel "সব ৩টি শট প্রকৃত AI", avSyncOk:true। স্ট্যাটাস partial — একমাত্র partialNote সৎ-স্পিড-আপ-ওভারল্যাপ (ব্যর্থতা নয়)। ব্রাউজারে কার্ড+থাম্বনেইল রেন্ডার, console নির্ভুল। Evidence: test-cd-final-musicvideo.mp4 + test-cd-shotplan.json + test-cd-artist-portrait.png + test-cd-production-summary.json।
+- লাইভ-রান-১ পাঠ (সৎ-নথি): Test A রান-১ ব্যর্থতার কারণ ছিল পুরোনো-মডিউলে চলা dev-server (বার্তা-পাঠে শনাক্ত) — রিস্টার্টের পরেই সফল; B-7-এ অপারেশনাল-নোট।
+- Phase-7 গেট (চূড়ান্ত): tsc ০, lint ০, prisma validate বৈধ, **২৬৬/২৬৬ টেস্ট** (২৫৫৯ expects, ২৮ ফাইল), git diff --check পরিষ্কার; bun run build = NOT RUN (পরিবেশ-নিয়ম)।
+- Deliverables (docs/audit/latest-fix/): baseline-report.md, root-cause-register.md, provider-capability-matrix.md, implementation-report.md, real-media-evidence.md, test-results.md, remaining-blockers.md, final-acceptance-report.md — সব প্রমাণ-লিংকসহ; evidence/ ফোল্ডারে কাঁচা মিডিয়া (গুগল-প্রোব, Test A মাস্টার+ASR, Test C+D চূড়ান্ত MP4/প্ল্যান/পোর্ট্রেট)।
+- চূড়ান্ত রায়: **PASS WITH LIMITATIONS** — মূল কাজ লাইভ-প্রুভেন (বাংলা TTS আনলকড, প্রকৃত AI ভিডিও E2E); সীমা: গাওয়া-গান/লিপ-সিঙ্ক পরিবেশ-বাধিত-সৎ, ভাষা-যাচাই AUDIO_VALIDATION_ONLY-সৎ, মানব-রিভিউ অপেক্ষমাণ, build পরিবেশে NOT RUN।
+- নিরাপত্তা: কোনো commit/push/merge হয়নি (মাস্টার-প্রম্পট-নিয়ম); কোনো সিক্রেট/কী নথিতে নেই; পেইড API/GPU ব্যবহার হয়নি; ধ্বংসাত্মক ডেটাবেস-অপারেশন হয়নি।
+
+Stage Summary:
+- latest-fix মিশন সম্পূর্ণ: অ্যাপ এখন এই sandbox-এই বাস্তবে ব্যবহারযোগ্য (বাংলা কথা + প্রকৃত AI ভিডিও, লাইভ-প্রমাণসহ); ৮ ডকুমেন্ট + ১৭ কাঁচা-প্রমাণ ফাইল + ২৪ নতুন টেস্ট; সততা-নীতি প্রতিটি স্তরে বজায়। রায়: PASS WITH LIMITATIONS।

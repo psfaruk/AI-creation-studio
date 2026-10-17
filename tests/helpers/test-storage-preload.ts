@@ -22,3 +22,8 @@ import path from 'path';
 const isolatedDir = mkdtempSync(path.join(os.tmpdir(), 'suite-voice-verify-'));
 process.env.VOICE_VERIFICATION_FILE =
   process.env.VOICE_VERIFICATION_FILE ?? path.join(isolatedDir, 'voice-verification.json');
+// LF-0 (D-1-সম্পূরক): TTS ডিস্ক-ক্যাশও টেম্পে রাউট — কোনো টেস্ট-ফিক্সচার
+// প্রকৃত storage/tts-cache-এ ভুয়া অডিও বসিয়ে পরবর্তী প্রকৃত সংশ্লেষণকে
+// বিষ-করতে পারবে না (tts-cache.ts TTS_CACHE_DIR এনভায়রনমেন্ট সম্মান করে)।
+process.env.TTS_CACHE_DIR =
+  process.env.TTS_CACHE_DIR ?? path.join(isolatedDir, 'tts-cache');

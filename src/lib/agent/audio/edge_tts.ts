@@ -495,7 +495,8 @@ export function edgeHealthSnapshot(): {
 
 export interface VoiceVerificationRecord {
   voice: string;
-  engine: 'edge' | 'zai';
+  /** LF-0: 'goog' = Google-Translate TTS (বাংলা কথা, লাইভ-যাচাইকৃত ২০২৬-১০-১৭) */
+  engine: 'edge' | 'zai' | 'goog';
   language: string;
   verdict: 'pass' | 'warn' | 'fail';
   /** রায় fail হলে টাইপড কাঠামোবদ্ধ কারণ (B2/D-2) — পুরনো রেকর্ডে নেই (ঐচ্ছিক) */

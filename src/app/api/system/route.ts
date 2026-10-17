@@ -6,6 +6,7 @@ import { requireOwner } from '@/lib/security';
 import { measureHardware, runToolHealthChecks } from '@/lib/system-info';
 import { ttsCacheStats } from '@/lib/agent/tts-cache';
 import { edgeTtsHealth } from '@/lib/agent/audio/edge_tts';
+import { googleTtsHealth } from '@/lib/agent/audio/google_tts';
 import { llmCacheStats } from '@/lib/agent/llm';
 import { coordinatorStatus } from '@/lib/agent/rate-limit-coordinator';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/limits';
@@ -22,16 +23,21 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) return auth.response;
 
   try {
-    const [hardware, tools, edgeTts] = await Promise.all([
+    const [hardware, tools, edgeTts, googleTts] = await Promise.all([
       measureHardware(),
       runToolHealthChecks(),
       edgeTtsHealth().catch(() => ({ ok: false, note: 'অজানা' })),
+      // LF-0: বাংলা কথার দ্বিতীয় প্রকৃত প্রোভাইডার (Google-Translate TTS) —
+      // ২০২৬-১০-১৭-এ লাইভ-যাচাইকৃত; Edge-403 পরিবেশে এটিই নির্ভরযোগ্য পথ
+      googleTtsHealth().catch(() => ({ ok: false, note: 'অজানা' })),
     ]);
     return NextResponse.json({
       hardware,
       tools,
       // ২০২৬-১০-১৩: বাংলা নিউরাল কণ্ঠ-পরিষেবা (Microsoft Edge) — bn-BD স্বাস্থ্য
       edgeTts,
+      // LF-0: Google-Translate বাংলা কণ্ঠের স্বাস্থ্য (bn-ফলব্যাক চেইনের অংশ)
+      googleTts,
       // §১১: TTS ডিস্ক-ক্যাশ/ডিডুপ-পরিসংখ্যান (hits=ক্যাশ-থেকে, misses=প্রকৃত API-কল)
       ttsCache: ttsCacheStats(),
       // S9: LLM-উত্তরের ডিস্ক-ক্যাশ পরিসংখ্যান

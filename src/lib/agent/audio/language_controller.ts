@@ -26,6 +26,7 @@ import type { SpeechLocale, SpeechLanguage } from '@/lib/types';
 import { normalizeBengaliSpeechText } from './bn-text-normalizer';
 import { isRateLimitErrorText } from '../retry';
 import { isEdgeVoice, EDGE_TTS_LABEL, recordVoiceVerification, type EdgeVoiceId } from './edge_tts';
+import { isGoogVoice, GOOGLE_TTS_LABEL, GOOGLE_TTS_VOICE } from './google_tts';
 
 // শেয়ার্ড চুক্তির উৎস (types.ts) থেকে লোকেল/ভাষা-ধরন পুনঃরপ্তানি (B-F10 + PART C)
 export type { SpeechLocale, SpeechLanguage };
@@ -164,8 +165,8 @@ export interface LanguageProfile {
 
 /** একটি কণ্ঠের যাচাইকৃত ক্ষমতা-ঘোষণা (B-F01) */
 export interface VoiceCapability {
-  /** যে ইঞ্জিনে কণ্ঠটি বাস করে */
-  engine: 'edge' | 'zai';
+  /** যে ইঞ্জিনে কণ্ঠটি বাস করে (LF-0: 'goog' = Google-Translate TTS) */
+  engine: 'edge' | 'zai' | 'goog';
   /** যে ভাষাগুলোতে কণ্ঠটি প্রশিক্ষিত/সক্ষম (প্রমাণসহ দাবি) */
   languages: SpeechLanguage[];
   /** Edge-নিউরাল কণ্ঠের ঘোষিত লোকেল */
@@ -181,9 +182,11 @@ export function voiceCapabilityOf(voice: string): VoiceCapability | undefined {
   return undefined;
 }
 
-/** কণ্ঠ কোন ইঞ্জিনের — Edge-নিউরাল নাম হলে 'edge', নয়তো z-ai */
-export function engineOfVoice(voice: string): 'edge' | 'zai' {
-  return isEdgeVoice(voice) ? 'edge' : 'zai';
+/** কণ্ঠ কোন ইঞ্জিনের — Edge-নিউরাল নাম হলে 'edge', Google-নাম 'goog', নয়তো z-ai */
+export function engineOfVoice(voice: string): 'edge' | 'zai' | 'goog' {
+  if (isEdgeVoice(voice)) return 'edge';
+  if (isGoogVoice(voice)) return 'goog';
+  return 'zai';
 }
 
 export const LANGUAGE_PROFILES: Record<SpeechLanguage, LanguageProfile> = {
@@ -195,19 +198,26 @@ export const LANGUAGE_PROFILES: Record<SpeechLanguage, LanguageProfile> = {
     // রানে Edge-403-এর পরে jam বাংলা পড়তে গিয়ে চীনা-অক্ষরের আবর্জনা
     // বানিয়েছিল (DB: speech-bn-jam — "可真的，可真的，踢踢踢…", সাদৃশ্য ০)।
     // Edge অচল হলে আর নীরব ভাষা-ভাঙা ফলব্যাক নয় — সৎ VOICE_UNAVAILABLE।
-    voices: ['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural'],
+    voices: ['bn-BD-NabanitaNeural', 'bn-BD-PradeepNeural', 'bn-IN-TanishaaNeural', 'bn-IN-BashkarNeural', GOOGLE_TTS_VOICE],
     voiceCapabilities: {
       'bn-BD-NabanitaNeural': { engine: 'edge', languages: ['bn'], locale: 'bn-BD' },
       'bn-BD-PradeepNeural': { engine: 'edge', languages: ['bn'], locale: 'bn-BD' },
       'bn-IN-TanishaaNeural': { engine: 'edge', languages: ['bn'], locale: 'bn-IN' },
       'bn-IN-BashkarNeural': { engine: 'edge', languages: ['bn'], locale: 'bn-IN' },
+      // LF-0 (২০২৬-১০-১৭ লাইভ-প্রোব-যাচাইকৃত): Google-Translate TTS এই পরিবেশে
+      // প্রকৃত বাংলা উচ্চারণ দেয় (সঠিক দৈর্ঘ্য + RMS + ASR-সেম্যান্টিক-রাউন্ড-ট্রিপ)।
+      // চেইনের শেষ প্রার্থী — Edge-নিউরাল (bn-BD/bn-IN) সব অচল হলে সৎ ফলব্যাক।
+      // সীমা: অপ্রাতিষ্ঠানিক endpoint (SLA নেই), একক কণ্ঠ (লিঙ্গ/দেশীয়-উচ্চারণ
+      // পার্থক্য নেই), গতি>১ অসমর্থিত, কেবল কথা (গান নয়)।
+      [GOOGLE_TTS_VOICE]: { engine: 'goog', languages: ['bn'] },
     },
     nativeSupport: 'verified',
     asrSupport: 'weak',
-    environmentVerification: 'attempted',
+    environmentVerification: 'live',
     notes: [
-      `সব কণ্ঠ Microsoft-এর বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ (bn-BD: নবনীতা/প্রদীপ; bn-IN: তানিশা/ভাস্কর) — দেশীয় উচ্চারণ (${EDGE_TTS_LABEL})।`,
-      'z-ai কণ্ঠ (jam/douji) বাংলা-প্রশিক্ষিত নয় — ২০২৬-১০-১৬-এর রানে চীনা-আবর্জনা প্রমাণিত; তাই bn-চেইনে আর নেই। Edge অচল হলে সৎ ফলাফল = VOICE_UNAVAILABLE (§৪.২)।',
+      `প্রধান কণ্ঠগুলো Microsoft-এর বাংলা-প্রশিক্ষিত নিউরাল কণ্ঠ (bn-BD: নবনীতা/প্রদীপ; bn-IN: তানিশা/ভাস্কর) — দেশীয় উচ্চারণ (${EDGE_TTS_LABEL})।`,
+      `এই পরিবেশে Edge-403 হলে সৎ ফলব্যাক: ${GOOGLE_TTS_LABEL} — ২০২৬-১০-১৭-এ লাইভ-যাচাইকৃত বাংলা কথার কণ্ঠ (docs/audit/latest-fix/baseline-report.md §৩.৩)। একক কণ্ঠ, লিঙ্গ/bn-BD-bn-IN উচ্চারণ-পার্থক্য ও গতি-নিয়ন্ত্রণ নেই — ফলব্যাক-নোটসহ জানানো হয়।`,
+      'z-ai কণ্ঠ (jam/douji) বাংলা-প্রশিক্ষিত নয় — ২০২৬-১০-১৬-এর রানে চীনা-আবর্জনা প্রমাণিত; তাই bn-চেইনে আর নেই। Edge+Google উভয় অচল হলে সৎ ফলাফল = VOICE_UNAVAILABLE (§৪.২)।',
     ],
   },
   en: {
@@ -396,7 +406,9 @@ export function resolveVoice(language: SpeechLanguage, preferred?: string, local
   const profile = LANGUAGE_PROFILES[language];
   if (preferred && (profile.voices as string[]).includes(preferred)) {
     const pref = preferred as SpeechVoice;
-    if (language === 'bn' && !isEdgeVoice(pref)) {
+    // পুরোনো z-ai কণ্ঠের সদিচ্ছা-আপগ্রেড বহাল (REG-1d); তবে Google-বাংলা
+    // কণ্ঠ (LF-0) স্বীকৃত পছন্দ — ব্যবহারকারী সচেতনভাবে বেছে নিতে পারেন।
+    if (language === 'bn' && !isEdgeVoice(pref) && !isGoogVoice(pref)) {
       return profile.voices[0]; // নবনীতা (bn-BD নিউরাল) — সদিচ্ছা-আপগ্রেড
     }
     return pref;
@@ -554,14 +566,24 @@ export interface SpeechVerification {
   requestedVoice: SpeechVoice;
   /** প্রকৃতে ব্যবহৃত কণ্ঠ — স্পষ্ট নামেও (B-F06) */
   actualVoice: SpeechVoice;
-  /** প্রকৃত কণ্ঠের ইঞ্জিন (B-F06) */
-  engine: 'edge' | 'zai';
+  /** প্রকৃত কণ্ঠের ইঞ্জিন (B-F06; LF-0: 'goog' = Google-Translate) */
+  engine: 'edge' | 'zai' | 'goog';
   /** প্রকৃত কণ্ঠের লোকেল (Edge-কণ্ঠে; B-F10) */
   locale?: string;
   /** অনুরোধকৃত লোকেল, যদি দেওয়া হয়েছিল (B-F10) */
   requestedLocale?: string;
   /** প্রত্যাশিত ভাষা */
   language: SpeechLanguage;
+  /**
+   * LF-1 (মাস্টার-প্রম্পট §1.4): ভাষা-যাচাইয়ের সৎ স্ট্যাটাস — verdict-থেকে
+   * স্বাধীন মাত্রা। "ভাষা যাচাইকৃত" দাবি কেবল তখনই, যখন প্রকৃত প্রমাণ আছে।
+   *  - ASR_VERIFIED: script-preserving ASR রাউন্ড-ট্রিপ মিলেছে (এই পরিবেশে en)
+   *  - AUDIO_VALIDATION_ONLY: অডিও-গুণ যাচাইকৃত (ডিকোড/দৈর্ঘ্য/RMS/নীরবতা);
+   *    ভাষা-পরিচয় প্রোভাইডার-প্রমাণ/ক্যাটালগ-দাবির ওপর দাঁড়ানো — bn এখন এটাই
+   *    (script-preserving বাংলা ASR এই পরিবেশে নেই — ২০২৬-১০-১৭ প্রোব)
+   *  - LANGUAGE_UNVERIFIED: যাচাইই চলেনি (verify:false / ASR-ত্রুটি/warn-পথ)
+   */
+  languageStatus?: 'ASR_VERIFIED' | 'AUDIO_VALIDATION_ONLY' | 'LANGUAGE_UNVERIFIED';
   /** ASR ট্রান্সক্রিপ্ট (চাঙ্ক-যুক্ত) */
   transcript: string;
   /** ট্রান্সক্রিপ্টে শনাক্ত ভাষা */
@@ -594,8 +616,8 @@ export interface SynthesizedSpeech {
   voice: SpeechVoice;
   /** অনুরোধকৃত কণ্ঠ — রেজল্ভ/আপগ্রেডের আগের (B-F06) */
   requestedVoice: SpeechVoice;
-  /** প্রকৃত ইঞ্জিন (B-F06) */
-  engine: 'edge' | 'zai';
+  /** প্রকৃত ইঞ্জিন (B-F06; LF-0: 'goog' সহ) */
+  engine: 'edge' | 'zai' | 'goog';
   /** প্রকৃত কণ্ঠের লোকেল (Edge-কণ্ঠে; B-F10) */
   locale?: string;
   /** অনুরোধকৃত লোকেল, যদি দেওয়া হয়েছিল (B-F10) */
@@ -620,6 +642,7 @@ export async function verifySpeechBuffer(
   requestedVoice: SpeechVoice = voice
 ): Promise<SpeechVerification> {
   const edgeVoice = isEdgeVoice(voice);
+  const googVoice = isGoogVoice(voice);
   const engine = engineOfVoice(voice);
   const notes: string[] = [];
   const { writeFile, mkdtemp, rm } = await import('fs/promises');
@@ -655,11 +678,12 @@ export async function verifySpeechBuffer(
     rmsDb === -Infinity || (typeof rmsDb === 'number' && rmsDb < -50) || silenceCoverage >= 0.9;
 
   // ASR ব্যাক-চেক — কেবল যেখানে অর্থবহ: ইংরেজিতে ASR নির্ভরযোগ্য।
-  // বাংলায় ASR বোঝেই না — Edge-নিউরাল বাংলা কণ্ঠ এমনিতেই বাংলা-প্রশিক্ষিত,
-  // তাই বাংলা+Edge হলে ASR-কল বাদ (দ্রুততা + খরচ), দৈর্ঘ্য-যাচাইই রায়।
+  // বাংলায় ASR script-preserving ট্রান্সক্রিপ্ট দেয় না (২০২৬-১০-১৭ প্রোব:
+  // বাংলা কথাকে চীনা অনুবাদে ফেরত দেয়) — তাই bn+Edge/bn+goog ক্ষেত্রে
+  // ASR-কল রায়ের ভিত্তি নয়; bn+z-ai প্রতিরোধ-স্তর (B-F04) হিসেবে রয়ে গেছে।
   let transcript = '';
   let asrError = '';
-  const asrUseful = spec.language === 'en' || (!edgeVoice && spec.language === 'bn');
+  const asrUseful = spec.language === 'en' || (engine === 'zai' && spec.language === 'bn');
   if (asrUseful) {
     try {
       transcript = await transcribeBuffer(buffer, ext);
@@ -779,15 +803,25 @@ export async function verifySpeechBuffer(
   } else if (!durationOk) {
     verdict = 'warn';
     notes.push('দৈর্ঘ্য প্রত্যাশার সীমার বাইরে — প্রিভিউ শুনে নিশ্চিত করুন।');
-  } else if (edgeVoice && spec.language !== 'en') {
-    // দেশীয়-ভাষা + Edge-নিউরাল (bn/hi/ur/zh): কণ্ই সেই ভাষায়-প্রশিক্ষিত —
-    // দৈর্ঘ্য+নীরবতা-সুস্থ হলে রায় যাচাইকৃত (D-2 গেট আগেই নীরবতা কাটিয়েছে)।
-    // bn-বার্তাটি হুবহু আগের মতোই থাকে (REG-1h-চুক্তি)।
+  } else if ((edgeVoice || googVoice) && spec.language !== 'en') {
+    // দেশীয়-ভাষা + Edge-নিউরাল (bn/hi/ur/zh) বা Google-বাংলা কণ্ঠ (LF-0):
+    // অডিও-গণ সুস্থ হলে রায় যাচাইকৃত — তবে ভাষা-পরিচয়ের সৎ স্তর আলাদা
+    // (languageStatus): Edge = মাইক্রোসফট-ক্যাটালগ-দাবি, goog = লাইভ-প্রোব-প্রমাণ
+    // — দুটোই AUDIO_VALIDATION_ONLY (script-preserving বাংলা ASR এই পরিবেশে নেই)।
     verdict = 'pass';
     const langName = LANGUAGE_PROFILES[spec.language].name;
-    notes.push(
-      `${langName}-প্রশিক্ষিত নিউরাল কণ্ঠ (${voice}) — দেশীয় উচ্চারণ; দৈর্ঘ্য-যাচাই স্বাভাবিক (${durationSec.toFixed(1)} সে.)।`
-    );
+    if (edgeVoice) {
+      notes.push(
+        `${langName}-প্রশিক্ষিত নিউরাল কণ্ঠ (${voice}) — দেশীয় উচ্চারণ; দৈর্ঘ্য-যাচাই স্বাভাবিক (${durationSec.toFixed(1)} সে.)।`
+      );
+    } else {
+      notes.push(
+        `${langName} কথার কণ্ঠ (${GOOGLE_TTS_LABEL}) — প্রোভাইডারটি এই পরিবেশে লাইভ-যাচাইকৃত (২০২৬-১০-১৭ প্রোব: সঠিক দৈর্ঘ্য/RMS + ASR-সেম্যান্টিক-রাউন্ড-ট্রিপ); এই ফাইলে দৈর্ঘ্য/স্তর/নীরবতা-যাচাই স্বাভাবিক (${durationSec.toFixed(1)} সে.)।`
+      );
+      notes.push(
+        'সীমা: অপ্রাতিষ্ঠানিক পরিষেবা (SLA নেই), একক কণ্ঠ (লিঙ্গ/দেশীয়-উচ্চারণ পার্থক্য নেই); ভাষা-পরিচয় script-preserving ASR দিয়ে যাচাই হয়নি (AUDIO_VALIDATION_ONLY, §1.4)।'
+      );
+    }
   } else if (asrError) {
     verdict = 'warn';
     notes.push(`ASR ব্যাক-চেক চালানো যায়নি (${asrError}) — প্রিভিউ শুনে যাচাই করুন।`);
@@ -830,11 +864,28 @@ export async function verifySpeechBuffer(
     notes.push(`দীর্ঘ নীরব অংশ: ${longSilence.start.toFixed(1)}–${longSilence.end.toFixed(1)} সে.`);
   }
 
+  // ---- LF-1 (§1.4): ভাষা-যাচাইয়ের সৎ স্ট্যাটাস — verdict-থেকে স্বাধীন ----
+  let languageStatus: SpeechVerification['languageStatus'] = 'LANGUAGE_UNVERIFIED';
+  if (verdict !== 'fail') {
+    if (
+      spec.language === 'en' &&
+      asrUseful &&
+      !asrError &&
+      detectedLanguage === 'en' &&
+      similarity >= 0.5
+    ) {
+      languageStatus = 'ASR_VERIFIED';
+    } else if ((edgeVoice || googVoice) && spec.language !== 'en') {
+      languageStatus = 'AUDIO_VALIDATION_ONLY';
+    }
+  }
+
   const result: SpeechVerification = {
     voice,
     requestedVoice,
     actualVoice: voice,
     engine,
+    languageStatus,
     locale: voiceCapabilityOf(voice)?.locale,
     requestedLocale: spec.locale,
     language: spec.language,
@@ -979,9 +1030,12 @@ export async function synthesizeVerifiedSpeech(
   // নষ্ট কল ছাড়াই বাদ পড়ে। R-FIX-1 (RC-1/B-F01) সংযোজন: স্কিপের সাথে
   // **ভাষা-সামঞ্জস্য-যাচাই** — ক্ষমতা-ট্যাগহীন বা ভাষা-অযোগ্য কণ্ঠে
   // চেইন কখনো ঢোকে না (fail-closed)।
-  const deadEngines = new Set<'edge' | 'zai'>();
+  const deadEngines = new Set<'edge' | 'zai' | 'goog'>();
   const engineFailures: string[] = [];
-  const engineOf = (voice: string): 'edge' | 'zai' => (isEdgeVoice(voice) ? 'edge' : 'zai');
+  const engineOf = (voice: string): 'edge' | 'zai' | 'goog' => engineOfVoice(voice);
+  /** ইঞ্জিনের সুস্পষ্ট নাম — ব্যর্থতার সৎ বিবরণে (LF-0: goog-লেবেল) */
+  const engineLabel = (e: 'edge' | 'zai' | 'goog'): string =>
+    e === 'edge' ? EDGE_TTS_LABEL : e === 'goog' ? GOOGLE_TTS_LABEL : 'z-ai TTS';
   /** বর্তমান ফলাফলের আগে যে-ইঞ্জিন-ব্যর্থতাগুলো ঘটেছে — সৎ নোট আকারে */
   const fallbackNotes = (): string[] =>
     engineFailures.map(f => `ইঞ্জিন-ফলব্যাক ব্যবহার হয়েছে — আগের ইঞ্জিন ব্যর্থ (${f})`);
@@ -998,11 +1052,12 @@ export async function synthesizeVerifiedSpeech(
 
     attempts++;
     // §৪: বাংলা হলে টেক্সট-নর্মালাইজেশন — সংখ্যা/তারিখ/সময় শব্দে।
-    // Edge-নিউরাল কণ্ঠে ইংরেজি-ধ্বন্যাত্মক রূপ বাদ (ওরা মিশ্র লেখা সঠিকভাবেই পড়ে);
-    // z-ai কণ্ঠে সেটিও চালু। ভাষা-শনাক্তকরণ সবসময় *মূল* স্ক্রিপ্টেই হয়।
+    // Edge-নিউরাল ও Google-কণ্ঠ বাংলা লিপি সঠিকভাবেই পড়ে (phonetic-ইংরেজি
+    // রূপ নয়); কেবল z-ai কণ্ঠের জন্যই ধ্বন্যাত্মক রূপ (ওরা বাংলা লিপি
+    // পড়তে পারে না — প্রতিরোধ-স্তর)। ভাষা-শনাক্তকরণ সবসময় *মূল* স্ক্রিপ্টেই হয়।
     const bnNorm =
       spec.language === 'bn'
-        ? normalizeBengaliSpeechText(spec.script, { phoneticEnglish: !isEdgeVoice(voice) })
+        ? normalizeBengaliSpeechText(spec.script, { phoneticEnglish: engineOf(voice) === 'zai' })
         : null;
     const speakScript = bnNorm ? bnNorm.text : spec.script;
     const normNote = bnNorm?.changed
@@ -1020,7 +1075,7 @@ export async function synthesizeVerifiedSpeech(
       const failureCode = classifyEngineFailure(err);
       deadEngines.add(engineOf(voice));
       engineFailures.push(
-        `${engineOf(voice) === 'edge' ? EDGE_TTS_LABEL : 'z-ai TTS'}${
+        `${engineLabel(engineOf(voice))}${
           failureCode ? ` [${failureCode}]` : ''
         }: ${err instanceof Error ? err.message : String(err)}`.slice(0, 160)
       );
@@ -1028,8 +1083,18 @@ export async function synthesizeVerifiedSpeech(
     }
     const actualEngine = engineOf(voice);
     const actualLocale = capability.locale;
+    // LF-0: গুগল-কণ্ঠে গতি>১ অসমর্থিত + লোকেল-নির্দিষ্টতা নেই — সৎ নোট
+    const googNotes: string[] = [];
+    if (actualEngine === 'goog') {
+      if ((spec.speed ?? 1) > 1.001) {
+        googNotes.push(`গতি ${spec.speed}× অনুরোধ কিন্তু গুগল-কণ্ঠে গতি-নিয়ন্ত্রণ নেই — স্বাভাবিক গতিতে তৈরি।`);
+      }
+      if (spec.locale) {
+        googNotes.push(`অনুরোধকৃত লোকেল ${spec.locale}-এর নির্দিষ্ট কণ্ঠ অচল/পাওয়া যায়নি — সাধারণ বাংলা কণ্ঠ (Google-অনুবাদ) ব্যবহৃত; bn-BD/bn-IN উচ্চারণ-পার্থক্য এই কণ্ঠে নেই।`);
+      }
+    }
     if (!verify) {
-      const quickNotes = ['যাচাই বন্ধ ছিল — প্রিভিউ শুনে নিশ্চিত করুন।', ...fallbackNotes()];
+      const quickNotes = ['যাচাই বন্ধ ছিল — প্রিভিউ শুনে নিশ্চিত করুন।', ...fallbackNotes(), ...googNotes];
       if (normNote) quickNotes.push(normNote);
       if (upgradeNote) quickNotes.push(upgradeNote);
       // B-F10: লোকেল-বদল কখনো নীরব নয়
@@ -1052,6 +1117,7 @@ export async function synthesizeVerifiedSpeech(
           requestedVoice,
           actualVoice: voice,
           engine: actualEngine,
+          languageStatus: 'LANGUAGE_UNVERIFIED',
           locale: actualLocale,
           requestedLocale: spec.locale,
           language: spec.language,
@@ -1078,6 +1144,7 @@ export async function synthesizeVerifiedSpeech(
     );
     if (normNote) verification.notes.push(normNote);
     for (const note of fallbackNotes()) verification.notes.push(note);
+    for (const note of googNotes) verification.notes.push(note);
     if (upgradeNote) verification.notes.push(upgradeNote);
     // B-F10: লোকেল-বদলের সৎ নোট (নীরব ক্রস-ডায়ালেক্ট নিষিদ্ধ)
     if (spec.locale && verification.locale && verification.locale !== spec.locale) {
@@ -1136,8 +1203,10 @@ export async function synthesizeVerifiedSpeech(
       throw new SpeechSynthesisError(
         'VOICE_UNAVAILABLE',
         spec.language === 'bn'
-          ? // §4.2-এর হুবহু বার্তা — ব্যবহারকারীকে সৎভাবে জানানো হয়
-            `VOICE_UNAVAILABLE: No verified voice is available for the requested Bengali locale. (বাংলা-প্রশিক্ষিত কণ্ঠগুলো — Microsoft Edge-নিউরাল bn-BD/bn-IN — এই মুহূর্তে পৌঁছানো যাচ্ছে না${detail ? `: ${detail}` : ''}; z-ai কণ্ঠ বাংলা পড়তে পারে না বলে ভুল-ভাষার নীরব ফলব্যাক নিষিদ্ধ — §৪.২)`
+          ? // §4.2-এর হুবহু বার্তা — ব্যবহারকারীকে সৎভাবে জানানো হয় (LF-0:
+            // এখন বাংলার দ্বিতীয় প্রকৃত প্রোভাইডার Google-ও চেইনে — উভয়ই অচল
+            // হলেই এই বার্তা)
+            `VOICE_UNAVAILABLE: No verified voice is available for the requested Bengali locale. (বাংলা-প্রশিক্ষিত সব কণ্ঠ — Edge-নিউরাল bn-BD/bn-IN ও Google-Translate-এর বাংলা কণ্ঠ — এই মুহূর্তে পৌঁছানো যাচ্ছে না${detail ? `: ${detail}` : ''}; z-ai কণ্ঠ বাংলা পড়তে পারে না বলে ভুল-ভাষার নীরব ফলব্যাক নিষিদ্ধ — §৪.২)`
           : spec.language === 'en'
             ? `VOICE_UNAVAILABLE: এই মুহূর্তে কোনো যাচাইকৃত ইংরেজি কণ্ঠই পৌঁছানো যাচ্ছে না — সব TTS ইঞ্জিন অচল${detail ? ` (${detail})` : ''}`
             : // PART C: hi/ur/zh — সৎ বার্তা (কণ্ঠ ক্যাটালগে আছে, পৌঁছানো যাচ্ছে না)
@@ -1162,6 +1231,19 @@ export async function synthesizeVerifiedSpeech(
     `VERIFICATION_FAILED: চেইনের সব ${attempts}টি প্রার্থী কণ্ঠই ভাষা/প্রযুক্তি-যাচাইে ব্যর্থ — অডিও গ্রহণযোগ্য নয় (শেষ কণ্ঠ ${lastResult.voice}: ${failing.notes[0] ?? 'রায় ব্যর্থ'})`,
     { lastVerification: failing, attempts }
   );
+}
+
+/** LF-1: ভাষা-যাচাই-স্ট্যাটাসের বাংলা লেবেল (UI-তে ব্যবহার) */
+export function languageStatusLabel(status: SpeechVerification['languageStatus'] | undefined): string {
+  switch (status) {
+    case 'ASR_VERIFIED':
+      return 'ভাষা ASR-যাচাইকৃত';
+    case 'AUDIO_VALIDATION_ONLY':
+      return 'অডিও-যাচাইকৃত · ভাষা অ-যাচাকৃত (script-preserving ASR নেই)';
+    case 'LANGUAGE_UNVERIFIED':
+      return 'ভাষা অ-যাচাইকৃত';
+  }
+  return 'ভাষা অ-যাচাইকৃত';
 }
 
 /** রায়ের বাংলা লেবেল (UI-তে ব্যবহার) */

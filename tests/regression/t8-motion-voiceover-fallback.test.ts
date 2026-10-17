@@ -30,6 +30,8 @@ import path from 'path';
 import { encodeWav } from '@/lib/agent/audio/pcm';
 // edge_tts খাঁটি রাউটিং-মডিউল (t1-এর মতোই রিয়েল — নেটওয়ার্ক নেই)
 import { isEdgeVoice } from '@/lib/agent/audio/edge_tts';
+// LF-0: Google-কণ্ঠ শনাক্তকরণ (খাঁটি — নেটওয়ার্ক নেই)
+import { isGoogVoice, GOOGLE_TTS_VOICE } from '@/lib/agent/audio/google_tts';
 
 // ---- ইঞ্জিন-সীমানা মক (t1-প্যাটার্ন) ------------------------------
 let edgeMode: 'ok' | 'throw403' = 'ok';
@@ -45,6 +47,12 @@ function wavOfSeconds(sec: number): Buffer {
   return encodeWav(new Float32Array(n), new Float32Array(n), sr);
 }
 
+// LF-0: goog-বাকেট — bn-চেইনের শেষ প্রার্থী Google-বাংলা কণ্ঠ। এই ফাইলের
+// ক্ষয়-পরীক্ষাগুলোর মূল প্রশ্ন "কোনো বাংলা কণ্ঠই পৌঁছানো যায় না" — তাই
+// ডিফল্ট googMode='throw' (উভয় প্রোভাইডার অচল); সাফল্য-পথ Edge-ই দেয়।
+let googMode: 'okWav' | 'throw' = 'throw';
+const googCalls: { voice: string; text: string }[] = [];
+
 mock.module('@/lib/agent/tts-cache', () => {
   return {
     cachedSynthesizeSpeech: async (text: string, voice: string, _speed: number) => {
@@ -53,6 +61,13 @@ mock.module('@/lib/agent/tts-cache', () => {
         if (edgeMode === 'throw403') {
           // yrz3ymb7-এ রেকর্ডকৃত প্রকৃত ব্যর্থতা-বার্তার হুবহু আকৃতি
           throw new Error('Edge TTS সংযোগ-ত্রুটি: Unexpected server response: 403');
+        }
+        return { buffer: okWav, mimeType: 'audio/wav', ext: 'wav' };
+      }
+      if (isGoogVoice(voice)) {
+        googCalls.push({ voice, text });
+        if (googMode === 'throw') {
+          throw new Error('Google TTS ব্যর্থ — রেট-লিমিট (HTTP 429)');
         }
         return { buffer: okWav, mimeType: 'audio/wav', ext: 'wav' };
       }
@@ -100,8 +115,10 @@ beforeEach(() => {
   okWav = wavOfSeconds(1.6); // duration-OK স্টেরিও নীরবতা — প্রকৃত ffprobe দৈর্ঘ্য
   edgeCalls.length = 0;
   zaiCalls.length = 0;
+  googCalls.length = 0;
   edgeMode = 'ok';
   zaiMode = 'ok';
+  googMode = 'throw'; // LF-0: ক্ষয়-পরীক্ষার ডিফল্ট — উভয় বাংলা-প্রোভাইডার অচল
 });
 
 afterAll(async () => {
@@ -168,6 +185,8 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
 
     // প্রথম Edge 403-ই ইঞ্জিনকে অচল করে — Pradeep/Tanishaa/Bashkar কখনো ডাকা হয় না
     expect(edgeCalls.map(c => c.voice)).toEqual(['bn-BD-NabanitaNeural']);
+    // LF-0: শেষ প্রার্থী Google-ও চেষ্টিত ও অচল — উভয়ের নথি আছে
+    expect(googCalls.map(c => c.voice)).toEqual([GOOGLE_TTS_VOICE]);
     // Defect-A লক: z-ai (চীনা-ভাষা) কণ্ঠ কখনোই বাংলা পড়তে বসে না
     expect(zaiCalls.length).toBe(0);
     // খণ্ডটি সৎভাবে ব্যর্থ — টাইপড VOICE_UNAVAILABLE বার্তাসহ (নীরব-ভান নয়)
@@ -245,11 +264,12 @@ describe('REG-8: motion-video voiceover fallback (Phase-3 A)', () => {
       workingDir: wd,
     });
 
-    // প্রতি খণ্ডে সর্বোচ্চ ৪টি প্রোফাইল-কণ্ঠ (সবই Edge) — কিন্তু ইঞ্জিন
-    // মরলে মাত্র ১টি বাস্তব কল-ই যথেষ্ট; সীমা কখনো ছাড়ায় না
+    // প্রতি খণ্ডে সর্বোচ্চ ৫টি প্রোফাইল-কণ্ঠ (৪ Edge + ১ Google) — কিন্তু
+    // ইঞ্জিন মরলে প্রতি মৃত ইঞ্জিনে মাত্র ১টি বাস্তব কল-ই যথেষ্ট; সীমা কখনো ছাড়ায় না
     expect(edgeCalls.length).toBe(2); // প্রতি খণ্ডে ১টি Edge কল
+    expect(googCalls.length).toBe(2); // LF-0: প্রতি খণ্ডে ১টি Google কল
     expect(zaiCalls.length).toBe(0); // bn-চেইনে z-ai কণ্ঠ নেই
-    expect(edgeCalls.length + zaiCalls.length).toBeLessThanOrEqual(BN_CHUNKS.length * 4);
+    expect(edgeCalls.length + googCalls.length + zaiCalls.length).toBeLessThanOrEqual(BN_CHUNKS.length * 5);
     expect(out.chunks.length).toBe(0); // লুপ স্বাভাবিকভাবে সমাপ্ত (টাইমআউট নয়)
   });
 });

@@ -30,12 +30,31 @@ import { cn } from '@/lib/utils';
 
 interface SpeechVerification {
   verdict: 'pass' | 'warn' | 'fail';
+  /** LF-1 (§1.4): ভাষা-যাচাইয়ের সৎ স্ট্যাটাস — verdict-থেকে স্বাধীন */
+  languageStatus?: string;
+  languageStatusLabel?: string;
   transcript: string;
   detectedLanguage?: string;
   similarity?: number;
   durationSec?: number;
   notes?: string[];
 }
+
+/** LF-1: ভাষা-স্ট্যাটাস-ব্যাজের সৎ উপস্থাপন ("যাচাইকৃত" দাবি কেবল প্রমাণসহ) */
+const LANGUAGE_STATUS_META: Record<string, { label: string; badge: string }> = {
+  ASR_VERIFIED: {
+    label: 'ভাষা: ASR-যাচাইকৃত',
+    badge: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400',
+  },
+  AUDIO_VALIDATION_ONLY: {
+    label: 'ভাষা: অডিও-যাচাইকৃত · ASR-অযাচাইকৃত',
+    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  },
+  LANGUAGE_UNVERIFIED: {
+    label: 'ভাষা: অ-যাচাইকৃত',
+    badge: 'border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-400',
+  },
+};
 
 function readVerification(meta: Record<string, unknown> | undefined): SpeechVerification | null {
   const v = meta?.verification;
@@ -45,6 +64,8 @@ function readVerification(meta: Record<string, unknown> | undefined): SpeechVeri
   if (verdict !== 'pass' && verdict !== 'warn' && verdict !== 'fail') return null;
   return {
     verdict,
+    languageStatus: typeof obj.languageStatus === 'string' ? obj.languageStatus : undefined,
+    languageStatusLabel: typeof obj.languageStatusLabel === 'string' ? obj.languageStatusLabel : undefined,
     transcript: typeof obj.transcript === 'string' ? obj.transcript : '',
     detectedLanguage: typeof obj.detectedLanguage === 'string' ? obj.detectedLanguage : undefined,
     similarity: typeof obj.similarity === 'number' ? obj.similarity : undefined,
@@ -169,6 +190,20 @@ function VerificationCard({ verification, meta }: { verification: SpeechVerifica
         {languageLabel && (
           <span className="rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground">
             ভাষা: {languageLabel}
+          </span>
+        )}
+        {(verification.languageStatus || verification.languageStatusLabel) && (
+          <span
+            className={cn(
+              'inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium',
+              LANGUAGE_STATUS_META[verification.languageStatus ?? '']?.badge ??
+                'border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-400',
+            )}
+            title="ভাষা-পরিচয় কীভাবে যাচাই হয়েছে (সৎ-স্ট্যাটাস, §1.4)"
+          >
+            {verification.languageStatusLabel ??
+              LANGUAGE_STATUS_META[verification.languageStatus ?? '']?.label ??
+              verification.languageStatus}
           </span>
         )}
         {voice && (

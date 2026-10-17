@@ -274,6 +274,12 @@ export interface ShotPlanPreviewLive {
   beatSourceLabel: string;
   /** অডিও-বিশ্লেষণের সৎ নোট (আপলোড গানে থাকে) */
   analysisLabel?: string;
+  /** LF-3 (§3.2): ন্যারেটিভ-ক্রমের সৎ পর্যালোচনা — সতর্কতা-পতাকা */
+  narrativeReview?: {
+    warnings: { code: string; shotId?: string; sceneId?: string; messageBn: string }[];
+    checkedShots: number;
+    scopeNoteBn: string;
+  };
 }
 
 const PLAN_PREVIEW_TYPES = ['music_video', 'short_film'] as const;

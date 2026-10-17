@@ -211,7 +211,7 @@ export const MODEL_SEED: SeedModelEntry[] = [
       task_type: 'speech',
       voices: ['tongtong', 'chuichui', 'xiaochen', 'jam', 'kazi', 'douji', 'luodo'],
       supported_languages: {
-        bn: 'অসমর্থিত — কোনো z-ai কণ্ঠই বাংলা-প্রশিক্ষিত নয় (২০২৬-১০-১৬-এর প্রমাণ: চীনা-আবর্জনা); বাংলা-পথ = Edge-নিউরাল (নিচের আলাদা এন্ট্রি)',
+        bn: 'অসমর্থিত — কোনো z-ai কণ্ঠই বাংলা-প্রশিক্ষিত নয় (২০২৬-১০-১৬-এর প্রমাণ: চীনা-আবর্জনা); বাংলা-পথ = Edge-নিউরাল → Google-Translate ফলব্যাক (নিচের আলাদা এন্ট্রি)',
         en: 'নিশ্চিত (jam প্রধান; ASR রাউন্ড-ট্রিপ + শব্দ-আবৃত্তি-যাচাই কার্যকর)',
       },
       inputLimitChars: 1024,
@@ -262,8 +262,44 @@ export const MODEL_SEED: SeedModelEntry[] = [
       requires_gpu: false,
       fallback_tool: '—',
     },
-    notes: 'বাংলা-পথের একমাত্র যাচাইকৃত ইঞ্জিন। Edge অচল হলে bn = সৎ VOICE_UNAVAILABLE (z-ai কণ্ঠ বাংলা পড়তে পারে না — নীরব ভাষা-ভাঙা ফলব্যাক নিষিদ্ধ, R-FIX-1)।',
+    notes: 'bn-চেইনের প্রাথমিক ইঞ্জিন। LF-0 (২০২৬-১০-১৭): Edge অচল হলে সৎ ফলব্যাক = Google-Translate বাংলা কণ্ঠ (নিচের আলাদা এন্ট্রি); উভয় অচল হলে bn = সৎ VOICE_UNAVAILABLE (z-ai কণ্ঠ বাংলা পড়তে পারে না — নীরব ভাষা-ভাঙা ফলব্যাক নিষিদ্ধ, R-FIX-1)।',
     sortOrder: 31,
+  },
+  {
+    // LF-0 (latest-fix Phase 1, 2026-10-17): এই sandbox-এ লাইভ-যাচাইকৃত দ্বিতীয় বাংলা
+    // TTS প্রোভাইডার — Edge-403 পরিবেশে bn-চেইনের নির্ভরযোগ্য ফলব্যাক।
+    key: 'google-translate-tts',
+    name: 'Google Translate TTS (বাংলা কথা — লাইভ-যাচাইকৃত ফলব্যাক)',
+    category: 'audio',
+    provider: 'translate.google.com translate_tts (অপ্রাতিষ্ঠানিক endpoint, google_tts.ts অ্যাডাপ্টার)',
+    license: 'Google পরিষেবার শর্তাবলি — অপ্রাতিষ্ঠানিক পথ, কোনো SLA নেই',
+    commercialUse: 'unknown',
+    status: 'enabled',
+    licenseStatus: 'provider_api_only',
+    providerStatus: 'not_exposed_by_sdk',
+    integrationStatus: 'integrated',
+    // ২০২৬-১০-১৭ লাইভ-প্রোব: 200 + বৈধ MP3 + সঠিক দৈর্ঘ্য (৫.০৪ সে.) + সুস্থ RMS + ASR-সেম্যান্টিক-রাউন্ড-ট্রিপ
+    runtimeStatus: 'healthy',
+    apiEndpoint: 'GET translate.google.com/translate_tts?tl=bn (chunked, bounded 3-attempt retry, 15s timeout)',
+    // §1.4: script-preserving বাংলা ASR নেই → ভাষা-দাবি AUDIO_VALIDATION_ONLY
+    qualityStatus: 'quality_not_verified',
+    lastTestedAt: '2026-10-17',
+    lastTestNote: 'লাইভ-প্রোব (baseline-report §৩.৩): HTTP 200, বৈধ MP3, দৈর্ঘ্য ৫.০৪ সে. (বাক্যের প্রত্যাশার সাথে মিল), RMS −১৯dB — ASR বাংলা কথাটি চীনা অনুবাদে ফেরত দিয়ে অর্থ নিশ্চিত করেছে। সীমা: অপ্রাতিষ্ঠানিক (SLA নেই), একক কণ্ঠ, গতি>১ অসমর্থিত, ভাষা-পরিচয় script-preserving ASR-অযাচাইকৃত (AUDIO_VALIDATION_ONLY)',
+    tools: ['speech_synthesis', 'text_to_speech', 'audio পাইপলাইন (voiceover)', 'short_film সংলাপ/বর্ণনা-ধাপ'],
+    capabilities: {
+      task_type: 'speech',
+      voices: ['bn-GOOG-Default'],
+      supported_languages: {
+        bn: 'প্রকৃত বাংলা কথা (২০২৬-১০-১৭ লাইভ-যাচাইকৃত) — bn-চেইনের শেষ প্রার্থী (Edge-নিউরাল অচল হলে সৎ ফলব্যাক); একক কণ্ঠ, bn-BD/bn-IN উচ্চারণ-পার্থক্য নেই',
+      },
+      inputLimitChars: 180, // প্রতি-অংশ; দীর্ঘ লেখা বাক্য-সীমায় চাঙ্ক হয়
+      formats: ['mp3'],
+      sampleRate: 24000,
+      requires_gpu: false,
+      fallback_tool: '—',
+    },
+    notes: 'কোনো API key/পেমেন্ট নেই। Edge-নিউরাল অচল হলে bn-অনুরোধ এখানে সৎভাবে ফলব্যাক করে (ফলব্যাক-নোটসহ, রায় সর্বোচ্চ "সতর্কতা"); গান গাওয়া নয় — শুধু কথা।',
+    sortOrder: 32,
   },
   {
     key: 'platform-asr',

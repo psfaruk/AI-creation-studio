@@ -1,0 +1,14 @@
+{
+  "created": 1792262841,
+  "id": "20261018024720deb82a64ffb94186",
+  "request_id": "20261018024720deb82a64ffb94186",
+  "text": "今天，巴基斯坦的天空非常干净。",
+  "usage": {
+    "completion_tokens": 11,
+    "prompt_tokens": 125,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 136
+  }
+}

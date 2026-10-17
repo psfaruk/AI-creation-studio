@@ -982,3 +982,166 @@ describe('REG-16: cinematic shot-plan (Phase-5 A/B/C/D/E/F/I/L)', () => {
     expect(parseAndValidateShotPlan(clone(preview.plan)).ok).toBe(true);
   });
 });
+
+// ============================================================
+// LF-3 (latest-fix Phase 3, §3.2) — narrative sequence review
+// ============================================================
+
+import { reviewNarrative } from '@/lib/agent/cinematic/narrative';
+import type { CinematicPlan as LFPlan, CinematicShot as LFShot, CinematicScene as LFScene } from '@/lib/agent/cinematic/types';
+
+/** ন্যারেটিভ-পরীক্ষার জন্য ন্যূনতম বৈধ পরিকল্পনা-নির্মাতা */
+function lfScene(sceneId: string, purpose: string): LFScene {
+  return {
+    sceneId,
+    purpose,
+    narrativeBeat: `${purpose} — বিট`,
+    environment: 'a quiet riverside at dusk',
+    lightingMood: 'warm low-key light',
+  } as LFScene;
+}
+
+function lfShot(o: Partial<LFShot> & { shotId: string; sceneId: string; order: number }): LFShot {
+  return {
+    subject: 'scene',
+    size: 'medium',
+    angle: 'eye_level',
+    movement: 'static',
+    fallbackMove: 'static',
+    delivery: 'local_motion',
+    actionEn: 'The character looks at the river',
+    labelBn: `শট ${o.order + 1}`,
+    targetDurationSec: 2,
+    character: null,
+    ...o,
+  } as LFShot;
+}
+
+function lfPlan(shots: LFShot[], scenes: LFScene[]): LFPlan {
+  return {
+    version: SHOT_PLAN_VERSION,
+    type: 'music_video',
+    beatSource: 'duration_fallback',
+    scenes,
+    shots,
+    totalPlannedSec: shots.reduce((s, x) => s + x.targetDurationSec, 0),
+    adjustments: [],
+  } as unknown as LFPlan;
+}
+
+describe('REG-16-N: narrative sequence review (LF-3, §3.2) — semantic warnings, honest scope', () => {
+  test('REG-16Na: healthy arc (establishing first, contiguous scenes, action before reaction) → zero warnings', () => {
+    const plan = lfPlan(
+      [
+        lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'establishing_wide', subject: 'environment' }),
+        lfShot({ shotId: 'S02', sceneId: 'SC1', order: 1, subject: 'scene', character: 'রিফাত' }),
+        lfShot({ shotId: 'S03', sceneId: 'SC1', order: 2, subject: 'reaction', character: 'রিফাত' }),
+      ],
+      [lfScene('SC1', 'নদীর ধারে সন্ধ্যা')]
+    );
+    const review = reviewNarrative(plan);
+    expect(review.warnings).toEqual([]);
+    expect(review.checkedShots).toBe(3);
+    expect(review.scopeNoteBn).toContain('মানব-যাচাই');
+  });
+
+  test('REG-16Nb: non-establishing opening → OPENING_NOT_ESTABLISHING warning', () => {
+    const plan = lfPlan(
+      [lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'close_up' })],
+      [lfScene('SC1', 'দৃশ্য')]
+    );
+    const review = reviewNarrative(plan);
+    expect(review.warnings.some(w => w.code === 'OPENING_NOT_ESTABLISHING' && w.shotId === 'S01')).toBe(true);
+  });
+
+  test('REG-16Nc: interleaved scenes (A,B,A) → SCENE_INTERLEAVED warning', () => {
+    const plan = lfPlan(
+      [
+        lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'establishing_wide', subject: 'environment' }),
+        lfShot({ shotId: 'S02', sceneId: 'SC2', order: 1 }),
+        // SC2-র পরে SC1 ফিরে আসছে — অ-ধারাবাহিক
+        lfShot({ shotId: 'S03', sceneId: 'SC1', order: 2 }),
+      ],
+      [lfScene('SC1', 'নদীর ধার'), lfScene('SC2', 'বাজার')]
+    );
+    const review = reviewNarrative(plan);
+    expect(review.warnings.some(w => w.code === 'SCENE_INTERLEAVED' && w.shotId === 'S03')).toBe(true);
+  });
+
+  test('REG-16Nd: reaction with no prior action in scene → REACTION_BEFORE_ACTION warning', () => {
+    const plan = lfPlan(
+      [
+        lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'establishing_wide', subject: 'environment' }),
+        // environment এই পরীক্ষায় কর্ম-শ্রেণি নয় — একমাত্র শটই reaction
+        lfShot({ shotId: 'S02', sceneId: 'SC1', order: 1, subject: 'reaction' }),
+      ],
+      [lfScene('SC1', 'দৃশ্য')]
+    );
+    const review = reviewNarrative(plan);
+    expect(review.warnings.some(w => w.code === 'REACTION_BEFORE_ACTION' && w.shotId === 'S02')).toBe(true);
+  });
+
+  test('REG-16Ne: ৩+ পরপর <১সে. শট → VERY_SHORT_SHOT_CHAIN warning (কাট-ঝাঁকুনি)', () => {
+    const plan = lfPlan(
+      [
+        lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'establishing_wide', subject: 'environment' }),
+        lfShot({ shotId: 'S02', sceneId: 'SC1', order: 1, targetDurationSec: 0.6 }),
+        lfShot({ shotId: 'S03', sceneId: 'SC1', order: 2, targetDurationSec: 0.6 }),
+        lfShot({ shotId: 'S04', sceneId: 'SC1', order: 3, targetDurationSec: 0.6 }),
+      ],
+      [lfScene('SC1', 'দৃশ্য')]
+    );
+    const review = reviewNarrative(plan);
+    expect(review.warnings.some(w => w.code === 'VERY_SHORT_SHOT_CHAIN')).toBe(true);
+  });
+
+  test('REG-16Nf: চরিত্র দৃশ্য-সীমান্ত পেরোচ্ছে নোট ছাড়া → SCENE_BOUNDARY_WITHOUT_NOTE; নোট থাকলে নীরব', () => {
+    const noNote = lfPlan(
+      [
+        lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'establishing_wide', subject: 'environment' }),
+        lfShot({ shotId: 'S02', sceneId: 'SC1', order: 1, character: 'রিফাত' }),
+        lfShot({ shotId: 'S03', sceneId: 'SC2', order: 2, character: 'রিফাত' }),
+      ],
+      [lfScene('SC1', 'নদীর ধার'), lfScene('SC2', 'বাড়ি')]
+    );
+    const r1 = reviewNarrative(noNote);
+    expect(r1.warnings.some(w => w.code === 'SCENE_BOUNDARY_WITHOUT_NOTE' && w.shotId === 'S03')).toBe(true);
+
+    const withNote = lfPlan(
+      [
+        lfShot({ shotId: 'S01', sceneId: 'SC1', order: 0, size: 'establishing_wide', subject: 'environment' }),
+        lfShot({ shotId: 'S02', sceneId: 'SC1', order: 1, character: 'রিফাত' }),
+        lfShot({
+          shotId: 'S03',
+          sceneId: 'SC2',
+          order: 2,
+          character: 'রিফাত',
+          continuityNote: 'একই শাড়ি, একই কেশবিন্যাস — সন্ধ্যার পরের দৃশ্য',
+        }),
+      ],
+      [lfScene('SC1', 'নদীর ধার'), lfScene('SC2', 'বাড়ি')]
+    );
+    const r2 = reviewNarrative(withNote);
+    expect(r2.warnings.some(w => w.code === 'SCENE_BOUNDARY_WITHOUT_NOTE')).toBe(false);
+  });
+
+  test('REG-16Ng: প্রিভিউ-ফলাফলে narrativeReview প্রবাহিত (§3.4 পরিকল্পনা-প্রিভিউতে পতাকা)', async () => {
+    const { buildShortFilmPlanPreview, buildMusicVideoPlanPreview } = await import('@/lib/agent/cinematic/preview');
+    const sf = buildShortFilmPlanPreview({
+      spec: { type: 'short_film', durationSec: 60, quality: 'standard', videoEngine: 'ai_diffusion' } as never,
+    });
+    expect(sf.narrativeReview).toBeDefined();
+    expect(typeof sf.narrativeReview.checkedShots).toBe('number');
+    expect(Array.isArray(sf.narrativeReview.warnings)).toBe(true);
+
+    const mv = await buildMusicVideoPlanPreview({
+      spec: { type: 'music_video', durationSec: 30, quality: 'standard', musicSource: 'procedural', videoEngine: 'ai_diffusion' } as never,
+      song: null,
+    });
+    expect(mv.narrativeReview).toBeDefined();
+    expect(mv.narrativeReview.checkedShots).toBe(mv.plan.shots.length);
+    // নির্ধারক পরিকল্পক সুস্থ পরিকল্পনা দেয় — সতর্কতা থাকলে সেগুলো সৎ-পতাকা
+    // (কোনো পরিকল্পক-নিয়ম ভাঙার দাবি নয়, শুধু প্রবাহ-প্রমাণ)
+    expect(mv.narrativeReview.warnings.every(w => typeof w.messageBn === 'string' && w.messageBn.length > 0)).toBe(true);
+  });
+});

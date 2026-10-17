@@ -1,0 +1,14 @@
+{
+  "created": 1792259068,
+  "id": "20261018014428422dafbacf3f4841",
+  "request_id": "20261018014428422dafbacf3f4841",
+  "text": "The weather is beautiful today.",
+  "usage": {
+    "completion_tokens": 7,
+    "prompt_tokens": 90,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 97
+  }
+}
