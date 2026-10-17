@@ -16,6 +16,7 @@
 import path from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import type { VoicePreset } from '@/lib/types';
+import { db } from '@/lib/db';
 import { runFfmpeg, mediaInfo, audioQuality } from '@/lib/media/ffmpeg';
 import type { PipelineContext, PipelineFn, PipelineResult, StepHandle } from '../runner';
 // (P0-BUG-01 fix #3: খণ্ড ২+ সহ সব TTS-কল synthesizeVerifiedSpeech-এর
@@ -134,9 +135,29 @@ async function validateAndRegister(
 async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
   // --- prepare: স্ক্রিপ্ট খণ্ডবিভাজন + ভাষা-শনাক্তকরণ + কণ্ঠ-নির্বাচন ---
   const prep = await ctx.runStep('prepare', 'স্ক্রিপ্ট প্রস্তুত ও ভাষা-শনাক্তকরণ', async step => {
-    const text = (ctx.spec.text ?? '').trim();
+    let text = (ctx.spec.text ?? '').trim();
+    const fallbackNotes: string[] = [];
     if (!text) {
-      throw new Error('ভয়েসওভার স্ক্রিপ্ট (text) খালি — কণ্ঠ তৈরির জন্য লেখা দরকার।');
+      // কনফিগ-প্যানেলের প্রতিশ্রুত ফলব্যাক (hint: "খালি রাখলে চ্যাট-বার্তা
+      // থেকে নেওয়া হয়"): স্পেকে text না থাকলে কথোপকথনের সর্বশেষ
+      // ব্যবহারকারী-বার্তা থেকে নেওয়া — create.ts-এর ভাষা-সনাক্তকরণের
+      // একই প্যাটার্ন। বার্তাও না থাকলে সৎ-ব্যর্থতা (নীরব-কল্পনা নয়)।
+      const lastUserMsg = await db.message.findFirst({
+        where: { conversationId: ctx.conversationId, role: 'user' },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true },
+      });
+      const fromChat = (lastUserMsg?.content ?? '').trim();
+      if (fromChat) {
+        text = fromChat;
+        fallbackNotes.push(
+          `স্পেকে স্ক্রিপ্ট (text) খালি ছিল — চ্যাটের সর্বশেষ ব্যবহারকারী-বার্তা থেকে নেওয়া হলো (কনফিগ-প্যানেলের ঘোষিত নিয়ম)।`
+        );
+      } else {
+        throw new Error(
+          'ভয়েসওভার স্ক্রিপ্ট (text) খালি — কণ্ঠ তৈরির জন্য লেখা দরকার (স্পেকে বা চ্যাট-বার্তায় কোনো লেখা পাওয়া যায়নি)।'
+        );
+      }
     }
     const parts = chunkScriptForTts(text, 950);
     if (parts.length === 0) {
@@ -152,7 +173,7 @@ async function runVoiceover(ctx: PipelineContext): Promise<PipelineResult> {
     };
     const det = detectLanguage(text);
     let language: SpeechLanguage = ctx.spec.language ?? 'bn';
-    const notes: string[] = [];
+    const notes: string[] = [...fallbackNotes];
     if (det.language === 'other-script') {
       // B-F04-সংশ্লিষ্ট (R-FIX-2): বাংলা/লাতিন বাদে অন্য লিপি (CJK/দেবনাগরী/আরবি…)
       // — ভাষা বদলানো নয় (অন্য ভাষাও নয়); নির্বাচিত ভাষাতেই চেষ্টা হবে এবং

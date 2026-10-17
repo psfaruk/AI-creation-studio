@@ -2162,3 +2162,19 @@ Work Log:
 
 Stage Summary:
 - ৩৯ পরিবর্তিত + ১১ নতুন পথ, ~১৬৫২ সন্নিবেশ/১৩১ বিয়োগ (ট্র্যাকড) + ৮ নতুন ফাইল (t22–t25, review/, media-sniff, error-detail, preload, speech-wav); D-1…D-9 সব সমাধান-ও-টেস্ট-লকড বা সৎ-ব্লকড; hi/ur/zh রাউটিং-স্তরে সমর্থিত (লাইভ-যাচাই BLOCKED — পরিবেশে Edge-403); লিপ-সিঙ্ক ইন্টারফেস-সম্পূর্ণ, প্রকৃত মডেল ব্যবহারকারীর অনুমোদনের অপেক্ষায়। চূড়ান্ত রিপোর্ট ব্যবহারকারীর কাছে পেশ করা হয়।
+---
+Task ID: RECOVERY-PUSH (main agent — generation-blockage fix + authorized push)
+Agent: main (Z.ai Code)
+Task: ব্যবহারকারীর নির্দেশ "এখন তো কোনো কিছু জেনারেট করতে পারছি না, সব কিছু পুশ করেন" — জেনারেশন-ব্লকেজ নির্ণয় ও সমাধান + সব কমিট push।
+
+Work Log:
+- Phase 0 git ফরেনসিক: HEAD 1b4fbae (main, origin/main d982a4d থেকে ৪ কমিট এগিয়ে), ট্রি পরিষ্কার — "৪৪ dirty paths" দাবি পুরনো; ৩টি UUID-নামের কমিট = প্ল্যাটফর্ম auto-snapshot (MP5-LEAD-এর কাজ)।
+- মূল কারণ #১ (BLOCKER): dev.log-এ POST /api/productions/[id]/confirm → 500 — PrismaClientValidationError "Unknown argument confirmedAt"। কমিট 1b4fbae-এ schema-তে confirmedAt যোগ হয়েছিল কিন্তু রানটাইম Prisma Client regenerate হয়নি। সমাধান: bun run db:generate + bun run db:push (DB-তে কলাম আগেই ছিল)।
+- Dev-server persistence: স্যান্ডবক্স tool-call শেষে চাইল্ড-প্রসেস রিপ করে — double-fork + setsid (PPID 1) প্যাটার্নে স্থায়ী রিস্টার্ট নথিভুক্ত।
+- মূল কারণ #২ (regression): চ্যাট-প্রস্তাবিত ভয়েসওভার স্পেকে text না থাকায় audio-pipeline prepare-ধাপ সৎ-ব্যর্থ হচ্ছিল; কিন্তু কনফিগ-প্যানেল hint প্রতিশ্রুতি ("খালি রাখলে চ্যাট-বার্তা থেকে নেওয়া হয়") কোথাও বাস্তবায়িত ছিল না। সমাধান: pipelines/audio.ts runVoiceover-এ prepare-স্তরের ফলব্যাক — শেষ ব্যবহারকারী-বার্তা থেকে text, স্পষ্ট নোটসহ; বার্তাও না থাকলে সৎ-ব্যর্থতা। (create.ts-এর ভাষা-শনাক্তকরণের একই প্যাটার্ন; সব পথ — চ্যাট/স্টুডিও/সংশোধন — এক বিন্দুতে কভার।)
+- যাচাই (agent-browser, মালিক-সেশন লোকালি উৎপন্ন — পাসকোড অপরিবর্তিত): confirm → 200 (আগে 500); ব্যর্থ কার্ড "🔁 আবার চালান" → সংশোধন কার্ড → confirm → prepare ধাপ সফল (নোট: "স্পেকে স্ক্রিপ্ট খালি ছিল — চ্যাটের সর্বশেষ ব্যবহারকারী-বার্তা থেকে নেওয়া হলো"), synthesize-ধাপে সৎ VOICE_UNAVAILABLE (Edge TTS 403 — পরিবেশগত, ভুল-ভাষা নীরব-ফলব্যাক নিষিদ্ধ থাকায় সঠিক)।
+- গেট: পূর্ণ স্যুট ২৪২/২৪২ পাস (২৪৪৬ expects, ২৬ ফাইল), tsc 0 ত্রুটি, lint পরিষ্কার।
+- ব্রাউজার যাচাই: রেন্ডার, নেভিগেশন, কার্ড-অ্যাকশন সব সবুজ; console-এ কোনো error নেই।
+
+Stage Summary:
+- জেনারেশন-ব্লকেজ সমাধান: (১) Prisma Client regenerate — confirm-API এখন 200; (২) voiceover text-ফলব্যাক — প্রস্তাবিত প্রতিশ্রুতি এখন বাস্তব। বাংলা TTS জেনারেশন পরিবেশে Edge-403-এর কারণে সৎ-ব্লকড (কোড-সংশোধনের বাইরে)। কমিট: audio.ts ফিক্স + এই worklog; ব্যবহারকারীর সুস্পষ্ট অনুমোদনে origin/main-এ fast-forward push।
