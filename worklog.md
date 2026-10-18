@@ -2396,3 +2396,18 @@ Work Log:
 
 Stage Summary:
 - Verdict: NEEDS OWNER ACTION. Repository itself is verified push-ready (no technical blockers; all 10 gates pass; railpack failure root-caused and fixed by the very commits awaiting push). Outstanding items are owner-side: (1) confirm/complete the two token rotations (push itself uses the exposed PAT via .git/config remote URL — if already rotated, update the URL with the fresh credential), (2) set Railway variables + PostgreSQL + /app/storage volume BEFORE approving push (or accept a failing first deploy per guide §3.1), (3) explicit push approval with the new knowledge that push now triggers a Railway rebuild. No files modified except this worklog append (protocol record); no commit/push/deploy performed.
+---
+Task ID: P2-PUSH (main agent — owner-approved push execution)
+Agent: main (Z.ai Code)
+Task: মালিকের সুস্পষ্ট অনুমোদন ("Push করেন") — P2-GATE-কৃত কমিটগুলোর push সম্পাদন, push-পূর্ব সেফটি-রি-ভেরিফিকেশন ও পোস্ট-পুশ CI-নিশ্চিতকরণ।
+
+Work Log:
+- অবস্থা-ড্রিফট শনাক্ত ও নিষ্পত্তি (গেট-রিপোর্টের পরে সৃষ্ট): HEAD সরে গিয়েছিল 7b54bdb → 2569c8c-এ এবং ২৬টি ট্র্যাকড ফাইল "modified" দেখা যায়। বিশ্লেষণ: 2569c8c = শুধু worklog.md +১৯ লাইন (P2-GATE-এর প্রোটোকল-রেকর্ড; Author "Z User <z@container>", UUID-মেসেজ = স্ন্যাপশট-কমিট; ফুল-ডিফ পরীক্ষিত, সিক্রেটমুক্ত); ২৬টি ফাইল = শুধু mode-change 100644→100755, 0 insertions/0 deletions (sandbox-restore artifact), content অপরিবর্তিত, push-scope-এ অন্তর্ভুক্ত নয় — core.fileMode=false সেট করে লোকাল স্ট্যাটাস-নয়েজ নরমালাইজ।
+- চূড়ান্ত সিক্রেট-স্ক্যান: সম্পূর্ণ ট্র্যাকড-ট্রিতে লম্বা-টোকেন-প্যাটার্ন (ghp_/gho_/github_pat_/hf_/sk-/AIza/AKIA + ২০+ ক্যারেক্টার) → ২টি মিল, উভয়ই পুরনো টেস্ট-fixture (t14-capability-confirm: sk-CANA… len 39; t15-intent-metrics: sk-SECR… len 32 — CANARY/SECRET-ধাঁচের স্পষ্ট placeholder), উভয় ফাইলই push-scope-বহির্ভূত (origin-এ 92eb66d/310c712 থেকেই আছে, diff=0)। Push-scope সম্পূর্ণ সিক্রেটমুক্ত নিশ্চিত।
+- Push সম্পাদন: `git push origin main` → `02071ea..2569c8c main -> main` fast-forward, exit 0; post-push origin-sync ahead 0/behind 0। পুশ-ক্রেডেনশিয়াল কাজ করেছে → ghp_ টোকেন এখনো বৈধ (রোটেশন-এখনো-OPEN প্রমাণিত)।
+- CI নিশ্চিতকরণ: GitHub API unauthenticated rate-limited → পাবলিক HTML-স্ক্রেপ (repo public, HTTP 200): নতুন রান IN_PROGRESS পর্যবেক্ষণ → ~৬ মিনিট পোলিং-পরে **COMPLETED/SUCCESS** নিশ্চিত; Actions-ইতিহাসও নথির সাথে মিলছে (SUCCESS@1f74191, তার আগে ২টি FAILURE = ঐতিহাসিক ffmpeg/t27-ফিক্স রান)।
+- Railway-রিবিল্ড: এই পুশ ট্রিগার করেছে (গেট-ফাইন্ডিং অনুযায়ী); স্যান্ডবক্স থেকে পর্যবেক্ষণ-অসম্ভব। প্রত্যাশা: railway.json এখন সক্রিয় → DOCKERFILE বিল্ডার (bun 1.3.14-পিন, apt ffmpeg+fonts-noto-core, স্পষ্ট prisma generate) — মালিকের পেস্ট-করা railpack-ব্যর্থতার মূল-কারণ (bun 1.4.2 frozen-install prisma-generate চালায় না → tsc-এ ১৯ ত্রুটি) এই পুশেই সমাধানপ্রাপ্ত। ভেরিয়েবল/PG/ভলিউম সেট না থাকলে প্রথম ডিপ্লয় guide §3.1 মতো সৎ-ব্যর্থ হবে (অ-ধ্বংসাত্মক)।
+- এই worklog-রেকর্ড লোকাল docs-কমিটে রাখা হলো (push করা হয়নি — শুধু-docs পুশে অতিরিক্ত Railway-রিবিল্ড এড়াতে; পরের প্রাকৃতিক পুশে যাবে)।
+
+Stage Summary:
+- Push সম্পূর্ণ সফল: origin/main এখন @ 2569c8c (95c0640 Phase-2 কোড + 7b54bdb docs + 2569c8c worklog-গেট-রেকর্ড); GitHub CI নতুন HEAD-এ **সবুজ (SUCCESS)**। মালিকের অবশিষ্ট কর্তব্য: ① ghp_ টোকেন-রোটেশন এখনই (পুশ-সাফল্য = টোকেন-বৈধতা প্রমাণ; রোটেট করলে .git/config remote-URL-ও নতুন ক্রেডেনশিয়ালে আপডেট করতে হবে) ② hf_ টোকেন-রোটেশন (S-1) ③ Railway-ড্যাশবোর্ডে রিবিল্ড নিশ্চিত করা + DATABASE_URL/STUDIO_PASSCODE_HASH/STUDIO_SESSION_SECRET ভেরিয়েবল + PostgreSQL + /app/storage ভলিউম সেট করা ④ ডিপ্লয় সফল হলে phase-2-railway-staging.md §3.6 স্মোক-চেকলিস্ট অনুসরণ।
