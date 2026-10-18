@@ -119,6 +119,12 @@ jobs:
       - name: Run tests
         run: bun run test
 
+      # (i.5) Kagyle GPU worker — pure-logic python tests (stdlib-only;
+      # torch/transformers deliberately NOT installed — worker.py's
+      # lazy-import contract is proven live by exactly this constraint).
+      - name: Kagyle worker logic tests (python)
+        run: python3 kaggle/test_worker.py
+
       # (j) FIRST-EVER production build (B-D4): `next build &&
       # node scripts/prepare-standalone.mjs` (output: "standalone" in
       # next.config.ts). Runs LAST — the most likely step to fail; the
