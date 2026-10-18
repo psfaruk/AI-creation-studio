@@ -31,6 +31,7 @@ import { formatTimeBn, relativeTimeBn, toBnDigits } from '@/components/chat/bn-f
 import { withStudioToken } from '@/components/auth/security-gate';
 import { ProductionCard, ProviderStatusRow } from '@/components/studio/production-card';
 import { QuickCreateCard } from '@/components/studio/quick-create';
+import { KaggleGpuMusicCard } from '@/components/studio/kaggle-music-card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -449,6 +450,9 @@ export function ProductionsView() {
           setReload(n => n + 1);
         }}
       />
+
+      {/* ঐচ্ছিক রিমোট-প্রদানকারী — ক্যাগল GPU মিউজিক (অপ্ট-ইন; ডিফল্ট পথ অপরিবর্তিত) */}
+      <KaggleGpuMusicCard />
 
       {/* সেকশন ফিল্টার */}
       <div className="flex flex-wrap gap-2" role="group" aria-label="অবস্থা অনুযায়ী ফিল্টার">
