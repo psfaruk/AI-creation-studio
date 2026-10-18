@@ -78,3 +78,6 @@ storage/logs/
 # runtime SQLite database (audit fix — never commit runtime DB)
 db/*.db
 db/*.db-journal
+
+# python-টেস্ট চালালে তৈরি হয় (উৎস-নিয়ন্ত্রণে নয়)
+__pycache__/
