@@ -63,18 +63,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # (b) Bun runtime — repo uses bun.lock + bunfig.toml (bun test)
+      # (b) Bun runtime — repo uses bun.lock + bunfig.toml (bun test).
+      # PINNED to 1.3.14 (2026-10-18): the exact version bun.lock was
+      # generated with and the full suite (306 tests + build) was verified
+      # against — `latest` is a moving target (first CI run pulled 1.4.3).
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
-      # (c) FFmpeg/FFprobe presence — the media pipeline shells out to
-      # both binaries (src/lib/media/ffmpeg.ts). ubuntu-latest preinstalls
-      # them; this explicit step makes an unexpected runner-image change
-      # fail HERE, legibly, instead of deep inside a media test.
-      - name: Verify FFmpeg + FFprobe availability
+      # (c) FFmpeg/FFprobe — the media pipeline shells out to both binaries
+      # (src/lib/media/ffmpeg.ts). CORRECTED 2026-10-18: ubuntu-latest NO
+      # LONGER PREINSTALLS them (first CI run 39127947096 failed here:
+      # `ffmpeg: command not found`, exit 127). Install via apt, then
+      # verify — so an apt/runner change still fails HERE, legibly, instead
+      # of deep inside a media test. ubuntu-24.04 ships ffmpeg 6.1.x
+      # (sandbox reference 7.1.5; the filter/codec set the tests use is
+      # identical across both).
+      - name: Install + verify FFmpeg & FFprobe
         run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version
           ffprobe -version
 
