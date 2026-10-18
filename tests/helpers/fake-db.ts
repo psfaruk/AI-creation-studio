@@ -309,6 +309,18 @@ export function seedProductionStep(
 
 function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
   for (const [key, value] of Object.entries(where ?? {})) {
+    // Phase 1 (t28): Prisma-সামঞ্জস্য { in: [...] } অপারেটর — আগের
+    // শুধু-সমতা-চুক্তির সংযোজন (পুরোনো কলারদের আচরণ অপরিবর্তিত)।
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      'in' in (value as Record<string, unknown>)
+    ) {
+      const list = (value as { in: unknown[] }).in;
+      if (!Array.isArray(list) || !list.includes(row[key])) return false;
+      continue;
+    }
     if (row[key] !== value) return false;
   }
   return true;
@@ -603,6 +615,24 @@ export function createFakeDb() {
         Object.assign(row, data);
         // include: { steps, artifacts, _count } — রাউট-ভিউ সিরিয়ালাইজারের চুক্তি
         return { ...row, steps: [], artifacts: [], _count: { artifacts: 0 } };
+      },
+      /** Phase 1 (t28): Prisma-সামঞ্জস্য updateMany — রিকভারি-সুইপের
+       *  সতর্ক (guarded) রূপান্তরের পরীক্ষণে প্রয়োজন; {id:{in}},
+       *  {status:{in}} উভয়ই matches() হয়ে যায়। */
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where: Record<string, unknown>;
+        data: Partial<FakeProduction>;
+      }) => {
+        let count = 0;
+        for (const row of [...s().productions.values()]) {
+          if (!matches(row as unknown as Record<string, unknown>, where ?? {})) continue;
+          Object.assign(row, data);
+          count++;
+        }
+        return { count };
       },
     },
     // ---- (MP4-F) productionStep মডেল — রানার-জীবনচক্র/মেট্রিকস টেস্ট ----

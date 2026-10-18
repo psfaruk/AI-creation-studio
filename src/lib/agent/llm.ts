@@ -22,6 +22,7 @@ import path from 'path';
 import { withRetry, type RetryWaitInfo } from './retry';
 import { findChatModel, PROVIDERS } from './chat-models';
 import { externalChatComplete } from './external-llm';
+import { assertZaiConfiguredOrThrow, classifyZaiCreateError } from '@/lib/providers/sandbox-detect';
 
 export { externalChatComplete, ExternalFatalError, ExternalRetryableError } from './external-llm';
 
@@ -63,7 +64,22 @@ const g = globalThis as unknown as { __zaiSingleton?: Promise<ZAI> };
 
 export function getZAI(): Promise<ZAI> {
   if (!g.__zaiSingleton) {
-    g.__zaiSingleton = ZAI.create();
+    // ------------------------------------------------------------
+    // Phase 1 (B-D1): প্রিফ্লাইট + সৎ শ্রেণিবিভাগ — এটিই সব SDK-কলের
+    // (চ্যাট/ছবি/TTS/ASR/VLM/ছবি-সার্চ/ভিডিও) একমাত্র প্রমাণীকরণ-চোক-পয়েন্ট।
+    // স্যান্ডবক্সের বাইরে (যেমন Railway) .z-ai-config নেই → প্রথম ব্যবহারেই
+    // সৎ ProviderUnavailableError (রহস্যময় নেটওয়ার্ক-ত্রুটি নয়)।
+    // ফলব্যাক-নীতি: TemporarilyUnavailableError-উত্তরাধিকারে পাইপলাইনের
+    // সৎ-লোকাল-ফলব্যাক পথ (লেবেলসহ) অপরিবর্তিত থাকে।
+    // ------------------------------------------------------------
+    g.__zaiSingleton = (async () => {
+      assertZaiConfiguredOrThrow('z-ai SDK (চ্যাট/ছবি/TTS/ASR/ভিডিও)');
+      try {
+        return await ZAI.create();
+      } catch (err) {
+        throw classifyZaiCreateError(err, 'z-ai SDK (চ্যাট/ছবি/TTS/ASR/ভিডিও)');
+      }
+    })();
   }
   return g.__zaiSingleton;
 }

@@ -2283,3 +2283,61 @@ Work Log:
 
 Stage Summary:
 - Phase 0 সম্পূর্ণ, রায়: অডিট PASS / প্রোডাকশন-রেডিনেস NOT READY (2 CRITICAL + 2 HIGH ব্লকার)। কোনো সোর্স ফাইল পরিবর্তন হয়নি; শুধু নতুন অডিট-রিপোর্ট + এই worklog-এন্ট্রি যোগ হয়েছে। মালিকের ৭টি সিদ্ধান্ত-অনুরোধ (টোকেন-রোটেশন, PG, worker-split, স্টোরেজ, আনপুশড কমিট, বাজেট-ক্যাপ, Phase-1 অনুমোদন) রিপোর্ট §11-এ — অনুমোদনের আগে Phase 1 শুরু হবে না।
+---
+Task ID: 1-b
+Agent: general-purpose (CI subagent)
+Task: Phase 1 — GitHub Actions CI workflow (.github/workflows/ci.yml) তৈরি — first-ever `next build`-এর জন্য গেট (B-D4)।
+
+Work Log:
+- worklog.md-এর শেষ ~১৫০ লাইন পঠিত (MP5-LEAD → P0-DEPLOY-AUDIT পর্যন্ত); phase-0-audit-report.md-এর §5 (deployment files — CI আইটেম ১০), §7 (B-D4: build কখনো চালানো হয়নি), §9 (Phase-1 CI gate), §10 (quality gates) স্কিম করা।
+- রিপো-যাচাই: package.json — `build`="next build && node scripts/prepare-standalone.mjs", `lint`="eslint .", `test`="bun test tests", `typecheck`="tsc --noEmit", `db:generate`="prisma generate" সব বিদ্যমান; `prisma` ^6.11.1 dependencies-এ (bunx prisma validate লোকাল রেজলভ হয়); bun.lock বিদ্যমান।
+- bunfig.toml [test] preload + tests/helpers/test-storage-preload.ts পঠিত — VOICE_VERIFICATION_FILE ও TTS_CACHE_DIR টেম্প-ডিরে অটো-আইসোলেট (`??` শর্তে) → CI-env-এ ইচ্ছাকৃতভাবে সেট করা হয়নি।
+- scripts/prepare-standalone.mjs পূর্ণ পাঠ: import.meta.url-রিলেটিভ রুট, fs.cpSync, .next/standalone existsSync-গার্ড (না থাকলে exit 1), public/ ঐচ্ছিক-স্কিপ — কোনো absolute-path/স্যান্ডবক্স/নেটওয়ার্ক অনুমান নেই → CI-নিরাপদ (শুধু `node` PATH-এ দরকার — GitHub ubuntu রানারে প্রি-ইনস্টলড)।
+- next.config.ts: output:"standalone" → বিল্ড-সফল হলে .next/standalone থাকবে → artifact-upload পথ বৈধ। সব ২৭টি API রুট `dynamic='force-dynamic'`+`runtime='nodejs'` (গ্রেপ-যাচাই) → বিল্ড-টাইমে কোনো রুট-প্রিরেন্ডার/DB-কোয়েরি নেই; page.tsx বিশুদ্ধ ক্লায়েন্ট কম্পোনেন্ট; টেস্টে সব DB-ব্যবহার mock.module('@/lib/db')+fake-db (tests/README-নথিত) → রানারে db/custom.db না থাকলেও নিরাপদ (gitignore-এ db/*.db)।
+- ঝুঁকি-শনাক্ত: src/app/layout.tsx next/font/google (Geist/Geist_Mono) ব্যবহার করে → `next build` বিল্ড-টাইমে Google Fonts ডাউনলোড করে — রানার থেকে fonts.googleapis.com পৌঁছানো না গেলে বিল্ড এখানেই ব্যর্থ হবে (কোড-ত্রুটি নয়; GitHub-hosted রানারে সাধারণত কাজ করে, তবে প্রথম-বিল্ডের একমাত্র নেটওয়ার্ক নির্ভরতা)।
+- ফাইল তৈরি: .github/workflows/ci.yml — name: CI; triggers push (সব ব্রাঞ্চ)/pull_request/workflow_dispatch; concurrency ${{ github.workflow }}-${{ github.ref }} + cancel-in-progress; permissions contents:read; একক job `quality` (ubuntu-latest, timeout 20m); env: DATABASE_URL=file:./db/custom.db + NEXT_TELEMETRY_DISABLED=1; ধাপ-ক্রম: checkout@v4 → setup-bun@v2 (bun-version: latest) → ffmpeg+ffprobe -version → bun install --frozen-lockfile → bun run db:generate → bunx prisma validate → bun run typecheck → bun run lint → bun run test → bun run build (শেষ ধাপ) → upload-artifact@v4 (.next/standalone, retention 7d, if-no-files-found: error)। কোনো ক্যাশ নেই।
+- যাচাই: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); print('YAML OK')"` → "YAML OK", exit 0 (PyYAML 6.0.3); স্ট্রাকচারাল ডাম্প: ট্রিগার/জব-env/১১-ধাপ-ক্রম নির্দিষ্টক্রমেই পার্স হয়েছে; git status — শুধু `?? .github/` (কোনো ট্র্যাকড ফাইল স্পর্শ নয়)।
+- সীমার-মধ্যে থাকা: sandbox-নিয়ম মেনে bun run build / bun test চালানো হয়নি; dev-সার্ভার (port 3000) অস্পৃষ্ট; কোনো commit/push নয়।
+
+Stage Summary:
+- নতুন ফাইল: .github/workflows/ci.yml (একটিই নতুন ফাইল; .github/ ডিরেক্টরি সৃষ্ট) — YAML বৈধ (PyYAML exit 0)। প্রথম-কভারেজ: FFmpeg উপস্থিতি, frozen install, Prisma generate+validate, tsc, eslint, ২৬৬+ অফলাইন টেস্ট, প্রথমবারের `next build`+prepare-standalone, standalone artifact আপলোড।
+- CI-ঝুঁকি (সৎ-নথিভুক্ত): (১) next/font/google — বিল্ড-টাইম Google Fonts ডাউনলোড; GitHub রানারে সাধারণত OK, তবে নেটওয়ার্ক-ব্লক হলে বিল্ড ব্যর্থ (সমাধান-পথ: লোকাল ফন্টে স্যুইচ, যেমন assets/fonts-এ আছেই — লিডের সিদ্ধান্ত); (২) প্রথম-বিল্ড = অজানা-অজানা ঝুঁকি (B-D4) — যেকোনো ব্যর্থতা CI-লগেই প্রথম প্রমাণ হবে; (৩) bun test-এর রানার-রানটাইম (sandbox-এ ~195s/2-core) — 20m timeout-এ স্বস্তিকর মার্জিন।
+- prepare-standalone.mjs রায়: CI-নিরাপদ (কোনো স্যান্ডবক্স/absolute-path অনুমান নেই) — কোনো সংশোধনের প্রয়োজন হয়নি।
+---
+Task ID: 1-c
+Agent: general-purpose (docs subagent)
+Task: Phase 1 deployment documentation — PostgreSQL/persistent-storage migration plan, FFmpeg runtime requirements, remaining Railway steps (3 new docs, read-only research, no source changes).
+
+Work Log:
+- Context read: worklog tail (P0-DEPLOY-AUDIT + prior phases), phase-0-audit-report.md (full), prisma/schema.prisma (full), package.json, .env/.env.example, .gitignore.
+- SQLite-specific audit (greps over src/): $queryRaw/$executeRaw=0; PRAGMA ci=1 (edge_tts.ts:311 HTTP header 'Pragma: no-cache' — NOT SQLite); sqlite_|better-sqlite|sqlite3=0; provider="sqlite" in src=0; raw-SQL shapes (SELECT…FROM/INSERT INTO/UPDATE SET/prisma.$)=0; DATABASE_URL direct reads in src/scripts/tests=0; updateMany=3 guarded sites (orchestrator.ts:1736, runner.ts:795,827); $transaction=2 (batch form, orchestrator.ts:1552,1686). db.ts = plain PrismaClient. NO prisma/migrations dir (verified). Model count = **10** (Phase 0 said 8 — corrected in doc).
+- Storage audit: storage/ entirely gitignored (/storage/), absent in fresh clone (runtime mkdir); canonical paths verified in code — artifacts (storage.ts, H-8 path-containment), tts-cache (TTS_CACHE_DIR, tts-cache.ts:32), llm-chat (llm.ts:76), shot-cache (shot_cache.ts:97), productions/{id} (ffmpeg.ts:474), security.json (security.ts:38), provider-keys.json (provider-keys.ts:21), voice-verification.json (edge_tts.ts:524). db/ = 152K.
+- FFmpeg inventory: central wrapper src/lib/media/ffmpeg.ts (runFfmpeg execFileAsync+spawn/kill-tracking, ffprobeJson, astats/silencedetect/ebur128, 2-pass loudnorm); 36 runFfmpeg call-sites in 9 files; direct calls only in system-info.ts:37,43,228 (version/filters probes) + local-frames.ts:413 + music_engine.ts:1164 (s16le raw). Codecs: libx264 (20 sites, crf 20/21 yuv420p), native aac (11), libmp3lame 192k (5), pcm_s16le (11); concat demuxer+filter, segment muxer (sdk-helpers.ts:226), image2/-loop 1, lavfi anullsrc/color/gradients; filters incl. libass subtitles+force_style (film-helpers.ts:402 — ONLY burn site; drawtext=0 uses; acrossfade=0 uses), xfade, fade, eq, unsharp, hqdn3d, vidstabdetect/transform (libvidstab required!), minterpolate, blend/noise/gblur/geq/lutrgb/threshold/gradients (local-frames), loudnorm/ebur128/astats/silencedetect/amix/adelay/afade/apad/alimiter/asplit/sidechaincompress/lowpass/aecho/atrim/asetpts/aformat/aresample/volume.
+- Sandbox reference recorded: Debian 13, ffmpeg/ffprobe 7.1.5-0+deb13u1 (Debian build: libx264+libmp3lame+libass+libvidstab enabled); 27/27 required filters present; ffmpeg chain Installed-Size ≈51MB.
+- Smoke encode RUN in /tmp: ffmpeg -f lavfi testsrc+sine → libx264+aac MP4 → **exit code 0** (18,974-byte MP4, ffprobe-verified 1.0s mp4).
+- SURPRISE FINDING: "Noto Sans Bengali" NOT installed in sandbox (fc-list :lang=bn → only FreeSans/FreeSerif/Unifont) — subtitle burn-in + SVG brand text currently render via fontconfig fallback; deployed image needs fonts-noto-core + fc-list verification; visual quality unverified.
+- Parallel Phase 1 files (providers/, recovery.ts, instrumentation.ts, env.ts, ci.yml, t27-t29) verified ABSENT at doc time — referenced as "will exist by end of Phase 1" with honest wording; HEAD=b97ab4d (2 commits ahead of origin 49d9b29).
+- 3 docs created under docs/audit/railway-hf-deployment/ (158/150/88 lines, evidence appendices, no secrets/absolute paths).
+
+Stage Summary:
+- Files created: phase-1-database-migration-plan.md, phase-1-ffmpeg-runtime-requirements.md, phase-1-remaining-railway-steps.md.
+- Key findings: (1) SQLite audit CLEAN — zero raw SQL/PRAGMA/SQLite-specific code; provider swap is schema-one-line + build-time client generation (documented dual-mode plan + baseline-migration commands + data-carry script option, all plan-only, approval-gated). (2) FFmpeg capability set derived & image spec: node:22-slim + apt ffmpeg fonts-noto-core (~51MB); libvidstab + libass are the non-obvious must-haves (Debian build has both; Alpine would break stabilize). (3) Noto Sans Bengali missing even in sandbox (fallback fonts render Bengali today — flag for lead). (4) Phase 0 "8 models" corrected to 10. (5) confirm→queued transition is unguarded (fine single-process; documented as worker-split precondition alongside guarded updateMany patterns).
+
+---
+Task ID: P1-IMPL (main agent — Phase 1 বাস্তবায়ন) + 1-b (CI সাবএজেন্ট) + 1-c (ডকু-সাবএজেন্ট)
+Agent: main (Z.ai Code) + 2 general-purpose সাবএজেন্ট
+Task: মাস্টার-প্রম্পট Phase 1 — provider-adapter স্তর, জব-রিকভারি, CI, নিরাপত্তা-শক্তিশালীকরণ, মাইগ্রেশন-পরিকল্পনা; কোনো ডিপ্লয়/খরচ/প্রোব/কমিট নয়।
+
+Work Log:
+- গিট-অডিট: HEAD=b97ab4d (origin-এর চেয়ে ২ এগিয়ে — b20174f+b97ab4d; Phase 1-এর কোনো কমিট করা হয়নি); SDK-সোর্স-যাচাই: z-ai-web-dev-sdk অথ করে .z-ai-config (cwd/~//etc) JSON থেকে — /etc/.z-ai-config স্যান্ডবক্সে আছে, গিট-ইগনোরড, GitHub-এ নেই।
+- Provider-adapter স্তর (B-D1): src/lib/providers/{types,sandbox-detect,errors,registry}.ts — ক্ষমতা-ইন্টারফেস (chat/image/ASR/bn-TTS/instrumental/sung/video/lipsync), zAiConfigured-সনাক্তকরণ (আকৃতি-যাচাই, বিষয়বস্তু কখনো পড়ে না), ProviderUnavailableError (TUE-উত্তরাধিকার — সৎ-ফলব্যাক পথ অপরিবর্তিত), ক্ষমতা-ম্যাট্রিক্স + ইনজেকশন। getZAI()-ই একমাত্র অথ-চোক-পয়েন্ট — প্রিফ্লাইট + ত্রুটি-শ্রেণিবিভাগ (সব SDK-কল ঢেকে যায়; ক্যাশ-হিট ও external-GLM প্রমাণীকরণবিহীনেও চলে)।
+- জব-রিকভারি (B-D3): recovery.ts (boot: queued+startedAt=null → নিরাপদ requeue — জেনারেশন কখনো হয়নি তাই ডুপ্লিকেট-বিলিং অসম্ভব; মৃত running/validating/cancelling → সৎ failed), startProduction-সারি-ডিডুপ, SIGTERM লালনামূলক-শাটডাউন (শুধু প্রোডাকশন-নোড-সার্ভার — dev/bun-test-গার্ড), instrumentation.ts দিয়ে সার্ভার-শুরুতেই সুইপ। ধাপ-রূপান্তর আগেই DB-স্থায়ী (নথিভুক্ত)।
+- নিরাপত্তা (B-D5): STUDIO_SESSION_SECRET env-সমর্থন (env>ফাইল প্রাধান্য, খাঁটি resolveSessionSecret), env.ts validateEnv (মান কখনো প্রকাশ নয়; HF_TOKEN সংরক্ষিত-স্লট), .env.example-হালনাগাদ।
+- টেস্ট-ইনফ্রা ঘটনা ও মূল-সমাধান: bun এক প্রসেসে একাধিক ফাইল চালায় + mock.module ফাইল-জুড়ে লিক করে — নতুন ফাইল যোগে ক্রম-বদলে পূর্ব-বিদ্যমান ভূমি-মাইন বিস্ফোরিত (t0-কে t19-এর tts-cache-মক wav দিল, t27-কে llm-মক, t24-কে storage-মক; এক রানে SIGTERM-হ্যাং)। মূল-সমাধান: bun test --isolate (নেটিভ; প্রতি-ফাইল ফ্রেশ গ্লোবাল) — package.json test-স্ক্রিপ্টে; নতুন ৩ টেস্ট-ফাইল অতিরিক্তভাবে mock-free/স্ন্যাপশট-রিস্টোর।
+- সাবএজেন্ট 1-b: .github/workflows/ci.yml (checkout→bun→ffmpeg-চেক→install→db:generate→prisma validate→typecheck→lint→test→build(শেষে, প্রথমবারের মতো)→artifact; prepare-standalone.mjs নিরাপদ-যাচাইকৃত; YAML exit 0; ঝুঁকি-নথ: next/font/google বিল্ড-সময় নেটওয়ার্ক)।
+- সাবএজেন্ট 1-c: ৩টি ডকুমেন্ট — মাইগ্রেশন-পরিকল্পনা (SQLite-ব্যবহার-অডিট পরিষ্কার: $queryRaw 0, raw SQL 0; ১০ মডেল — Phase 0-র "৮" সংশোধন), ffmpeg-রানটাইম (libx264/aac/libmp3lame/libass/vidstab ইনভেন্টরি; node:22-slim+ffmpeg+fonts-noto-core; রেফারেন্স 7.1.5; স্মোক-এনকোড exit 0; স্যান্ডবক্সেও Noto-Bengali অনুপস্থিত-পতাকা), বাকি-Railway-ধাপ (Phase 2-6 মালিক-গেটেড)।
+- যাচাই (exit-কোডসহ): typecheck 0 · lint 0 · bun run test (--isolate) = 306/306 পাস, 0 ব্যর্থ (২৬৬ পুরোনো + ৪০ নতুন; ২৭১১ expects; ১৯৬ সে.) · prisma validate 0 · bun run build চালানো হয়নি (পরিবেশ-নিয়ম — CI-তেই প্রথম চলবে) · agent-browser: / রেন্ডার ✓, কনসোল-ত্রুটি ০, /api/auth/status সঠিক।
+- ডেলিভারেবল: docs/audit/railway-hf-deployment/phase-1-report.md (১০-দফা মাস্টার-প্রম্পট চুক্তি) + ৩টি 1-c-ডক + ci.yml + কোড/টেস্ট।
+
+Stage Summary:
+- Phase 1 সম্পূর্ণ, রায়: PASS WITH BLOCKERS — স্কোপের সব সবুজ (306/306, tsc 0, lint 0, prisma 0, ব্রাউজার-যাচাই ✓), সব সীমা মানা (কোনো ডিপ্লয়/খরচ/লাইভ-প্রোব/কমিট/পুশ নয়)। অবশিষ্ট ব্লকার নকশাগতভাবে মালিক-অনুমোদন-নির্ভর: ① প্রোডাকশন-বিল্ড এখনো কোথাও চালেনি (CI-পুশ-অনুমোদনের অপেক্ষায়) ② PG+স্টোরেজ Phase 2-অনুমোদন ③ গাওয়া-গান/লিপ-সিঙ্ক সৎ-অবরুদ্ধ (বাজেট-সিদ্ধান্ত) ④ প্রকাশিত HF-টোকেন মালিক-রোটেশন বাকি। পরবর্তী: মালিকের ৪ সিদ্ধান্ত (কমিট+পুশ→প্রথম CI-বিল্ড, Phase 2, প্রোব-বাজেট, টোকেন-রোটেশন)।

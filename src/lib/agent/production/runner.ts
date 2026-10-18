@@ -27,6 +27,10 @@ import {
 import { buildProductionErrorDetail } from './error-detail';
 import { cleanupWorkingDir, makeWorkingDir, killProductionFfmpeg, runWithFfmpegTracking } from '@/lib/media/ffmpeg';
 import { validateSpec } from '../capabilities';
+import {
+  recoverProductionsOnBoot,
+  markInFlightInterruptedOnShutdown,
+} from './recovery';
 
 const STALE_PRODUCTION_MS = 20 * 60 * 1000; // ২০ মিনিট
 /** AI-ভিডিও প্রোডাকশন (CogVideoX-3) প্রতি শটে মিনিট নেয় — দীর্ঘ সময়সীমা */
@@ -157,10 +161,13 @@ import { PIPELINES } from './pipelines';
 // Runner
 // ------------------------------------------------------------
 
-/** confirm API থেকে ডাকা হয় — fire-and-forget শুরু (কনকারেন্সি-সীমাসহ) */
+/** confirm API থেকে ডাকা হয় — fire-and-forget শুরু (কনকারেন্সি-সীমাসহ)।
+ *  Phase 1: সারি-ডিডুপ-গার্ড — একই আইডি দুবার সারিতে ঢুকতে পারবে না
+ *  (বুট-রিকভারির requeue + confirm-রেসে দ্বৈত-এনকিউ প্রতিরোধ)। */
 export function startProduction(productionId: string): void {
   const state = queueState();
   if (state.running.has(productionId)) return;
+  if (state.queue.includes(productionId)) return;
   if (state.running.size >= MAX_CONCURRENT) {
     state.queue.push(productionId);
     console.log(`[production] ${productionId.slice(-6)} সারিতে যোগ (চলমান ${state.running.size}/${MAX_CONCURRENT})`);
@@ -806,32 +813,30 @@ export async function sweepStaleProductions(): Promise<void> {
 }
 
 // ------------------------------------------------------------
-// §2 সততা: রিস্টার্টে বাধাগ্রস্ত প্রোডাকশন — মডিউল লোডে একবারই
-// 'running'/'queued'/'validating'/'cancelling' সারিগুলো সৎভাবে failed
-// করা হয় ("চলছে" দেখানো মিথ্যা হবে — প্রসেস মরে গেছে)। globalThis-
-// গার্ডেড; মেমরির running/queue-সেটে থাকা আইডি বাদ যায় (dev HMR-এ
-// চলমান কাজ মিথ্যাভাবে বাদ না পড়তে)।
+// §2 সততা: রিস্টার্টে বাধাগ্রস্ত প্রোডাকশন — Phase 1 থেকে recovery.ts-এ
+// (টেস্টযোগ্য পৃথক মডিউল; runner-এর ভারী ইমপোর্ট-গ্রাফ ছাড়াই)।
+// আচরণ-পরিবর্তন একটিই: queued+startedAt=null জব এখন সৎ-পুনঃসারিভুক্ত
+// (কখনো শুরুই হয়নি → ডুপ্লিকেট-বিলিং অসম্ভব); বাকি সব পূর্বের মতোই
+// সৎ failed। globalThis-গার্ডেড; মেমরির running/queue-সেটে থাকা আইডি
+// বাদ যায় (dev HMR-এ চলমান কাজ মিথ্যাভাবে বাদ না পড়তে)।
 // ------------------------------------------------------------
 async function sweepInterruptedOnBoot(): Promise<void> {
   try {
     const state = queueState();
-    const rows = await db.production.findMany({
-      where: { status: { in: ['running', 'queued', 'validating', 'cancelling'] } },
-      select: { id: true },
-    });
-    const interrupted = rows
-      .map(r => r.id)
-      .filter(id => !state.running.has(id) && !state.queue.includes(id));
-    if (interrupted.length === 0) return;
-    const message = 'সার্ভার রিস্টার্টে বাধাগ্রস্ত হয়েছে — আবার চালু করুন (নিচের "আবার চালান" বা "সংশোধন" দিয়ে নতুন প্রস্তাব তৈরি হবে)';
-    await db.production.updateMany({
-      where: { id: { in: interrupted } },
-      data: { status: 'failed', error: message, finishedAt: new Date() },
-    });
-    for (const id of interrupted) {
-      emitProduction(id, { type: 'production_finished', productionId: id, status: 'failed', error: message });
+    const outcome = await recoverProductionsOnBoot(
+      { running: state.running, queued: state.queue },
+      id => startProduction(id)
+    );
+    if (outcome.requeued.length > 0) {
+      console.log(
+        `[production] boot-sweep: ${outcome.requeued.length} টি কখনো-শুরু-হয়নি (queued) প্রোডাকশন নিরাপদে পুনঃসারিভুক্ত`
+      );
     }
-    console.log(`[production] boot-sweep: ${interrupted.length} টি রিস্টার্টে-বাধাগ্রস্ত প্রোডাকশন সৎভাবে failed করা হলো`);
+    if (outcome.failed.length > 0) {
+      console.log(
+        `[production] boot-sweep: ${outcome.failed.length} টি রিস্টার্টে-বাধাগ্রস্ত প্রোডাকশন সৎভাবে failed করা হলো`
+      );
+    }
   } catch (err) {
     console.error('[production] boot-sweep error', err);
   }
@@ -862,5 +867,38 @@ async function sweepInterruptedOnBoot(): Promise<void> {
       sweepInterruptedOnBoot().catch(() => undefined);
     }, 3_000);
     if (typeof (bootTimer as any).unref === 'function') (bootTimer as any).unref();
+  }
+  // ------------------------------------------------------------
+  // Phase 1 (B-D3): লালনামূলক শাটডাউন — Railway রিডিপ্লয়ের SIGTERM-এ
+  // (~৩০ সে. গ্রেস) চলমান প্রোডাকশন প্রক্রিয়া-মৃত্যুর আগেই সৎভাবে failed
+  // চিহ্নিত হয় + ffmpeg-সন্তান বন্ধ হয়। শুধু প্রোডাকশন-নোড-সার্ভারে
+  // (dev-সার্ভার ও bun-test প্রসেসের নিজস্ব সিগনাল-ব্যবস্থাপনায় হস্তক্ষেপ
+  // নয় — টেস্ট-রানারের SIGTERM-এ অপ্রত্যাশিত অ্যাসিঙ্ক-কাজ/ঝুলে-থাকা
+  // রোধ)। বুট-সুইপ প্রতিরক্ষা-স্তর।
+  // ------------------------------------------------------------
+  const isBunTestProcess = typeof (globalThis as any).Bun !== 'undefined';
+  if (
+    process.env.NODE_ENV === 'production' &&
+    !isBunTestProcess &&
+    !gg.__productionSigtermHooked
+  ) {
+    gg.__productionSigtermHooked = true;
+    process.once('SIGTERM', () => {
+      void (async () => {
+        try {
+          const state = queueState();
+          for (const id of [...state.running]) {
+            try {
+              killProductionFfmpeg(id);
+            } catch {
+              // সর্বোচ্চ-প্রচেষ্টা
+            }
+          }
+          await markInFlightInterruptedOnShutdown([...state.running]);
+        } catch {
+          // বুট-সুইপ অবশিষ্ট ঢেকে দেবে
+        }
+      })();
+    });
   }
 }

@@ -119,6 +119,44 @@ function envPasscode(): string | null {
     : null;
 }
 
+// ------------------------------------------------------------
+// Phase 1 (B-D5): STUDIO_SESSION_SECRET — env-থেকে সেশন-HMAC চাবি।
+// সমস্যা: চাবিটি এতদিন শুধু এফেমেরাল storage/security.json-এ ছিল → রেলওয়ে-
+// ধরনের পরিবেশে প্রতি রিডিপ্লয়ে সব সেশন অবৈধ হয়ে যেত। env-চাবি দিলে সেটিই
+// সর্বদা প্রাধান্য পায় (ফাইলের চাবি নীরব ব্যাকআপ); চাবি বদলালে পুরোনো সেশন
+// সব অবৈধ হয় — ইচ্ছাকৃত আচরণ।
+// ------------------------------------------------------------
+
+/** গ্রহণযোগ্য env-চাবি: ৬৪-হেক্স (৩২ বাইট — সুপারিশ) বা ≥৩২ অক্ষরের যেকোনো স্ট্রিং */
+const SESSION_SECRET_MIN_LEN = 32;
+
+/**
+ * কার্যকর সেশন-চাবি — খাঁটি ফাংশন (টেস্টযোগ্য, fs-স্পর্শহীন)।
+ * অগ্রাধিকার: বৈধ env-মান → বৈধ ফাইল-হেক্স → null।
+ */
+export function resolveSessionSecret(
+  envValue: string | undefined,
+  fileSecretHex: string | null
+): Buffer | null {
+  if (typeof envValue === 'string' && envValue.length >= SESSION_SECRET_MIN_LEN) {
+    // ৬৪-হেক্স হলে বাইট-নির্ভুল হেক্স-ডিকোড; নাহলে utf-8 বাইট
+    if (/^[0-9a-f]{64}$/i.test(envValue)) {
+      return Buffer.from(envValue, 'hex');
+    }
+    return Buffer.from(envValue, 'utf8');
+  }
+  if (typeof fileSecretHex === 'string' && HEX64_RE.test(fileSecretHex)) {
+    return Buffer.from(fileSecretHex, 'hex');
+  }
+  return null;
+}
+
+/** env-সেশন-চাবি সক্রিয় কি না (env.ts-র প্রতিবেদনে ব্যবহৃত) */
+export function envSessionSecretActive(): boolean {
+  const v = process.env.STUDIO_SESSION_SECRET;
+  return typeof v === 'string' && v.length >= SESSION_SECRET_MIN_LEN;
+}
+
 async function readSecurityFile(): Promise<SecurityFileShape | null> {
   try {
     const raw = await readFile(SECURITY_FILE, 'utf8');
@@ -180,7 +218,9 @@ async function loadSecurity(): Promise<EffectiveSecurity> {
     return { initialized: false, secret: null, salt: '', hash: '', passcodeFromEnv: false };
   }
 
-  const secret = Buffer.from(file.secret, 'hex');
+  // Phase 1 (B-D5): env-চাবি (STUDIO_SESSION_SECRET) বৈধ হলে সেটিই HMAC-চাবি
+  // (ফাইলের চাবি নীরব ব্যাকআপ) — রিডিপ্লয়-জীবিত সেশনের পথ।
+  const secret = resolveSessionSecret(process.env.STUDIO_SESSION_SECRET, file.secret) as Buffer;
   g.__studioSessionSecret = secret;
 
   // env-পাসকোডই মালিক-পাসকোড? তাহলে হ্যাশ প্রতি বুটে মেমরিতে পুনঃগণনা
@@ -246,7 +286,9 @@ export async function setupOwnerPasscode(
   await writeSecurityFile(file);
 
   // মেমরি-অবস্থা সাথে সাথে সদ্য-লেখা ফাইলের সমান করো
-  g.__studioSessionSecret = secret;
+  // Phase 1: env-চাবি থাকলে সেশন-ইস্যু সেটিই ব্যবহার করবে (loadSecurity-সামঞ্জস্য)
+  g.__studioSessionSecret =
+    resolveSessionSecret(process.env.STUDIO_SESSION_SECRET, secret.toString('hex')) ?? secret;
   return issueSession();
 }
 

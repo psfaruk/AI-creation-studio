@@ -1,0 +1,136 @@
+# ============================================================
+# CI — AI Creation Studio (Phase 1 · Task 1-b · Railway+HF prep)
+#
+# WHY THIS WORKFLOW EXISTS:
+# The dev sandbox forbids `bun run build` (blocker B-D4 — see
+# docs/audit/railway-hf-deployment/phase-0-audit-report.md §7).
+# This workflow is the FIRST place `next build` will ever execute,
+# so the production build runs LAST: every earlier gate (FFmpeg,
+# install, Prisma, types, lint, tests) gives a clearer failure
+# signal first.
+#
+# Coverage: FFmpeg/FFprobe presence · frozen install · Prisma
+# generate + schema validate · TypeScript · ESLint · offline
+# unit/regression suite · production build (standalone) ·
+# build-artifact upload.
+#
+# Deliberately simple: no caching (deterministic), single job,
+# ubuntu-latest (preinstalls ffmpeg/ffprobe + node).
+# ============================================================
+name: CI
+
+on:
+  push:
+    # All branches — সব ব্রাঞ্চেই চলে (no branch filter = every push)
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref — একই ref-এ পুরনো রান বাতিল
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege — this workflow only needs to read the repo
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gate (prisma · typecheck · lint · test · build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Prisma datasource URL (prisma/schema.prisma: url = env("DATABASE_URL")).
+      # Nothing in this job actually queries SQLite — all 27 API route
+      # handlers are `export const dynamic = 'force-dynamic'` (so `next
+      # build` never prerenders/queries them) and every DB-exercising
+      # test mocks '@/lib/db' with an in-memory fake. But the generated
+      # Prisma client and `prisma validate` read this variable, so set a
+      # safe relative value (matches .env.example; the file itself is
+      # gitignored and never needs to exist on the runner).
+      DATABASE_URL: file:./db/custom.db
+      # Silence Next.js build telemetry on CI runners
+      NEXT_TELEMETRY_DISABLED: "1"
+      # NOTE — deliberately NOT set: TTS_CACHE_DIR and VOICE_VERIFICATION_FILE.
+      # bunfig.toml [test] preload (tests/helpers/test-storage-preload.ts)
+      # routes both to unique temp dirs at the start of every test process
+      # (only when unset, via `??`) — defining them here would defeat that
+      # isolation.
+
+    steps:
+      # (a) Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # (b) Bun runtime — repo uses bun.lock + bunfig.toml (bun test)
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # (c) FFmpeg/FFprobe presence — the media pipeline shells out to
+      # both binaries (src/lib/media/ffmpeg.ts). ubuntu-latest preinstalls
+      # them; this explicit step makes an unexpected runner-image change
+      # fail HERE, legibly, instead of deep inside a media test.
+      - name: Verify FFmpeg + FFprobe availability
+        run: |
+          ffmpeg -version
+          ffprobe -version
+
+      # (d) Deterministic install — bun.lock is committed
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # (e) Generate Prisma client — REQUIRED before typecheck/build:
+      # tsc and next build need the generated @prisma/client types.
+      # bun does not run dependency postinstall hooks, so generate
+      # explicitly (package.json script `db:generate` = `prisma generate`).
+      - name: Generate Prisma client
+        run: bun run db:generate
+
+      # (f) Schema validation — prisma CLI comes from the `prisma`
+      # dependency in package.json (resolved locally by bunx)
+      - name: Validate Prisma schema
+        run: bunx prisma validate
+
+      # (g) TypeScript — strict, no emit (package.json: tsc --noEmit)
+      - name: Typecheck
+        run: bun run typecheck
+
+      # (h) ESLint (package.json: eslint .)
+      - name: Lint
+        run: bun run lint
+
+      # (i) Unit + regression suite (package.json: `bun test tests`) —
+      # 266+ tests, fully offline: in-memory fake DB via
+      # `mock.module('@/lib/db', …)` + recorded fixtures; no network
+      # and no real API keys needed. Storage paths are temp-isolated by
+      # the bunfig preload (see env note above).
+      - name: Run tests
+        run: bun run test
+
+      # (j) FIRST-EVER production build (B-D4): `next build &&
+      # node scripts/prepare-standalone.mjs` (output: "standalone" in
+      # next.config.ts). Runs LAST — the most likely step to fail; the
+      # gates above have already isolated clearer signal by this point.
+      # Known build-time network dependency: src/app/layout.tsx uses
+      # next/font/google (Geist) — the build fetches Google Fonts, so a
+      # runner that cannot reach fonts.googleapis.com fails here (not a
+      # code defect). Note: `next build` also re-runs TS checking
+      # (ignoreBuildErrors was deliberately removed from next.config.ts).
+      - name: Production build (next build + prepare-standalone)
+        run: bun run build
+
+      # (k) Nice-to-have artifact: prepare-standalone.mjs verifies
+      # .next/standalone exists (exits 1 otherwise) and copies
+      # .next/static + public/ into it — producing the runnable
+      # `node .next/standalone/server.js` bundle that Railway will use.
+      # Path confirmed against next.config.ts output:"standalone".
+      - name: Upload standalone build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-build
+          path: .next/standalone
+          retention-days: 7
+          if-no-files-found: error
