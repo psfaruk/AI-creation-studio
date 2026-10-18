@@ -2341,3 +2341,18 @@ Work Log:
 
 Stage Summary:
 - Phase 1 সম্পূর্ণ, রায়: PASS WITH BLOCKERS — স্কোপের সব সবুজ (306/306, tsc 0, lint 0, prisma 0, ব্রাউজার-যাচাই ✓), সব সীমা মানা (কোনো ডিপ্লয়/খরচ/লাইভ-প্রোব/কমিট/পুশ নয়)। অবশিষ্ট ব্লকার নকশাগতভাবে মালিক-অনুমোদন-নির্ভর: ① প্রোডাকশন-বিল্ড এখনো কোথাও চালেনি (CI-পুশ-অনুমোদনের অপেক্ষায়) ② PG+স্টোরেজ Phase 2-অনুমোদন ③ গাওয়া-গান/লিপ-সিঙ্ক সৎ-অবরুদ্ধ (বাজেট-সিদ্ধান্ত) ④ প্রকাশিত HF-টোকেন মালিক-রোটেশন বাকি। পরবর্তী: মালিকের ৪ সিদ্ধান্ত (কমিট+পুশ→প্রথম CI-বিল্ড, Phase 2, প্রোব-বাজেট, টোকেন-রোটেশন)।
+---
+Task ID: PUSH-REVIEW-1 (main agent — pre-push safety review + owner-authorized push)
+Agent: main (Z.ai Code)
+Task: মালিকের নির্দেশ — pre-push safety review (রিপোর্ট-স্টেট যাচাইসহ) → অনুমোদিত কমিট-পুশ।
+
+Work Log:
+- গিট-স্টেট যাচাই: রিপোর্ট-স্টেট (b97ab4d, 2-ahead, 19 paths) ছিল পুরনো স্ন্যাপশট — প্রকৃত অবস্থা: main @ c6e929b, origin/main (49d9b29) থেকে 3 ahead (b20174f Google-bn-TTS/latest-fix + b97ab4d Phase-0 রিপোর্ট + c6e929b Phase-1 বাস্তবায়ন), ওয়ার্কিং-ট্রি পরিষ্কার, stash শূন্য, fetch-যাচাই 0 behind → fast-forward পুশ-নিরাপদ।
+- সম্পূর্ণ পুশ-স্কোপ ডিফ-রিভিউ (74 files, +5153/−108): Phase-1 কোড সম্পূর্ণ পাঠ (providers/{types,sandbox-detect,errors,registry}.ts, production/recovery.ts, instrumentation.ts, lib/env.ts, security.ts, llm.ts getZAI-প্রিফ্লাইট, runner.ts, ci.yml, .env.example, fake-db); b20174f-এর google_tts.ts (পাবলিক কী-বিহীন endpoint), language_controller.ts, model-registry-data.ts ডিফ; phase-0/phase-1 ডকুমেন্ট ও এভিডেন্স JSON নিরীক্ষিত।
+- সিক্রেট-স্ক্যান (HEAD কনটেন্ট + যুক্ত-লাইন): ৭-ধরনের টোকেন-প্যাটার্ন (ghp_/gho_/github_pat_/hf_/sk-/AIza/AKIA/PEM) → ০ মিল; চ্যাটে-পেস্ট ghp_ টোকেন রেপো-কনটেন্টে অনুপস্থিত (শুধু .git/config remote-URL-এ — ধাপ-নির্দেশ: পুশ-শেষে রোটেট); .env / db/ / storage/ / .z-ai-config কখনোই ট্র্যাকড নয়; URL-with-creds / exec / fs-বিপদ যুক্ত-লাইন স্ক্যান পরিষ্কার; ~23.3MB বাইনারি এভিডেন্স সচেতনভাবে-অন্তর্ভুক্ত (সর্বোচ্চ ফাইল 22.2MB, GitHub সীমার নিরাপদ দিকে)।
+- আইসোলেটেড CI-সমতুল্য রান (/tmp/acs-ci-check ফ্রেশ ক্লোন @ c6e929b — dev-সার্ভার অস্পৃষ্ট): bun install --frozen-lockfile =0 · prisma generate =0 · prisma validate =0 · typecheck =0 · lint =0 · bun test --isolate = 306/306 পাস, 0 ব্যর্থ (195.5s) · প্রথমবারের প্রোডাকশন বিল্ড =0 (next build Turbopack 23.0s + prepare-standalone; standalone server.js + static আর্টিফ্যাক্ট যাচাইকৃত) → B-D4 প্রথমবারের মতো অভিজ্ঞতাভিত্তিক-ক্লিয়ার।
+- রেলওয়ে-ট্রিগার বিশ্লেষণ: রেপোতে কোনো Dockerfile / railway.json / nixpacks / Procfile নেই এবং Railway এখনো সংযুক্ত নয় (Phase-2 মালিক-গেটেড) → এই পুশ শুধু GitHub Actions CI চালাবে (নতুন ci.yml, permissions contents:read), কোনো ডিপ্লয়/খরচ নয়।
+- মালিকের সুস্পষ্ট "Commit and push" অনুমোদনে: এই রিভিউ-রেকর্ড কমিট করে ৪-কমিট fast-forward পুশ সম্পাদন।
+
+Stage Summary:
+- রায়: PASS — ৩+১ কমিটের পুশ-স্কোপ সম্পূর্ণ নিরাপদ: সিক্রেট-মুক্ত, সব ফাইল উদ্দেশ্যপ্রণোদিত (Phase 0+1 ডেলিভারেবল + latest-fix এভিডেন্স), সব CI-গেট সবুজ, প্রথম প্রোডাকশন-বিল্ড সফল। নোট: রিপোর্ট-স্টেটের 19-paths ছিল c6e929b-তে পূর্বেই-কমিটেড; ৩টি কমিটের মেসেজ UUID-ধাঁচের (রেপো-প্রচলিত — শুধু সৌন্দর্য-সমস্যা)। অবশিষ্ট মালিক-কর্তব্য: ① চ্যাটে-পেস্ট ghp_ টোকেন রোটেট করা (এখনই কার্যকর-কিন্তু-উন্মুক্ত), ② HF টোকেন-রোটেশন (S-1) এখনো OPEN, ③ Phase-2 অনুমোদন-সিদ্ধান্ত।
