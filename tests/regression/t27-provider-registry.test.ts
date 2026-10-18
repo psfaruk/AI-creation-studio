@@ -9,8 +9,9 @@
 //    দিয়ে (আসল /etc/.z-ai-config-এর উপস্থিতি নিরপেক্ষ)।
 //  - src/lib/providers/registry.ts (আসল): getCapabilityReports({
 //    sandboxConfigured }) ইনজেকশন।
-//  - src/lib/agent/llm.ts (আসল): getZAI স্যান্ডবক্সে প্রকৃত কনফিপসহ
-//    সফল (নেটওয়ার্ক-কল নেই — ZAI.create কেবল কনফিপ পড়ে)।
+//  - src/lib/agent/llm.ts (আসল): getZAI পরিবেশ-সচেতন — কনফিগ থাকলে
+//    (sandbox) প্রকৃত সফল (নেটওয়ার্ক-কল নেই — ZAI.create কেবল কনফিগ পড়ে),
+//    না থাকলে (CI/Railway) সৎ ProviderUnavailableError (B-D1 চুক্তি)।
 //
 // Enforced contracts:
 //  ১. zAiConfigured: বৈধ {baseUrl,apiKey} → true; অনুপস্থিত/ভাঙা/
@@ -20,7 +21,9 @@
 //  ৩. assertZaiConfiguredOrThrow/classifyZaiCreateError: কনফিপ-শূন্য
 //     পথে সৎ ProviderUnavailableError (উভয় মার্কার); অন্য ত্রুটি
 //     অপরিবর্তিত।
-//  ৪. getZAI: স্যান্ডবক্সে (কনফিপ আছে) সফল — প্রকৃত আচরণ।
+//  ৪. getZAI (পরিবেশ-সচেতন, 2026-10-18 CI-fix): কনফিগ-প্রাপ্ত পরিবেশে (sandbox)
+//     সফল; কনফিগ-শূন্য পরিবেশে (GitHub-runner/Railway) প্রথম ব্যবহারেই সৎ
+//     PROVIDER_UNAVAILABLE ত্রুটি — প্রকৃত আচরণই চুক্তি।
 // ============================================================
 
 import { describe, expect, test } from 'bun:test';
@@ -199,16 +202,25 @@ describe('t27 · capability registry (সৎ ক্ষমতা-ম্যাট�
   });
 });
 
-// --- getZAI: প্রকৃত স্যান্ডবক্স-আচরণ (এই পরিবেশে কনফিগ আছে) ---
+// --- getZAI: প্রকৃত পথ — পরিবেশ-সচেতন (2026-10-18 CI-fix) ---
+// প্রথম CI রানে (39128168064) একমাত্র ব্যর্থতা এই টেস্টই ছিল — স্যান্ডবক্সে
+// /etc/.z-ai-config থাকলেও GitHub রানারে তা নেই; আগের রূপটি কেবল স্যান্ডবক্সে
+// পাস করত। এখন দুই পরিবেশের প্রকৃত আচরণই (উভয়ই B-D1 চুক্তির সত্য) যাচাই হয়।
 
-describe('t27 · getZAI (প্রকৃত পথ)', () => {
-  test('স্যান্ডবক্সে কনফিপসহ সফল — নেটওয়ার্ক-কল ছাড়াই (create কেবল কনফিপ পড়ে)', async () => {
-    // এই পরিবেশে /etc/.z-ai-config আছে (Phase 0-যাচাই) — প্রকৃত আচরণ:
-    // প্রিফ্লাইট পাস + ZAI.create() সফল
-    expect(zAiConfigured()).toBe(true);
+describe('t27 · getZAI (প্রকৃত পথ — পরিবেশ-সচেতন)', () => {
+  test('কনফিগ থাকলে সফল (নেটওয়ার্ক-কল ছাড়াই); না থাকলে সৎ ProviderUnavailableError (B-D1)', async () => {
     const { getZAI } = await import('@/lib/agent/llm');
-    const zai = await getZAI();
-    expect(zai).toBeTruthy();
-    expect(typeof zai.chat.completions.create).toBe('function');
+    if (zAiConfigured()) {
+      // sandbox-পরিবেশ: /etc/.z-ai-config আছে (Phase 0-যাচাই) — প্রিফ্লাইট পাস
+      // + ZAI.create() সফল (নেটওয়ার্ক-কল নেই — create কেবল কনফিগ পড়ে)
+      const zai = await getZAI();
+      expect(zai).toBeTruthy();
+      expect(typeof zai.chat.completions.create).toBe('function');
+    } else {
+      // CI/Railway-ধর্মী পরিবেশ: কনফিগ নেই → প্রথম ব্যবহারেই সৎ, শ্রেণিবিভাগকৃত
+      // ত্রুটি (রহস্যময় নেটওয়ার্ক-ত্রুটি নয়) — টেক্সট-মার্কার-ভিত্তিক যাচাই
+      // (সীমান্ত-নিরাপদ, isProviderUnavailableError-র মতোই)
+      await expect(getZAI()).rejects.toThrow(/PROVIDER_UNAVAILABLE/);
+    }
   });
 });
