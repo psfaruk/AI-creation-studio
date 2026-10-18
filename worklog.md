@@ -2267,3 +2267,19 @@ Work Log:
 
 Stage Summary:
 - latest-fix মিশন সম্পূর্ণ: অ্যাপ এখন এই sandbox-এই বাস্তবে ব্যবহারযোগ্য (বাংলা কথা + প্রকৃত AI ভিডিও, লাইভ-প্রমাণসহ); ৮ ডকুমেন্ট + ১৭ কাঁচা-প্রমাণ ফাইল + ২৪ নতুন টেস্ট; সততা-নীতি প্রতিটি স্তরে বজায়। রায়: PASS WITH LIMITATIONS।
+
+---
+Task ID: P0-DEPLOY-AUDIT (main agent — Railway+HF ডিপ্লয়মেন্ট Phase 0)
+Agent: main (Z.ai Code)
+Task: মাস্টার-প্রম্পট অনুযায়ী Phase 0 — শুধু অডিট, কোনো সোর্স-পরিবর্তন/ডিপ্লয়/খরচ/পুশ নয়।
+
+Work Log:
+- নিরাপত্তা: ব্যবহারকারীর চ্যাটে পেস্ট-করা HF টোকেন (hf_QueX…) ব্যবহার/সংরক্ষণ করা হয়নি — প্রত্যাখ্যাত ও রিপোর্টে রোটেশন-নির্দেশ; লোকাল .git/config-এর remote-URL-এ এমবেডেড GitHub টোকেন নথিভুক্ত (হিস্ট্রিতে নেই)।
+- রিপো-অডিট: GitHub main=49d9b29; লোকাল HEAD=b20174f (১ কমিট আনপুশড, ওয়ার্কিং-ট্রি পরিষ্কার); ডিপ্লয়মেন্ট-ফাইল শূন্য (কোনো Dockerfile/railway/CI নেই)।
+- আর্কিটেকচার-অডিট: ~২৭ API রুট, ৬ প্রোডাকশন-পাইপলাইন, in-process রানার (concurrency 2), in-memory SSE bus (200-event replay), SQLite+storage/* লোকাল-FS, ffmpeg সিস্টেম-বাইনারি, সিঙ্গেল-ওনার পাসকোড-অথ।
+- ক্রিটিক্যাল ফাইন্ডিং: z-ai-web-dev-sdk-র অথ শুধু স্যান্ডবক্সে — Railway-তে সব AI-পথ ব্যর্থ হবে (B-D1); ephemeral FS-এ SQLite/storage/session-secret প্রতি-রিডিপ্লয়ে হারাবে (B-D2); in-process জব + ক্র্যাশ-রিজিউম নেই (B-D3); build কখনো চালানো হয়নি + ffmpeg ইমেজে দরকার (B-D4)।
+- পাবলিক-ডক যাচাই (curl): HF Inference Providers = পার্টনার-রাউটার (chat/VLM/embed/image/video/STT — **TTS/music/lipsync নেই**); legacy serverless deprecated; Railway Hobby $5 (5GB স্টোরেজ ক্যাপ), Volume ও PostgreSQL আছে।
+- ডেলিভারেবল: docs/audit/railway-hf-deployment/phase-0-audit-report.md — ৯টি কাঙ্ক্ষিত আর্টিক্যালসহ (ডায়াগ্রাম, প্লেসমেন্ট-ম্যাট্রিক্স, env-তালিকা, ডিপ্লয়-ফাইল, ক্যাপাবিলিটি-ম্যাট্রিক্স, ব্লকার-র‌্যাঙ্কিং, ব্যয়-অনুমান, ফেজ-সিকোয়েন্স, টেস্ট/রোলব্যাক-প্ল্যান)।
+
+Stage Summary:
+- Phase 0 সম্পূর্ণ, রায়: অডিট PASS / প্রোডাকশন-রেডিনেস NOT READY (2 CRITICAL + 2 HIGH ব্লকার)। কোনো সোর্স ফাইল পরিবর্তন হয়নি; শুধু নতুন অডিট-রিপোর্ট + এই worklog-এন্ট্রি যোগ হয়েছে। মালিকের ৭টি সিদ্ধান্ত-অনুরোধ (টোকেন-রোটেশন, PG, worker-split, স্টোরেজ, আনপুশড কমিট, বাজেট-ক্যাপ, Phase-1 অনুমোদন) রিপোর্ট §11-এ — অনুমোদনের আগে Phase 1 শুরু হবে না।
