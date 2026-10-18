@@ -25,4 +25,15 @@ export async function register(): Promise<void> {
   } catch {
     // যাচাই-লগ ব্যর্থ হলে সার্ভার-শুরু ব্যাহত হবে না
   }
+
+  // ৩) স্টোরেজ-লেখার সক্ষমতা (Phase 2) — ভলিউম-মাউন্ট/অনুমতি ভুল হলে
+  //    স্টার্টআপেই ধরা পড়ে; ব্যর্থ হলে সতর্ক-লগ (ক্র্যাশ নয়)।
+  try {
+    const { probeStorageWritable } = await import('./lib/health');
+    const probe = await probeStorageWritable();
+    if (probe.ok) console.log(`[startup] storage writable: ${probe.path}`);
+    else console.warn(`[startup] storage NOT writable: ${probe.path} — ${probe.error ?? 'অজানা কারণ'}`);
+  } catch {
+    // প্রোব-লগ ব্যর্থ হলেও সার্ভার-শুরু ব্যাহত হবে না
+  }
 }
