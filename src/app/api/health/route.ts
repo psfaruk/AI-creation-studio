@@ -26,8 +26,14 @@ export async function GET() {
     probeStorage: probeStorageWritable,
     zaiConfigured: zAiConfigured,
   });
-  return NextResponse.json(report, {
-    status: healthStatusCode(report),
-    headers: { 'Cache-Control': 'no-store' },
-  });
+  // P4-ডায়াগনস্টিক: কোন কমিট লাইভ তা সৎভাবে দেখায় (Railway GitHub-
+  // ইন্টিগ্রেশন রানটাইমে RAILWAY_GIT_COMMIT_SHA দেয়; লোকাল/dev-এ null)।
+  // কোনো গোপন মান নয় — পাবলিক কমিট-SHA মাত্র।
+  return NextResponse.json(
+    { ...report, gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null },
+    {
+      status: healthStatusCode(report),
+      headers: { 'Cache-Control': 'no-store' },
+    },
+  );
 }
