@@ -92,7 +92,7 @@ describe('t29 · validateEnv', () => {
     }
   });
 
-  test('production: পাসকোড-বিহীন → required-ব্যর্থতা', () => {
+  test('production: env-পাসকোড বিহীন → recommended-সতর্কতা (ফাইল-পথ বৈধ)', () => {
     setEnv({
       DATABASE_URL: 'file:./db/custom.db',
       STUDIO_OWNER_PASSCODE: undefined,
@@ -101,9 +101,11 @@ describe('t29 · validateEnv', () => {
     try {
       const r = validateEnv();
       expect(r.production).toBe(true);
-      expect(r.ok).toBe(false);
+      // P4: env-পথের বিকল্প ফাইল-পথ (প্রথম-ভিজিটর, security.json) বৈধ —
+      // তাই env-অনুপস্থিতি আর required-ব্যর্থতা নয়, recommended-সতর্কতা
+      expect(r.ok).toBe(true);
       const pass = r.items.find(i => i.key === 'STUDIO_OWNER_PASSCODE');
-      expect(pass?.level).toBe('required');
+      expect(pass?.level).toBe('recommended');
       expect(pass?.ok).toBe(false);
       expect(envStartupWarnings(r).some(x => x.includes('STUDIO_OWNER_PASSCODE'))).toBe(true);
     } finally {
@@ -141,12 +143,14 @@ describe('t29 · validateEnv', () => {
     }
   });
 
-  test('খাটো পাসকোড আকৃতি-অবৈধ (ok=false)', () => {
+  test('খাটো env-পাসকোড আকৃতি-অবৈধ (item ok=false) — তবু সতর্কতা-সহ', () => {
     setEnv({ DATABASE_URL: 'file:./db/custom.db', STUDIO_OWNER_PASSCODE: 'short', NODE_ENV: 'production' });
     try {
       const r = validateEnv();
       expect(r.items.find(i => i.key === 'STUDIO_OWNER_PASSCODE')?.ok).toBe(false);
-      expect(r.ok).toBe(false);
+      // P4: recommended-স্তরে চলে যাওয়ায় required-ok অক্ষুণ্ণ
+      expect(r.ok).toBe(true);
+      expect(envStartupWarnings(r).some(x => x.includes('STUDIO_OWNER_PASSCODE'))).toBe(true);
     } finally {
       restoreEnv();
     }

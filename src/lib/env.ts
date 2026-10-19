@@ -48,13 +48,13 @@ const SPECS: EnvSpec[] = [
     key: 'DATABASE_URL',
     level: 'required',
     validate: isNonEmpty,
-    note: 'Prisma datasource (SQLite: file:./db/custom.db; Phase 2-এ PostgreSQL: postgresql://…)',
+    note: 'Prisma datasource (SQLite: file:./db/custom.db; প্রোডাকশন ইমেজে স্বয়ংক্রিয় ডিফল্ট file:/app/storage/studio.db — ভলিউম-ব্যাকড)',
   },
   {
     key: 'STUDIO_OWNER_PASSCODE',
-    level: production => (production ? 'required' : 'recommended'),
+    level: 'recommended',
     validate: isPasscode,
-    note: 'পাবলিক ডিপ্লয়ে অবশ্যই আগে-থেকে বসাতে হবে — নাহলে প্রথম ভিজিটর মালিক হয়ে যেতে পারে (security.ts)',
+    note: 'মালিক-পাসকোডের env-পথ; বিকল্প ফাইল-পথও বৈধ (প্রথম-ভিজিটর সেটআপ, storage/security.json)। ফ্রেশ ডিপ্লয়ে আগে env-এ বসানো নিরাপদ (security.ts)',
   },
   {
     key: 'STUDIO_SESSION_SECRET',
