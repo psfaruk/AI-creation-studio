@@ -2480,3 +2480,23 @@ Work Log:
 
 Stage Summary:
 - ফিচার সম্পূর্ণ ও প্রমাণিত: ঐচ্ছিক Kagyle GPU মিউজিক-প্রদানকারী (server-only Supabase ক্লায়েন্ট + সুরক্ষিত API + অপ্ট-ইন UI + নোটবুক-কর্মী + ৮৭ নতুন টেস্ট); সব গেট সবুজ। PR #1 মালিকের রিভিউ/মার্জের অপেক্ষায়। মালিকের কর্তব্য: ① PR রিভিউ+মার্জ ② Railway-তে PORT/DATABASE_URL/ভেরিয়েবল ③ Kagyle নোটবুকে SUPABASE_URL/SUPABASE_KEY Secrets-সহ worker.py চালিয়ে প্রথম লাইভ রান যাচাই। স্যান্ডবক্স-নোট: dev-প্রিভিউ পাসকোড সেট করা হয়েছে (মালিককে রিপোর্টে জানানো হবে); প্রিভিউ-প্যানেল বর্তমানে main-কনটেন্ট দেখায় — ফিচারটি ব্রাঞ্চে, মার্জের পরে প্রিভিউতে আসবে।
+
+---
+Task ID: P3-MERGE (main agent — owner-approved PR #1 merge to main)
+Agent: main (Z.ai Code)
+Task: মালিকের নির্দেশ ("মার্জ করে পুশ করেন") — PR #1 (feature/kaggle-gpu-worker → main) মার্জ + পুশ, প্রি-মার্জ সেফটি-গেট ও পোস্ট-মার্জ ভেরিফিকেশনসহ।
+
+Work Log:
+- প্রি-মার্জ গেট: PR #1 = open / mergeable:clean / head 28aa0f9 (origin-এ CI Quality gate 2/2 success)। origin/main অপরিবর্তিত @ 2569c8c; feature-ব্রাঞ্চ (28aa0f9) origin/main-এর রৈখিক বংশজাত — ফাস্ট-ফরওয়ার্ড-সম্ভব।
+- পুশ-রেঞ্জ নিরাপত্তা-নিরীক্ষা (2569c8c..28aa0f9; 27 ফাইল, +3422/−0): টেক্সট-ডিফ সিক্রেট-স্ক্যান (ghp_/gho_/github_pat_/hf_/sk-/JWT/service_role/postgres-credential/SUPABASE_KEY=প্রকৃত-মান) → শুধু ডকুমেন্টারি উল্লেখ, কোনো চাবি-মান নেই; কমিটকৃত kaggle/__pycache__/*.pyc দুটির বাইনারি strings-স্ক্যান → পরিষ্কার; package.json+bun.lock পরিবর্তন = শুধু server-only@0.0.1 (উদ্দেশ্যপ্রণোদিত zero-dep সার্ভার-গার্ড); Dockerfile/railway.json অস্পৃষ্ট; .env.example = প্লেসহোল্ডার-মাত্র। হাইজিন-নোট: দুটি .pyc বাইনারি-আর্টিফ্যাক্ট ট্র্যাকড-হয়ে-গেছে (d433887-এ; d653505-এর .gitignore ভবিষ্যৎ-সংযোজন আটকায়, বিদ্যমান আনট্র্যাক করে না) — নিরীহ, ভবিষ্যৎ-প্রাকৃতিক-পুশে `git rm --cached kaggle/__pycache__ -r` দিয়ে পরিষ্কারযোগ্য।
+- আংশিক-env নিরাপত্তা কোড-নিরীক্ষিত: getSupabaseConfig() দুটি ভেরিয়েবলই চায় — URL-আছে/KEY-নেই → null → cap-kaggle-music সারি unavailable_here (Railway-এ SUPABASE_URL-একা সেট থাকলেও বুট-ক্র্যাশ নেই)।
+- মার্জ সম্পাদন: GitHub REST PUT /pulls/1/merge, merge_method=merge (৮ কমিটের ইতিহাস ও CI-পরীক্ষিত SHA-গুলি সংরক্ষিত) → 200 {"sha":"ca4a121fce7ef90750e41e81b16418731ec91f22","merged":true}। PR #1 এখন closed/merged @ 2026-10-19T02:12:37Z, merge_commit ca4a121।
+- লোকাল সিঙ্ক: fetch + merge --ff-only → local main @ ca4a121 (ফাস্ট-ফরওয়ার্ড; 27 ফাইল অবতরণ)। স্যান্ডবক্স-ড্রিফট সংশোধন: node_modules-এ server-only অনুপস্থিত (restore-artifact) → bun install --frozen-lockfile → পুনর্স্থাপিত; ওয়ার্কিং-ট্রি পরিষ্কার, লকফাইল-মিউটেশন শূন্য।
+- Dev-সার্ভার হট-রিলোড যাচাই: GET / 200; নতুন রুটগুলি অথ-বিহীনে সব 401 auth_required (GET/POST /api/kaggle/jobs, GET /api/kaggle/jobs/[id] — requireOwner-গার্ড সক্রিয়); dev.log সাম্প্রতিক লাইনে ত্রুটি শূন্য।
+- ব্রাউজার E2E (agent-browser, মার্জ-পরবর্তী ওয়ার্কিং-ট্রিতে): first-visitor SecurityGate সেটআপ-স্ক্রিন ✓ → অস্থায়ী পাসকোডে আনলক ✓ → ডিফল্ট চ্যাট-ভিউ অক্ষত (টুল-রেজিস্ট্রি ৪০+ টুল + quick-create কার্ড) ✓ → প্রোডাকশন-ভিউতে "ক্যাগল GPU মিউজিক — MusicGen (T4)" কার্ড ✓ (সৎ-নোট, not-configured অ্যালার্ট, দৈর্ঘ্য-সিলেক্টর disabled, "মিউজিক-জব পাঠান" disabled) → console/page errors শূন্য ✓।
+- পরিচ্ছন্নকরণ: অস্থায়ী পাসকোড → storage/security.json ডিলিট + ব্রাউজার-কুকি পরিষ্কার → /api/auth/status {"initialized":false,"authenticated":false} — মালিকের প্রথম-ভিজিটর পাসকোড-সেটআপ ফ্লো ফিরিয়ে আনা হয়েছে (যাচাই-পাসকোডের মান কোথাও স্থায়ী-করা হয়নি)।
+- মার্জ-কমিটে CI: নতুন রান 39188885973 (event=push, branch=main) → পোলিংয়ে **completed/success**। Railway-রিবিল্ড অটো-ট্রিগার্ড (main-পুশ) — Dockerfile-বিল্ডার (bun 1.3.14-পিন) এখন সক্রিয়; ডিপ্লয়-স্বাস্থ্য মালিকের Railway-সেটিংসের উপর নির্ভরশীল — PR-বডিতে রিপোর্টকৃত দুটি ঝুঁকি (PORT 8080 বনাম standalone-ডিফল্ট 3000; DATABASE_URL অনুপস্থিতি-সন্দেহ) বহাল।
+- এই রেকর্ড লোকাল docs-কমিটে রাখা হলো (push নয় — শুধু-docs পুশে অতিরিক্ত Railway-রিবিল্ড এড়াতে; পরের প্রাকৃতিক পুশে যাবে)।
+
+Stage Summary:
+- মার্জ+পুশ সম্পূর্ণ সফল: origin/main @ ca4a121 = PR #1 মার্জ-কমিট (৮ কমিট: ঐচ্ছিক ক্যাগল GPU মিউজিক-কর্মী — server-only Supabase জব-ক্লায়েন্ট, requireOwner-সুরক্ষিত ৩টি API-রুট, অপ্ট-ইন UI-কার্ড, ৮১৪-লাইন নোটবুক-কর্মী, ৮৭ নতুন টেস্ট)। main-এ CI সবুজ; লোকাল dev-প্রিভিউয়ে ফিচার-কার্ড ও ডিফল্ট-পথ লাইভ-যাচাইকৃত (শূন্য-রিগ্রেশন)। অবশিষ্ট মালিক-কর্তব্য: ① dev-প্রিভিউতে নিজের পাসকোড সেট (first-visitor ফ্লো পুনরুদ্ধারকৃত) ② Railway: SUPABASE_KEY (service_role) + DATABASE_URL/STUDIO_PASSCODE_HASH/STUDIO_SESSION_SECRET ভেরিয়েবল + PostgreSQL + /app/storage ভলিউম + PORT-ঝুঁকি নিরসন ③ Kaggle নোটবুকে (GPU T4 x2, Internet On) SUPABASE_URL/SUPABASE_KEY Secrets দিয়ে kaggle/worker.py চালিয়ে প্রথম লাইভ রান ④ ghp_/hf_ টোকেন-রোটেশন (OPEN) ⑤ ঐচ্ছিক: origin/feature/kaggle-gpu-worker ব্রাঞ্চ-ডিলিট (সম্পূর্ণ-মার্জড, নিরাপদ)।
