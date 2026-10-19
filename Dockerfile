@@ -52,6 +52,14 @@ COPY . .
 # PG-ক্লায়েন্ট বানিয়ে রানটাইমে DATABASE_URL সার্ভিস-ভেরিয়েবলে বসাতে হবে।
 RUN bun run db:generate
 
+# P4-hotfix (ধাপ-৩): bootstrap-DDL প্রতি বিল্ডে পুনঃজেনারেট — বুট-
+# স্ব-নিরাময় (lib/db-schema-heal) এটিকে সরাসরি query engine দিয়ে
+# চালায় (prisma CLI-র effect-ক্লোজার ~৩২ প্যাকেজ ইমেজে টানা হয় না)।
+# মাইগ্রেশন-ডিফ অফলাইন — কেবল স্কিমা + @prisma/engines লাগে।
+RUN bunx prisma migrate diff --from-empty \
+      --to-schema-datamodel prisma/schema.prisma --script \
+      > prisma/sqlite-bootstrap.sql
+
 # প্রোডাকশন বিল্ড — next build + scripts/prepare-standalone.mjs
 # (নেটওয়ার্ক লাগে next/font/google Geist-এর জন্য — CI-সমান)
 RUN bun run build
@@ -81,9 +89,10 @@ RUN apt-get update \
 # + .next/static + public (prepare-standalone.mjs-সন্নিবেশিত)।
 COPY --from=builder /app/.next/standalone ./
 
-# Prisma CLI + স্কিমা — `prisma db push --skip-generate`-এর জন্য
-# (Railway preDeployCommand; স্কিমা SQLite-ই থাকে এখন)।
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+# Prisma ক্লায়েন্ট-সম্পদ — @prisma (ক্লায়েন্ট-রানটাইম) + .prisma (জেনারেটেড
+# কোয়েরি-ক্লায়েন্ট + ইঞ্জিন-বাইনারি) + স্কিমা/bootstrap-DDL। P4-ধাপ-৩
+# থেকে prisma CLI রানটাইমে অপ্রয়োজনীয় (স্ব-নিরাময় DDL সরাসরি query
+# engine দিয়ে চলে; CLI-র effect-ক্লোজার ~৩২ প্যাকেজ ইমেজে টানা হয় না)।
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
 # P4-hotfix: জেনারেটেড কোয়েরি-ক্লায়েন্ট স্পষ্ট কপি — Next-এর standalone
@@ -92,10 +101,6 @@ COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 # 503; @prisma-কপি একা যথেষ্ট নয় — ক্লায়েন্ট .prisma-ডিরে ইঞ্জিন খোঁজে)।
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/prisma ./prisma
-
-# গ্লোবাল `prisma` র‍্যাপার — ডিপ্লয়-সময়ে npx/নেটওয়ার্ক লাগে না।
-RUN printf '#!/bin/sh\nexec node /app/node_modules/prisma/build/index.js "$@"\n' > /usr/local/bin/prisma \
- && chmod +x /usr/local/bin/prisma
 
 # মাউন্ট-পয়েন্ট: Railway ভলিউম → /app/storage (সব রানটাইম-পথ
 # process.cwd()/storage-এ শেকড — P4-hotfix থেকে এটিই SQLite-ডেটাবেসের
