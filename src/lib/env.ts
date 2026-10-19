@@ -92,6 +92,18 @@ const SPECS: EnvSpec[] = [
     validate: isNonEmpty,
     note: 'সংরক্ষিত (Phase 3) — Hugging Face Inference Providers-এর সার্ভার-সাইড টোকন; যুক্ত হওয়ার আগে কোনো কোড এটি পড়ে না',
   },
+  {
+    key: 'SUPABASE_URL',
+    level: 'optional',
+    validate: isNonEmpty,
+    note: 'ঐচ্ছিক Kaggle GPU মিউজিক-কর্মীর Supabase প্রজেক্ট-URL (jobs কিউ + Storage) — kaggle/config.ts',
+  },
+  {
+    key: 'SUPABASE_KEY',
+    level: 'optional',
+    validate: isNonEmpty,
+    note: 'ঐচ্ছিক কর্মীর Supabase service_role চাবি — শুধুই সার্ভার-সাইড; কখনো NEXT_PUBLIC_ নয়, ব্রাউজারে নয়',
+  },
 ];
 
 /**

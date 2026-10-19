@@ -343,6 +343,13 @@ export function createFakeDb() {
     conversation: {
       findUnique: async ({ where }: { where: { id: string } }) =>
         s().conversations.get(where.id) ?? null,
+      /** K-1: ক্যাগল-আর্টিফ্যাক্ট রেজিস্ট্রেশনের find-or-create কোয়েরি */
+      findFirst: async ({ where }: { where: Record<string, unknown> }) => {
+        for (const row of s().conversations.values()) {
+          if (matches(row as unknown as Record<string, unknown>, where)) return row;
+        }
+        return null;
+      },
       create: async ({ data }: { data: Partial<FakeConversation> }) => {
         const id = nextId('conv');
         const row: FakeConversation = {

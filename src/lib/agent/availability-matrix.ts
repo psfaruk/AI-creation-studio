@@ -14,6 +14,7 @@
 // ============================================================
 
 import type { AvailabilityMatrixRow, AvailabilityMatrixResponse } from '@/lib/types';
+import { isSupabaseConfigured } from '@/lib/kaggle/config';
 import { activeLipSyncProvider } from './video/lip_sync_module';
 
 /** §৫ — ব্যবহারকারীর টাস্ক-শ্রেণির স্থিতিশীল কী */
@@ -21,6 +22,7 @@ export type CapabilityTaskType =
   | 'speech'
   | 'transcription'
   | 'instrumental_music'
+  | 'remote_gpu_music'
   | 'full_song'
   | 'stem_separation'
   | 'image_generation'
@@ -52,6 +54,37 @@ const LIP_SYNC_CAPS = activeLipSyncProvider().getCapabilities();
 const LIP_SYNC_OVERALL: AvailabilityMatrixRow['overall'] = LIP_SYNC_CAPS.available
   ? 'available'
   : 'unavailable_here';
+
+// K-1: ক্যাগল GPU মিউজিক — পরিবেশ-সচেতন সারি (env-কনফিগারড ≠ কর্মী-অনলাইন)।
+// configured না হলে unavailable_here; হলেও সর্বোচ্চ "experimental" —
+// কর্মী-নোটবুক চালু না থাকলে জব সারিতেই থাকে, UI অফলাইন-ইঙ্গিত দেখায়।
+export function kaggleMusicMatrixRow(opts?: { configured?: boolean }): AvailabilityMatrixRow {
+  const configured =
+    typeof opts?.configured === 'boolean' ? opts.configured : isSupabaseConfigured();
+  return {
+    key: 'cap-kaggle-music',
+    quality: 'quality_not_verified',
+    capability: 'নিউরাল ইনস্ট্রুমেন্টাল — রিমোট Kaggle GPU (MusicGen)',
+    taskType: 'remote_gpu_music',
+    tools: ['ক্যাগল GPU প্যানেল (প্রোডাকশন ভিউ)', 'kaggle/worker.py (নোটবুক-কর্মী)'],
+    modelKey: 'kaggle-musicgen',
+    model: 'facebook/musicgen-medium (OOM-ফলব্যাক: musicgen-small)',
+    license: 'allowed_noncommercial',
+    provider: 'not_exposed_by_sdk',
+    integration: 'integrated',
+    runtime: 'unavailable_hardware',
+    ...(configured
+      ? {}
+      : {
+          errorReason:
+            'রিমোট কিউ কনফিগার করা নেই — সার্ভারে SUPABASE_URL ও SUPABASE_KEY (service_role) সেট হলে ঐচ্ছিক-প্রদানকারীটি চালু হবে।',
+        }),
+    overall: configured ? 'experimental' : 'unavailable_here',
+    honestNote:
+      'ঐচ্ছিক অপ্ট-ইন — ডিফল্ট ইনস্ট্রুমেন্টাল-পথ (প্রসিডিউরাল) অপরিবর্তিত। এই সার্ভারে GPU নেই; MusicGen চলে মালিকের Kaggle T4 নোটবুক-কর্মীতে (Supabase কিউ → জেনারেশন → Storage)। কর্মী চালু কি না আগে থেকে নিশ্চিত নয় — ২ মিনিটের বেশি pending থাকলে UI অফলাইন-ইঙ্গিত দেখায়। গান গাওয়া/বাংলা লিরিক্স নয়।',
+    fallback: 'ডিফল্ট প্রসিডিউরাল ইনস্ট্রুমেন্টাল (স্থানীয়, তাৎক্ষণিক) বা নিজের গান আপলোড।',
+  };
+}
 
 export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
   // ---------------- অডিও ----------------
@@ -110,6 +143,7 @@ export const AVAILABILITY_MATRIX: AvailabilityMatrixRow[] = [
     honestNote: 'প্রসিডিউরাল সংশ্লেষণ — MusicGen-ধর্মী নিউরাল মডেল নয় (SDK-তে মিউজিক API নেই)।',
     fallback: 'নিজের গান আপলোড করলে সেটিই মিউজিক-ভিডিওতে ব্যবহৃত হয়।',
   },
+  kaggleMusicMatrixRow(),
   {
     key: 'cap-full-song',
     quality: 'quality_not_verified',
