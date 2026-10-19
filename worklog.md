@@ -2522,3 +2522,73 @@ Stage Summary:
 - প্রোডাকশন ডেটাবেস-স্তর সম্পূর্ণ কার্যকর: ইঞ্জিন (binaryTargets) + সংযোগ (SQLite-ডিফল্ট) + স্কিমা (CLI-মুক্ত বুট-স্ব-নিরাময়) — প্রতিটি মূল-কারণ প্রমাণসহ সমাধান; /api/health 200; CI সবুজ @ 0a0ad29। স্থাপত্য-সিদ্ধান্ত: প্রোডাকশন-ডিফল্ট SQLite-অন-ভলিউম (একক-মালিক স্টুডিও), PG-পথ ডকুমেন্টেড।
 - মালিকের জরুরি কর্তব্য ( Railway-সেটিংস — এজেন্টের নাগালের বাইরে): ① এখনই URL-এ গিয়ে পাসকোড সেট (first-visitor উইন্ডো খোলা) বা বিকল্পে STUDIO_OWNER_PASSCODE সার্ভিস-ভেরিয়েবলে বসান (রিডিপ্লয়-রোধী, সুপারিশকৃত) ② /app/storage-এ Railway ভলিউম অ্যাটাচ (না দিলে প্রতি রিডিপ্লয়ে সব ডেটা/পাসকোড রিসেট — আজকের ঘটনাই প্রমাণ) ③ ঐচ্ছিক: STUDIO_SESSION_SECRET (রিডিপ্লয়ে লগ-ইন টিকুক), ZAI_API_KEY/GLM_API_KEY (প্রোভাইডার বর্তমানে not-configured) ④ পূর্বনির্ধারিত ক্যাগল-আইটেম (SUPABASE_URL/KEY)।
 - এই রেকর্ড লোকাল docs-কমিটে (push নয় — অতিরিক্ত রিডিপ্লয়ে মালিকের নতুন-সেট পাসকোড মুছে যেতে পারে; ভলিউম-অ্যাটাচের আগে বিশেষ সতর্কতা); পরের প্রাকৃতিক পুশে যাবে।
+
+---
+Task ID: 1
+Agent: main
+Task: লোকাল/কাস্টম AI মডেল সাপোর্ট — ব্যাকএন্ড (custom প্রোভাইডার)
+
+Work Log:
+- `src/lib/agent/chat-models.ts`: ChatProviderId-তে 'custom' যোগ; PROVIDERS.custom (kind=external, envVar=CUSTOM_API_KEY, কোনো ডিফল্ট baseURL নেই); CHAT_MODELS-এ `custom-model` (id=CUSTOM_MODEL_ID='custom-model', provider='custom', apiModel নেই — রানটাইমে সেভ-কনফিগ থেকে); EXTERNAL_PROVIDER_ORDER=['zai-api','glm','custom']; CUSTOM_MODEL_ID ও isCustomProviderModel() export।
+- `src/lib/agent/provider-keys.ts`: ProviderKeyEntry-তে model? যোগ; normalizeEntry এখন provider-aware (custom-এ কী ঐচ্ছিক, baseURL বাধ্যতামূলক); নতুন exports: CustomProviderConfig, getCustomConfig(), setCustomConfig(), isValidCustomModelShape(), isValidCustomKeyShape(); getProviderBaseURL('custom')-এ CUSTOM_BASE_URL env-ফলব্যাক; ProviderKeyStatus-এ model? ও configured? যোগ; providerKeyStatuses() custom-ব্রাঞ্চ (hasKey=ব্যবহার-উপযোগী কনফিগ, masked=কী থাকলে, baseURL+model প্রকাশ্য); setProviderKey/setProviderBaseURL custom-এ সুরক্ষিত-থ্রো।
+- `src/lib/agent/external-llm.ts`: buildRequestBody এখন apiModel-স্ট্রিং নেয়; resolveCustom()+resolveApiModel() — custom-এ model-নাম+কী সেভ-কনফিগ থেকে, কী না থাকলে 'local-no-key' প্লেসহোল্ডার; externalChatComplete-এ custom-পথ (Base URL না থাকলে সৎ fatal); verifyExternalModel-এ custom-হ্যান্ডলিং (null কী সমর্থিত, ৪০৪/৪০০-এ মডেল-নাম-ভুল হিন্ট, নেটওয়ার্ক-ব্যর্থতায় সৎ নির্দেশনা)।
+- `src/app/api/provider-keys/route.ts`: POST-এ custom-শাখা — { provider:'custom', baseURL, model, key? } (baseURL+model বাধ্যতামূলক, কী ঐচ্ছিক ১–৫০০ অক্ষর); GLM-পথ অপরিবর্তিত; DELETE custom-এও কাজ করে (পুরো এন্ট্রি মুছে)।
+- `src/app/api/provider-keys/test/route.ts` (নতুন): POST { provider:'custom', baseURL?, key?, model?, chatTest? } → GET {baseURL}/models দিয়ে মডেল-তালিকা (সর্বোচ্চ ৩০০, sorted) + model থাকলে এক-শব্দের প্রকৃত চ্যাট-কল; রেসপন্স { ok, baseURL, modelCount, models, modelsError?, chat?: { ok, content, servedModel, ms, error } }; কী পাঠালে শুধু ঐ কলে ব্যবহৃত — সেভ হয় না; ৩০/ঘণ্টা রেট-লিমিট।
+- `src/app/api/models/route.ts`: custom-এন্ট্রির লেবেল ইনজেকশন (কনফিগ থাকলে `<model> · কাস্টম`, description-এ baseURL); যাচাই-ক্যাশ-কী = custom-model@<sha1(baseURL|model)[0:8]> — কনফিগ বদলালে পুরনো ফল নয়, নতুন যাচাই; POST-এ getZAI() ব্যর্থ হলে পুরো রুট মরে না (Z.ai-গ্রুপ সৎ-ত্রুটি পায়, custom/GLM যাচাই চলে)।
+- `src/lib/platform/v1-shared.ts`: V1_MODEL_CATALOG-এ custom-model যোগ (ownedBy='custom') — বাইরের OpenAI-ক্লায়েন্টও /api/v1 দিয়ে custom-এন্ডপয়েন্টে রাউট করতে পারবে।
+- `bun run lint` → ক্লিন; dev.log → কোনো ত্রুটি নেই, GET / 200।
+
+Stage Summary:
+- ডেটা-ফ্লো: ইউজার কী-ডায়ালগে custom কনফিগ দেয় → storage/provider-keys.json-এ সেভ → মডেল-সিলেক্টরে `custom-model` বেছে চ্যাট → /api/chat model='custom-model' → llm.ts → externalChatComplete → getCustomConfig() → ইউজারের এন্ডপয়েন্টে প্রকৃত OpenAI-কম্প্যাটিবল কল।
+- env-ফলব্যাক (Railway): CUSTOM_BASE_URL + CUSTOM_MODEL + CUSTOM_API_KEY।
+- Frontend-কন্ট্র্যাক্ট (Task 2-এর জন্য):
+  * GET /api/models → providers.custom = { hasKey: configured, masked, source, baseURL, defaultBaseURL:'', model, configured } এবং models[]-তে custom-model এন্ট্রি (কনফিগ থাকলে label='<model> · কাস্টম')।
+  * POST /api/provider-keys { provider:'custom', baseURL, model, key? } → { ok, providers }।
+  * POST /api/provider-keys/test { provider:'custom', baseURL?, key?, model?, chatTest? } → { ok, baseURL, modelCount, models[], modelsError?, chat? }।
+  * DELETE /api/provider-keys?provider=custom → কনফিগ মুছে ফেলে।
+
+---
+Task ID: 2
+Agent: frontend-styling-expert
+Task: কাস্টম / লোকাল মডেল প্রোভাইডার UI — provider-key-dialog.tsx + model-selector.tsx (Task 1-এর ব্যাকএন্ড-কন্ট্র্যাক্টের সাথে ইন্টিগ্রেশন)
+
+Work Log:
+- `src/components/chat/provider-key-dialog.tsx`:
+  - `ProviderKeyStatusView`-তে `model?: string | null` ও `configured?: boolean` যোগ (GET /api/models-এর providers.custom ফিল্ড)।
+  - প্রোভাইডার-গ্রিড এখন ৩টি বোতাম — `grid-cols-1 sm:grid-cols-3` (Z.ai API · GLM · BigModel · কাস্টম / লোকাল); চিপ: zai-api/glm-এ "কী ✓" (hasKey), custom-এ "কনফিগার্ড ✓" (configured ?? hasKey); custom বোতামের সাব-লেবেল = সেভ-করা মডেল-নাম বা "Ollama · LM Studio · vLLM"।
+  - provider==='custom' হলে সম্পূর্ণ আলাদা ফর্ম: সেভ-করা কনফিগ-ডিসপ্লে (baseURL + মডেল + মাস্কড কী + source); Base URL* (dir=ltr, font-mono, প্লেসহোল্ডার http://localhost:11434/v1, উদাহরণ-হেল্পার + অ্যাম্বার নোট: কল দেয় অ্যাপের সার্ভার, রিমোট ডিপ্লয়ে টানেল/LAN দিন); API কী (ঐচ্ছিক + আই-টগল, "লোকাল সার্ভারে কী না লাগলে খালি রাখুন"); মডেলের নাম* (llama3.2 প্লেসহোল্ডার)।
+  - "মডেল-তালিকা আনুন" বোতাম → POST /api/provider-keys/test { provider:'custom', baseURL, key?, model?, chatTest: মডেল-নাম-ভরাট-কি-না } — Loader2-স্পিনার; ফলাফল: চ্যাট ok → সবুজ "সংযোগ ঠিক ✓ … X ms", চ্যাট ব্যর্থ → লাল ত্রুটি; models[] → max-h-48 overflow-y-auto স্ক্রল-তালিকা (role=listbox), ক্লিকে মডেল-নাম-ইনপুট ভরে + টিক-চিহ্ন; modelsError → সৎ অ্যাম্বার সতর্কতা (কিছু সার্ভারে /models থাকে না; chat.ok হলে এন্ডপয়েন্ট তবুও কাজ করছে)।
+  - "সংরক্ষণ করো" → ক্লায়েন্ট-সাইড যাচাই (http/https URL + মডেল-নাম অ-খালি + কী ১–৫০০ সাদাস্থান-বিহীন) → POST /api/provider-keys { provider:'custom', baseURL, model, key } (key:'' = কী-হীন) → বাংলা টোস্ট + onKeysChanged()।
+  - "কনফিগ মুছে দাও" (configured হলে) → DELETE /api/provider-keys?provider=custom → onKeysChanged()।
+  - কাস্টম-ফর্ম প্রি-ফিল effect: ডায়ালগ খুললে/custom-এ গেলে keyStatuses.custom থেকে baseURL+model বসে, কী-ঘর খালি, টেস্ট-ফল রিসেট (always custom-এর সেভ-কনফিগ পড়ে — idempotent)।
+  - zai-api/glm শাখা অপরিবর্তিত; কেবল keyUrl-লিঙ্ক ব্লক `{effectiveInfo.keyUrl && …}` দিয়ে গার্ডেড (custom-এ keyUrl undefined)। অংশ ২ (/api/v1) অপরিবর্তিত।
+- `src/components/chat/model-selector.tsx`:
+  - renderGroup EXTERNAL_PROVIDER_ORDER-এ custom গ্রুপ স্বয়ংক্রিয় (হেডার-ব্যাজ: custom-এ "সেটআপ লাগবে", বাকিদের "কী লাগবে"; aria-label "কাস্টম / লোকাল মডেল সেটআপ করুন")।
+  - keyless custom-model সারি-ক্লিক → openKeyDialog('custom') → ডায়ালগ custom প্রি-সিলেক্টে খোলে (useEffect setProvider(initialProvider ?? 'zai-api') + 'custom' in PROVIDERS গার্ড — যাচাই করা)। সারির aria-label custom-এ "… — সেটআপ করুন"।
+  - কনফিগার্ড হলে (hasKey=configured) সারি-ক্লিক = স্বাভাবিক নির্বাচন ('custom-model'), লেবেল /api/models থেকে "<model> · কাস্টম"।
+- `bun run lint` → ক্লিন; `bunx tsc --noEmit` → আমার দুই ফাইলে শূন্য ত্রুটি; dev.log → কোনো নতুন ত্রুটি নেই (GET / 200)।
+
+Stage Summary:
+- পূর্ণ UI-ফ্লো: মডেল-সিলেক্টর → "কাস্টম / লোকাল মডেল" গ্রুপ → "সেটআপ লাগবে"/keyless-সারি ক্লিক → কী-ডায়ালগ (custom প্রি-সিলেক্ট) → Base URL + ঐচ্ছিক কী + মডেল-নাম → "মডেল-তালিকা আনুন" (সংযোগ-পরীক্ষা + তালিকা থেকে নাম-নির্বাচন) → "সংরক্ষণ করো" → মডেল-সিলেক্টরে "<model> · কাস্টম" নির্বাচন করলেই পুরো অ্যাপ ইউজারের এন্ডপয়েন্টে চলে।
+- সব নতুন টেক্সট বাংলা, অ্যাকসেন্ট emerald (amber শুধু সতর্কতায়, যেমন আগের "কী লাগবে" ব্যাজ), aria-label বাংলায়; blue/indigo ব্যবহৃত হয়নি।
+- পরিচিত সীমা: কী-ঘর খালি রেখে টেস্ট করলে সার্ভার সেভ-করা কী-ই ব্যবহার করে (ব্যাকএন্ড-চুক্তি) — কী-হীন টেস্ট চাইলে আগে খালি কী দিয়ে সেভ করতে হবে।
+- পরবর্তী এজেন্টের জন্য নোট: `bunx tsc --noEmit`-এ Task 1-এর দুই ব্যাকএন্ড ফাইলে পূর্ব-বিদ্যমান টাইপ-ত্রুটি (src/app/api/models/route.ts:239 never[]; src/app/api/provider-keys/test/route.ts:85 ModelsPage-iterate) — আমার স্কোপের বাইরে, ঠিক করা হয়নি।
+
+---
+Task ID: 3
+Agent: main
+Task: curl-ব্যাকটেস্ট + agent-browser E2E যাচাই + রিনেম-ফিক্স
+
+Work Log:
+- মক OpenAI-কম্প্যাটিবল সার্ভার (port 3111, /home/z/.backtest/mock-llm) — ইউজারের লোকাল মডেল সিমুলেট; /v1/models + /v1/chat/completions (stream+non-stream), ভুল মডেল-নামে সৎ 404।
+- curl-ব্যাকটেস্ট (session-token দিয়ে): T1 GET /api/models (custom-এন্ট্রি + configured:false) ✓; T2 probe-রাউট (মডেল-তালিকা ৩টি + chat-test ok, 5ms) ✓; T3 custom-সেভ (masked কী, configured:true) ✓; T4 লেবেল-ইনজেকশন ("llama3.2:3b · কাস্টম") ✓; T5 POST /api/models যাচাই (ok:true, servedModel) ✓; T6 পূর্ণ চ্যাট-ফ্লো (model='custom-model', mode=chat_only) — মক সার্ভার থেকে উত্তর ✓।
+- বাগ-ফিক্স (T6-এ ধরা পড়ে): normalizeEntry-র custom-ব্রাঞ্চে baseURL ফেরত-এন্ট্রিতে বাদ পড়ছিল — ৫-সে-ক্যাশের পর ডিস্ক থেকে পুনঃপাঠে কনফিগ অসম্পূর্ণ হয়ে যেত। ফিক্স + ৭-সে-ক্যাশ-এক্সপায়ারি রাউন্ড-ট্রিপ পুনঃযাচাই ✓।
+- সৎ-ত্রুটি পথ: ভুল মডেল-নাম → "এই নামের মডেল পাওয়া যায়নি — তালিকা থেকে সঠিক নাম বেছে নিন" ✓; অপ্রাপ্য এন্ডপয়েন্ট → "নেটওয়ার্ক/সংযোগ ব্যর্থ" ✓; অবৈধ baseURL/মিসিং মডেল-নাম → 400 বাংলা বার্তা ✓।
+- agent-browser E2E: আনলক → মডেল-সিলেক্টরে "llama3.2:3b · কাস্টম" গ্রুপ → নির্বাচন (localStorage agentic-chat-model=custom-model) → UI-চ্যাট পাঠানো → মক-সার্ভারের উত্তর UI-তে ✓ → কী-ডায়ালগে ৩ প্রোভাইডার-ট্যাব, কাস্টম ফর্ম (Base URL/কী/মডেল-নাম) → "মডেল-তালিকা আনুন" → সংযোগ ✓ + ৩ মডেলের ক্লিকেবল তালিকা → তালিকা থেকে qwen2.5:7b নির্বাচন → সেভ → রেডিও-চিপ "কনফিগার্ড ✓ qwen2.5:7b" → সিলেক্টর-লেবেল স্বয়ংক্রিয় আপডেট → নতুন মডেলে চ্যাট ✓; অ-কনফিগার্ড অবস্থায় "সেটআপ লাগবে" ব্যাজ + ক্লিকে ডায়ালগ সরাসরি কাস্টম ট্যাবে ✓।
+- কনসোল/পেজ-এরর: শূন্য; মোবাইল (390×844) + ডেস্কটপ লেআউট ✓; স্ক্রিনশট: /home/z/.backtest/{mobile,desktop}-chat.png।
+- রিনেম-ফিক্স: .gitignore-এর বিস্তৃত `test` প্যাটার্ন নতুন রাউট-ডিরেক্টরি test/ কে ignore করছিল → রাউট /api/provider-keys/test → /api/provider-keys/probe রিনেম + frontend URL আপডেট + probe-রাউট পুনঃযাচাই (curl + browser) ✓; lint + tsc --noEmit ক্লিন।
+- টেস্ট-ডেটা ক্লিনআপ: কথোপকথন ডিলিট, custom-কনফিগ ডিলিট, security.json/provider-keys.json/model-verification.json রিসেট (ইউজার নিজে পাসকোড সেট করবেন), মক-সার্ভার বন্ধ।
+
+Stage Summary:
+- লোকাল-মডেল ফিচার end-to-end ভেরিফায়েড: UI-কনফিগ → সার্ভার-সেভ → সংযোগ-পরীক্ষা → মডেল-তালিকা → নির্বাচন → সম্পূর্ণ চ্যাট ইউজারের এন্ডপয়েন্টে রাউট।
+- প্রোডাকশন-প্রস্তুত: lint+tsc ক্লিন, dev.log-এ কোনো ত্রুটি নেই, নতুন রাউট git-ট্র্যাকড।

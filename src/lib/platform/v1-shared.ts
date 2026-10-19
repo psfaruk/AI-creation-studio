@@ -33,6 +33,8 @@ export const V1_MODEL_CATALOG: V1ModelInfo[] = [
   { id: 'glm-4-flash', ownedBy: 'bigmodel', needsKey: true },
   { id: 'glm-4-air', ownedBy: 'bigmodel', needsKey: true },
   { id: 'glm-plus-cn', ownedBy: 'bigmodel', needsKey: true },
+  // ইউজারের নিজের কাস্টম/লোকাল এন্ডপয়েন্ট (কী-ডায়ালগে কনফিগ করা)
+  { id: 'custom-model', ownedBy: 'custom', needsKey: false },
 ];
 
 /**

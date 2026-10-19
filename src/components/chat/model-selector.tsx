@@ -9,6 +9,9 @@
 //
 // GLM-only-নীতি (ব্যবহারকারীর নির্দেশ): শুধু GLM-পরিবারের
 // মডেল-গ্রুপ — Z.ai SDK (বিল্ট-ইন), Z.ai API ও BigModel (নিজের কী)।
+// এর সাথে "কাস্টম / লোকাল মডেল" গ্রুপ — নিজের OpenAI-কম্প্যাটিবল
+// এন্ডপয়েন্ট (কী-ডায়ালগে কনফিগ); কনফিগ না থাকলে সারি-ক্লিক =
+// কী-ডায়ালগ (custom প্রি-সিলেক্ট)।
 //
 // আচরণ-নীতি:
 //  - কী-বিহীন এক্সটার্নাল মডেলে ক্লিক = নীরব নির্বাচন নয়, কী-ডায়ালগ
@@ -108,7 +111,13 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
           setChatModel(m.id);
         }}
         className="gap-2 py-1.5 pl-3"
-        aria-label={keyless ? `${m.label} — API কী যোগ করুন` : `${m.label} নির্বাচন করুন`}
+        aria-label={
+          keyless
+            ? m.provider === 'custom'
+              ? `${m.label} — সেটআপ করুন`
+              : `${m.label} — API কী যোগ করুন`
+            : `${m.label} নির্বাচন করুন`
+        }
       >
         <span className={`min-w-0 flex-1 truncate text-sm ${selected ? 'font-medium text-emerald-700 dark:text-emerald-400' : ''}`}>
           {m.label}
@@ -141,9 +150,13 @@ export function ModelSelector({ disabled }: { disabled?: boolean }) {
                 openKeyDialog(providerId);
               }}
               className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 transition-colors hover:bg-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:hover:bg-amber-900"
-              aria-label={`${providerInfo.label}-এর API কী যোগ করুন`}
+              aria-label={
+                providerId === 'custom'
+                  ? `${providerInfo.label} সেটআপ করুন`
+                  : `${providerInfo.label}-এর API কী যোগ করুন`
+              }
             >
-              কী লাগবে
+              {providerId === 'custom' ? 'সেটআপ লাগবে' : 'কী লাগবে'}
             </button>
           )}
         </DropdownMenuLabel>

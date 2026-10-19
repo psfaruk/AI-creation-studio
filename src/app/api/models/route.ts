@@ -13,13 +13,15 @@
 // ============================================================
 import { NextResponse } from 'next/server';
 import { mkdir, readFile, writeFile } from 'fs/promises';
+import { createHash } from 'crypto';
 import path from 'path';
 import { requireOwner } from '@/lib/security';
 import { getZAI } from '@/lib/agent/llm';
-import { getProviderKey, providerKeyStatuses, type ProviderKeyStatus } from '@/lib/agent/provider-keys';
+import { getCustomConfig, getProviderKey, providerKeyStatuses, type ProviderKeyStatus } from '@/lib/agent/provider-keys';
 import { verifyExternalModel } from '@/lib/agent/external-llm';
 import {
   CHAT_MODELS,
+  CUSTOM_MODEL_ID,
   EXTERNAL_PROVIDER_ORDER,
   type ModelVerificationEntry,
   type ModelVerificationFile,
@@ -106,13 +108,42 @@ async function verifyZaiOne(
 
 /** একটি এক্সটার্নাল মডেলের প্রকৃত প্রাপ্যতা-যাচাই (রিয়েল OpenAI SDK দিয়ে প্রোভাইডারের আসল API-তে) — external-llm.ts */
 
+/**
+ * custom-এন্ট্রির যাচাই-ক্যাশ-কী — কনফিগের ফিঙ্গারপ্রিন্টসহ।
+ * কনফিগ (baseURL/model) বদলালেই নতুন কী → পুরনো ফল নয়, নতুন যাচাই হয়।
+ */
+async function customVerificationKey(): Promise<string> {
+  const cfg = await getCustomConfig();
+  if (!cfg) return CUSTOM_MODEL_ID;
+  const fp = createHash('sha1').update(`${cfg.baseURL}|${cfg.model}`).digest('hex').slice(0, 8);
+  return `${CUSTOM_MODEL_ID}@${fp}`;
+}
+
+/** মডেল m-এর যাচাই-স্টোর-কী (custom = ফিঙ্গারপ্রিন্টসহ) */
+async function storeKeyOf(m: { id: string; provider: string }): Promise<string> {
+  return m.provider === 'custom' ? await customVerificationKey() : m.id;
+}
+
 async function buildResponse(verification: ModelVerificationFile, testedCount: number) {
   const providers = await providerKeyStatuses();
+  const customCfg = await getCustomConfig();
+  const customKey = await customVerificationKey();
   return NextResponse.json({
-    models: CHAT_MODELS.map(m => ({
-      ...m,
-      verification: verification[m.id] ?? null,
-    })),
+    models: CHAT_MODELS.map(m => {
+      // custom-এন্ট্রি: কনফিগ থাকলে লেবেলে প্রকৃত মডেল-নাম + বর্ণনায় এন্ডপয়েন্ট
+      if (m.id === CUSTOM_MODEL_ID && customCfg) {
+        return {
+          ...m,
+          label: `${customCfg.model} · কাস্টম`,
+          description: `নিজের এন্ডপয়েন্ট: ${customCfg.baseURL}`,
+          verification: verification[customKey] ?? null,
+        };
+      }
+      return {
+        ...m,
+        verification: verification[m.id] ?? null,
+      };
+    }),
     providers,
     testedCount,
   });
@@ -132,65 +163,90 @@ export async function POST(req: Request) {
   const auth = await requireOwner(req);
   if (!auth.ok) return auth.response;
 
-  const zai = await getZAI();
+  // Z.ai SDK অকনফিগারড হলে (যেমন Railway-এ .z-ai-config ছাড়া) সম্পূর্ণ
+  // যাচাই মরে যাবে না — Z.ai-গ্রুপ সৎ-ত্রুটি এন্ট্রি পেয়ে বাকিরা চলবে
+  let zai: Awaited<ReturnType<typeof getZAI>> | null = null;
+  let zaiUnavailable: string | null = null;
+  try {
+    zai = await getZAI();
+  } catch (err) {
+    zaiUnavailable = err instanceof Error ? err.message : 'Z.ai SDK অকনফিগারড';
+  }
   const verification = await loadVerification();
   const keyStatuses = await providerKeyStatuses();
   let tested = 0;
 
   // ---- ১. Z.ai SDK-গ্রুপ: সিরিয়াল + শেয়ার্ড-৪২৯ আর্লি-স্টপ ----
   const zaiModels = CHAT_MODELS.filter(m => m.provider === 'zai');
-  let consecutive429 = 0;
-  let sharedWindowHit = false;
-  for (const m of zaiModels) {
-    if (isFresh(verification[m.id])) continue;
-    if (sharedWindowHit) {
-      // একই পাইপে টানা ৪২৯ — বাকিদের ডাক ছাড়াই সৎ-স্কিপ (বাজেট বাঁচাও)
+  if (!zai) {
+    // SDK-পথ অকনফিগারড — প্রতিটি Z.ai-মডেলে সৎ ত্রুটি (ডাক নয়)
+    for (const m of zaiModels) {
+      if (isFresh(verification[m.id]) && verification[m.id]?.ok) continue;
       verification[m.id] = {
         ok: false,
-        rateLimited: true,
-        skippedBySharedWindow: true,
-        error: 'Z.ai SDK-র সব মডেল একই ব্যাকএন্ড পাইপ ভাগ করে — শেয়ার্ড ৪২৯-উইন্ডোতে এই মডেলটি আলাদাভাবে ডাকা হয়নি',
+        error: `Z.ai SDK অকনফিগারড — ${zaiUnavailable?.slice(0, 120) ?? ''}`,
         testedAt: new Date().toISOString(),
       };
-      continue;
     }
-    verification[m.id] = await verifyZaiOne(zai, m.id);
-    tested++;
     await saveVerification(verification);
-    if (verification[m.id].rateLimited) {
-      consecutive429++;
-      if (consecutive429 >= ZAI_429_EARLY_STOP) sharedWindowHit = true;
-    } else {
-      consecutive429 = 0;
+  } else {
+    let consecutive429 = 0;
+    let sharedWindowHit = false;
+    for (const m of zaiModels) {
+      if (isFresh(verification[m.id])) continue;
+      if (sharedWindowHit) {
+        // একই পাইপে টানা ৪২৯ — বাকিদের ডাক ছাড়াই সৎ-স্কিপ (বাজেট বাঁচাও)
+        verification[m.id] = {
+          ok: false,
+          rateLimited: true,
+          skippedBySharedWindow: true,
+          error: 'Z.ai SDK-র সব মডেল একই ব্যাকএন্ড পাইপ ভাগ করে — শেয়ার্ড ৪২৯-উইন্ডোতে এই মডেলটি আলাদাভাবে ডাকা হয়নি',
+          testedAt: new Date().toISOString(),
+        };
+        continue;
+      }
+      verification[m.id] = await verifyZaiOne(zai, m.id);
+      tested++;
+      await saveVerification(verification);
+      if (verification[m.id].rateLimited) {
+        consecutive429++;
+        if (consecutive429 >= ZAI_429_EARLY_STOP) sharedWindowHit = true;
+      } else {
+        consecutive429 = 0;
+      }
+      await new Promise(r => setTimeout(r, INTER_MODEL_GAP_MS));
     }
-    await new Promise(r => setTimeout(r, INTER_MODEL_GAP_MS));
   }
 
-  // ---- ২. এক্সটার্নাল প্রোভাইডার: কী অনুযায়ী ----
+  // ---- ২. এক্সটার্নাল প্রোভাইডার: কী/কনফিগ অনুযায়ী ----
   for (const provider of EXTERNAL_PROVIDER_ORDER) {
     const models = CHAT_MODELS.filter(m => m.provider === provider);
     const status: ProviderKeyStatus | undefined = keyStatuses[provider];
     if (!status?.hasKey) {
-      // কী নেই — প্রতিটি মডেলে সৎ needsKey (কোনো ডাক নয়)
+      // কী/কনফিগ নেই — প্রতিটি মডেলে সৎ needsKey (কোনো ডাক নয়)
       for (const m of models) {
-        if (isFresh(verification[m.id]) && !verification[m.id]?.needsKey) continue;
-        verification[m.id] = await verifyExternalModel(m, null);
+        const sk = await storeKeyOf(m);
+        if (isFresh(verification[sk]) && !verification[sk]?.needsKey) continue;
+        verification[sk] = await verifyExternalModel(m, null);
       }
       continue;
     }
-    // কী আছে — প্রতিটি মডেলে প্রকৃত ছোট কল (রিয়েল OpenAI SDK দিয়ে;
-    // প্রতিটি মডেল আলাদাভাবে সত্যায়িত হয়)
+    // কী/কনফিগ আছে — প্রতিটি মডেলে প্রকৃত ছোট কল (রিয়েল OpenAI SDK দিয়ে)
     const key = await getProviderKey(provider);
-    const pending = models.filter(m => !isFresh(verification[m.id]));
+    const pending: Array<{ m: (typeof CHAT_MODELS)[number]; sk: string }> = [];
+    for (const m of models) {
+      const sk = await storeKeyOf(m);
+      if (!isFresh(verification[sk])) pending.push({ m, sk });
+    }
     if (pending.length === 0) continue;
     const keyResults = await Promise.all(
-      pending.map(async m => {
+      pending.map(async ({ m, sk }) => {
         const entry = await verifyExternalModel(m, key);
-        return [m.id, entry] as const;
+        return [sk, entry] as const;
       })
     );
-    for (const [id, entry] of keyResults) {
-      verification[id] = entry;
+    for (const [sk, entry] of keyResults) {
+      verification[sk] = entry;
       tested++;
     }
     await saveVerification(verification);

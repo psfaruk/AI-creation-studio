@@ -1,19 +1,23 @@
 // ============================================================
-// চ্যাট-মডেল ক্যাটালগ (GLM-only) — composer-এর মডেল-সিলেক্টর ও
+// চ্যাট-মডেল ক্যাটালগ — composer-এর মডেল-সিলেক্টর ও
 // সার্ভার-রাউটিং উভয়ের উৎস।
 //
-// নীতি (ব্যবহারকারীর সুস্পষ্ট নির্দেশ — GLM ছাড়া অন্য কিছু নয়):
-//  ① শুধু GLM-পরিবারের প্রোভাইডার থাকবে:
+// নীতি:
+//  ① GLM-পরিবার + কাস্টম/লোকাল প্রোভাইডার:
 //     - zai     = Z.ai SDK বিল্ট-ইন পাইপ (কী লাগে না; served = glm-4-plus)
 //     - zai-api = Z.ai আন্তর্জাতিক API (api.z.ai) — নিজের কী
 //     - glm     = Zhipu BigModel (open.bigmodel.cn) — নিজের কী
-//     DeepSeek / Groq / OpenRouter / কাস্টম-প্ল্যাটফর্ম সম্পূর্ণ সরানো।
+//     - custom  = ব্যবহারকারীর নিজের OpenAI-কম্প্যাটিবল এন্ডপয়েন্ট
+//                (Ollama / LM Studio / vLLM / LiteLLM / ngrok-টানেল …)
+//                — Base URL + API কী + মডেলের নাম সবই ইউজারের; কী ঐচ্ছিক।
 //  ② এন্ডপয়েন্ট-মিশ্রণ নিষিদ্ধ: প্রতিটি প্রোভাইডারের নিজস্ব baseURL,
 //     নিজস্ব কী-স্লট, নিজস্ব মডেল-আইডি — কোনো ক্রস-ফলব্যাক নেই।
 //  ③ SDK-গ্রুপে একটিই সৎ এন্ট্রি (লাইভ-প্রোব-সত্য: model-প্যারামিটার
 //     উপেক্ষিত, served-model সবসময় glm-4-plus)।
-//  ④ এক্সটার্নাল এন্ট্রি = প্রকৃত পাবলিক API-র প্রকৃত model-স্ট্রিং
+//  ④ এক্সটার্নাল এন্ট্রি = প্রকৃত API-র প্রকৃত model-স্ট্রিং
 //     (apiModel ফিল্ডে দৃশ্যমান) — কী দিলেই চলে; কী-সমস্যায় সৎ ত্রুটি।
+//     custom-এন্ট্রিতে apiModel নেই — মডেলের নাম ইউজারের সেভ-করা
+//     কনফিগ থেকে (provider-keys.ts → getCustomConfig) রানটাইমে আসে।
 //  ⑤ CHAT_MODELS-এর ক্রমই প্রদর্শন-ক্রম।
 //  ⑥ যাচাই-স্ট্যাটাস ডিস্কে ক্যাশ হয় (storage/model-verification.json)।
 //  ⑦ পুরনো saved model-id (deepseek-*/groq-*/or-*/custom:*) —
@@ -23,12 +27,14 @@
 // ============================================================
 
 /**
- * চ্যাট-প্রোভাইডার শনাক্তকরণ — তিনটিই GLM-পথ:
+ * চ্যাট-প্রোভাইডার শনাক্তকরণ:
  *  'zai'     = বিল্ট-ইন Z.ai SDK (কী লাগে না)
  *  'zai-api' = Z.ai আন্তর্জাতিক API (docs.z.ai) — নিজের কী
  *  'glm'     = Zhipu BigModel (open.bigmodel.cn) — নিজের কী
+ *  'custom'  = নিজের OpenAI-কম্প্যাটিবল এন্ডপয়েন্ট (লোকাল/টানেল) —
+ *              Base URL + মডেলের নাম বাধ্যতামূলক, API কী ঐচ্ছিক
  */
-export type ChatProviderId = 'zai' | 'zai-api' | 'glm';
+export type ChatProviderId = 'zai' | 'zai-api' | 'glm' | 'custom';
 
 /** প্রোভাইডার-মেটাডেটা (client-safe — কোনো গোপন তথ্য নেই) */
 export interface ProviderInfo {
@@ -79,10 +85,22 @@ export const PROVIDERS: Record<StaticProviderId, ProviderInfo> = {
     envVar: 'GLM_API_KEY',
     note: 'Zhipu-র প্রকৃত ওপেন প্ল্যাটফর্ম; glm-4-flash মডেলটি ফ্রি টিয়ার।',
   },
+  custom: {
+    id: 'custom',
+    label: 'কাস্টম / লোকাল মডেল',
+    kind: 'external',
+    // কোনো ডিফল্ট baseURL নেই — ইউজারের নিজের এন্ডপয়েন্টই এখানে কনফিগ
+    // (provider-keys.ts → getCustomConfig)। env-ফলব্যাক: CUSTOM_BASE_URL।
+    envVar: 'CUSTOM_API_KEY',
+    note: 'নিজের OpenAI-কম্প্যাটিবল এন্ডপয়েন্ট (Ollama, LM Studio, vLLM, LiteLLM, টানেল…)। Base URL ও মডেলের নাম বাধ্যতামূলক, API কী ঐচ্ছিক। মনে রাখুন: কল দেয় এই অ্যাপের সার্ভার — তাই এন্ডপয়েন্টটি সার্ভার থেকে পৌঁছানো যায় এমন ঠিকানা হতে হবে (localhost শুধু তখনই যদি অ্যাপ নিজ মেশিনে চলে)।',
+  },
 };
 
-/** এক্সটার্নাল প্রোভাইডারের প্রদর্শন-ক্রম (দুটিই GLM) */
-export const EXTERNAL_PROVIDER_ORDER: ChatProviderId[] = ['zai-api', 'glm'];
+/** এক্সটার্নাল প্রোভাইডারের প্রদর্শন-ক্রম (GLM ×২ + কাস্টম) */
+export const EXTERNAL_PROVIDER_ORDER: ChatProviderId[] = ['zai-api', 'glm', 'custom'];
+
+/** কাস্টম-প্রোভাইডারের একমাত্র ক্যাটালগ-মডেল-আইডি (apiModel রানটাইমে সেভ-কনফিগ থেকে) */
+export const CUSTOM_MODEL_ID = 'custom-model';
 
 export function isExternalProvider(p: ChatProviderId): boolean {
   return PROVIDERS[p]?.kind === 'external';
@@ -169,6 +187,19 @@ export const CHAT_MODELS: ChatModelOption[] = [
     provider: 'glm',
     apiModel: 'glm-4-plus',
   },
+
+  // ---------- ৪. কাস্টম / লোকাল মডেল (নিজের OpenAI-কম্প্যাটিবল এন্ডপয়েন্ট) ----------
+  // apiModel স্ট্যাটিক নয় — ইউজারের সেভ করা মডেলের নাম রানটাইমে বসে
+  // (provider-keys.ts → getCustomConfig)। /api/models কনফিগ থাকলে লেবেলে
+  // প্রকৃত মডেল-নাম দেখায়।
+  {
+    id: CUSTOM_MODEL_ID,
+    label: 'কাস্টম মডেল (নিজের এন্ডপয়েন্ট)',
+    description: 'নিজের লোকাল/টানেল মডেল — Base URL + API কী + মডেলের নাম দিয়ে কনফিগার করুন (কী-ডায়ালগের "কাস্টম / লোকাল" অংশ)',
+    tags: ['balanced'],
+    contextK: 128,
+    provider: 'custom',
+  },
 ];
 
 /** id → ক্যাটালগ-এন্ট্রি (না পেলে undefined) */
@@ -200,6 +231,11 @@ export function describeChatModel(id: string | null | undefined): string {
   if (!entry) return id;
   if (entry.provider === 'zai' || !entry.apiModel) return entry.label;
   return `${PROVIDERS[entry.provider].label} · ${entry.apiModel}`;
+}
+
+/** এই ক্যাটালগ-এন্ট্রিটি কি কাস্টম-প্রোভাইডারের (নিজের এন্ডপয়েন্ট)? */
+export function isCustomProviderModel(entry: ChatModelOption): boolean {
+  return entry.provider === 'custom';
 }
 
 // ------------------------------------------------------------

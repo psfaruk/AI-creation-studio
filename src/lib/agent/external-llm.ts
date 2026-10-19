@@ -1,12 +1,14 @@
 // ============================================================
-// এক্সটার্নাল-GLM প্রোভাইডার LLM — প্রকৃত OpenAI SDK (npm `openai`)
-// দিয়ে Z.ai API (api.z.ai) ও Zhipu BigModel (open.bigmodel.cn)।
+// এক্সটার্নাল-LLM — প্রকৃত OpenAI SDK (npm `openai`) দিয়ে Z.ai API
+// (api.z.ai), Zhipu BigModel (open.bigmodel.cn) এবং ব্যবহারকারীর
+// নিজের কাস্টম/লোকাল OpenAI-কম্প্যাটিবল এন্ডপয়েন্ট।
 //
-// নীতি (GLM-only — ব্যবহারকারীর সুস্পষ্ট নির্দেশ):
-//  - শুধু GLM-পরিবারের দুটি এক্সটার্নাল এন্ডপয়েন্ট; DeepSeek /
-//    Groq / OpenRouter সরানো হয়েছে।
+// নীতি:
 //  - প্রতিটি কল প্রোভাইডারের আসল endpoint-এ যায় — এন্ডপয়েন্ট-মিশ্রণ
 //    বা নীরব ক্রস-ফলব্যাক কখনোই নয়।
+//  - custom-প্রোভাইডার: baseURL + মডেল-নাম ইউজারের সেভ-করা কনফিগ
+//    থেকে (getCustomConfig); কী ঐচ্ছিক — না থাকলে প্লেসহোল্ডার-কী
+//    ('local-no-key') পাঠানো হয় (Ollama/LM Studio কী-শূন্য কল গ্রহণ করে)।
 //  - ত্রুটি-বার্তায় প্রোভাইডারের নাম + HTTP কোড থাকে; ৪২৯-টেক্সট
 //    থাকে যেন orchestrator-এর isRateLimitErrorText ধরতে পারে।
 //  - Node.js runtime লাগে (সব কল-সাইট ইতিমধ্যে runtime='nodejs')।
@@ -14,7 +16,7 @@
 
 import OpenAI from 'openai';
 import { PROVIDERS, type ChatModelOption, type ChatProviderId, type ModelVerificationEntry } from './chat-models';
-import { getProviderBaseURL, getProviderKey } from './provider-keys';
+import { getCustomConfig, getProviderBaseURL, getProviderKey } from './provider-keys';
 
 /** llm.ts-এর LLMMessage-এর সাথে গঠনগতভাবে সামঞ্জস্যপূর্ণ (সার্কুলার-ইমপোর্ট এড়াতে স্থানীয়) */
 export interface ExternalLLMMessage {
@@ -26,6 +28,38 @@ export interface ExternalLLMMessage {
 export class ExternalFatalError extends Error {}
 /** পুনঃচেষ্টা-যোগ্য (নেটওয়ার্ক/৫xx/খালি-উত্তর) */
 export class ExternalRetryableError extends Error {}
+
+/** লোকাল সার্ভারে কী না লাগলে পাঠানোর প্লেসহোল্ডার-কী (custom-পথ শুধু) */
+const CUSTOM_NO_KEY_PLACEHOLDER = 'local-no-key';
+
+/** কাস্টম-প্রোভাইডারের রানটাইম-রেজল্যুশনের ফল — model-স্ট্রিং + কী */
+interface CustomResolution {
+  apiModel: string;
+  key: string | null;
+}
+
+/**
+ * কাস্টম-এন্ট্রির প্রকৃত model-স্ট্রিং ও কী রেজল্ভ — সেভ-করা কনফিগ থেকে।
+ * কনফিগ অসম্পূর্ণ হলে সৎ fatal-ত্রুটি (নীরব ডিফল্ট-ফলব্যাক নয়)।
+ */
+async function resolveCustom(entry: ChatModelOption): Promise<CustomResolution> {
+  const cfg = await getCustomConfig();
+  if (!cfg) {
+    throw new ExternalFatalError(
+      'কাস্টম মডেল কনফিগার করা হয়নি — মডেল-তালিকার “কাস্টম মডেল” থেকে Base URL, API কী ও মডেলের নাম দিয়ে সেটআপ করুন'
+    );
+  }
+  return { apiModel: cfg.model, key: cfg.key };
+}
+
+/** যে-কোনো এন্ট্রির প্রকৃত apiModel-স্ট্রিং রেজল্ভ (custom = সেভ-কনফিগ) */
+async function resolveApiModel(entry: ChatModelOption): Promise<{ apiModel: string | null; customKey: string | null }> {
+  if (entry.provider === 'custom') {
+    const r = await resolveCustom(entry);
+    return { apiModel: r.apiModel, customKey: r.key };
+  }
+  return { apiModel: entry.apiModel ?? null, customKey: null };
+}
 
 /** SDK-স্টাইলের প্রথম assistant-বার্তাকে system-এ রূপান্তর (এক্সটার্নাল কনভেনশন) */
 export function toExternalMessages(
@@ -56,7 +90,11 @@ async function resolveBaseURL(provider: ChatProviderId): Promise<string> {
   const override = await getProviderBaseURL(provider);
   const base = override ?? info?.baseURL;
   if (!base) {
-    throw new ExternalFatalError(`${info?.label ?? provider}: এই প্রোভাইডারের API-কনফিগ অসম্পূর্ণ`);
+    throw new ExternalFatalError(
+      provider === 'custom'
+        ? 'কাস্টম মডেল: Base URL দেওয়া হয়নি — কী-ডায়ালগের “কাস্টম / লোকাল” অংশে Base URL দিন'
+        : `${info?.label ?? provider}: এই প্রোভাইডারের API-কনফিগ অসম্পূর্ণ`
+    );
   }
   return base;
 }
@@ -85,16 +123,16 @@ async function getClient(provider: ChatProviderId, apiKey: string, defaultTimeou
 }
 
 // ------------------------------------------------------------
-// রিকোয়েস্ট-বডি নির্মাণ (GLM-প্রোভাইডার — সাধারণ OpenAI-কম্প্যাটিবল)
+// রিকোয়েস্ট-বডি নির্মাণ (OpenAI-কম্প্যাটিবল — GLM ও কাস্টম উভয়ই)
 // ------------------------------------------------------------
 
 function buildRequestBody(
-  entry: ChatModelOption,
+  apiModel: string,
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   opts?: { maxTokens?: number }
 ): Record<string, unknown> {
   return {
-    model: entry.apiModel,
+    model: apiModel,
     messages,
     stream: false,
     max_tokens: opts?.maxTokens ?? 4096,
@@ -126,15 +164,24 @@ export async function externalChatComplete(
   }
 ): Promise<string> {
   const providerInfo = PROVIDERS[entry.provider];
-  const apiModel = entry.apiModel;
-  if (!providerInfo?.baseURL || !apiModel) {
+  const isCustom = entry.provider === 'custom';
+  const { apiModel, customKey } = await resolveApiModel(entry);
+  if (!providerInfo || !apiModel) {
     throw new ExternalFatalError(`${providerInfo?.label ?? entry.id}: এই এন্ট্রিতে API-কনফিগ অসম্পূর্ণ`);
   }
-  const key = await getProviderKey(entry.provider);
-  if (!key) {
-    throw new ExternalFatalError(
-      `${providerInfo.label}: API কী যোগ করা হয়নি — মডেল-তালিকার "কী যোগ করুন" থেকে কী দিন`
-    );
+
+  // কী-রেজল্যুশন: custom → সেভ-কনফিগের কী (ঐচ্ছিক — না থাকলে প্লেসহোল্ডার);
+  // GLM-প্রোভাইডার → কী বাধ্যতামূলক
+  let key: string | null;
+  if (isCustom) {
+    key = customKey ?? CUSTOM_NO_KEY_PLACEHOLDER;
+  } else {
+    key = await getProviderKey(entry.provider);
+    if (!key) {
+      throw new ExternalFatalError(
+        `${providerInfo.label}: API কী যোগ করা হয়নি — মডেল-তালিকার "কী যোগ করুন" থেকে কী দিন`
+      );
+    }
   }
 
   const timeoutMs = opts?.timeoutMs ?? 120_000;
@@ -151,7 +198,7 @@ export async function externalChatComplete(
       opts?.onAttemptBegin?.();
       if (opts?.onDelta) {
         // স্ট্রিমিং-পথ — প্রকৃত OpenAI SDK stream (টোকেন-বাই-টোকেন)
-        const body = { ...buildRequestBody(entry, toExternalMessages(messages), opts), stream: true };
+        const body = { ...buildRequestBody(apiModel, toExternalMessages(messages), opts), stream: true };
         const stream = (await client.chat.completions.create(
           body as unknown as OpenAI.Chat.ChatCompletionCreateParamsStreaming,
           { timeout: timeoutMs }
@@ -170,7 +217,7 @@ export async function externalChatComplete(
         lastErr = new ExternalRetryableError('খালি উত্তর এসেছে');
       } else {
         const res = await client.chat.completions.create(
-          buildRequestBody(entry, toExternalMessages(messages), opts) as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
+          buildRequestBody(apiModel, toExternalMessages(messages), opts) as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
           { timeout: timeoutMs }
         );
         const content = res?.choices?.[0]?.message?.content;
@@ -248,8 +295,28 @@ export async function verifyExternalModel(
   key: string | null
 ): Promise<ModelVerificationEntry> {
   const providerInfo = PROVIDERS[entry.provider];
+  const isCustom = entry.provider === 'custom';
   const t0 = Date.now();
-  if (!key) {
+
+  // কাস্টম-এন্ট্রি: কনফিগ রেজল্ভ (model-নাম + কী); অসম্পূর্ণ হলে সৎ needsKey
+  let apiModel: string | null = entry.apiModel ?? null;
+  let effectiveKey = key;
+  if (isCustom) {
+    try {
+      const r = await resolveCustom(entry);
+      apiModel = r.apiModel;
+      effectiveKey = r.key ?? CUSTOM_NO_KEY_PLACEHOLDER;
+    } catch (err) {
+      return {
+        ok: false,
+        needsKey: true,
+        error: err instanceof Error ? err.message : 'কাস্টম মডেল কনফিগার করা হয়নি',
+        testedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  if (!isCustom && !key) {
     return {
       ok: false,
       needsKey: true,
@@ -257,10 +324,17 @@ export async function verifyExternalModel(
       testedAt: new Date().toISOString(),
     };
   }
+  if (!apiModel) {
+    return {
+      ok: false,
+      error: `${providerInfo.label}: মডেল-আইডি পাওয়া যায়নি`,
+      testedAt: new Date().toISOString(),
+    };
+  }
   try {
-    const client = await getClient(entry.provider, key, VERIFY_TIMEOUT_MS);
+    const client = await getClient(entry.provider, effectiveKey as string, VERIFY_TIMEOUT_MS);
     const body: Record<string, unknown> = {
-      model: entry.apiModel,
+      model: apiModel,
       messages: [{ role: 'user', content: 'Reply with exactly one word: ok' }],
       stream: false,
       max_tokens: 8,
@@ -274,7 +348,7 @@ export async function verifyExternalModel(
     const ok = typeof content === 'string' && content.trim().length > 0;
     return {
       ok,
-      servedModel: res?.model ?? entry.apiModel,
+      servedModel: res?.model ?? apiModel,
       ms: Date.now() - t0,
       testedAt: new Date().toISOString(),
       ...(ok ? {} : { error: 'খালি উত্তর' }),
@@ -290,16 +364,19 @@ export async function verifyExternalModel(
         testedAt: new Date().toISOString(),
       };
     }
+    // কাস্টম-এন্ডপয়েন্টে ৪০৪/৪০০ সাধারণত মডেল-নাম ভুল — সৎ নির্দেশনা
     const reason =
       status === 401 || status === 403
         ? 'কী অবৈধ/অনুমতি নেই'
         : status === 402
           ? 'ব্যালান্স শেষ'
           : status === 404 || status === 400
-            ? 'মডেল-আইডি এখন নেই (তালিকা বদলেছে)'
+            ? isCustom
+              ? 'এই নামের মডেল এন্ডপয়েন্টে পাওয়া যায়নি — মডেল-তালিকা আনয়ে সঠিক নাম বেছে নিন'
+              : 'মডেল-আইডি এখন নেই (তালিকা বদলেছে)'
             : status != null
               ? `HTTP ${status}`
-              : 'নেটওয়ার্ক/সংযোগ ব্যর্থ';
+              : 'নেটওয়ার্ক/সংযোগ ব্যর্থ — এন্ডপয়েন্ট চালু আছে কি না দেখুন';
     return {
       ok: false,
       error: `${providerInfo.label}: ${reason} — ${msg.slice(0, 120)}`,
