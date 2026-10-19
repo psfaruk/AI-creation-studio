@@ -26,11 +26,12 @@ export async function GET() {
     probeStorage: probeStorageWritable,
     zaiConfigured: zAiConfigured,
   });
-  // P4-ডায়াগনস্টিক: কোন কমিট লাইভ তা সৎভাবে দেখায় (Railway GitHub-
-  // ইন্টিগ্রেশন রানটাইমে RAILWAY_GIT_COMMIT_SHA দেয়; লোকাল/dev-এ null)।
-  // কোনো গোপন মান নয় — পাবলিক কমিট-SHA মাত্র।
+  // P4-ডায়াগনস্টিক: ① কোন কমিট লাইভ (RAILWAY_GIT_COMMIT_SHA — পাবলিক
+  // SHA মাত্র); ② বুট-স্ব-নিরাময়ের ফলাফল-রেকর্ড (state/স্নিপেট/পথ/আকার —
+  // কোনো গোপন মান নয়)। ডিপ্লয়-সমস্যার ব্যাখ্যা লগ-দর্শনা ছাড়াই সম্ভব।
+  const { getSchemaHealStatus } = await import('@/lib/db-schema-heal');
   return NextResponse.json(
-    { ...report, gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null },
+    { ...report, gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null, selfHeal: getSchemaHealStatus() },
     {
       status: healthStatusCode(report),
       headers: { 'Cache-Control': 'no-store' },
