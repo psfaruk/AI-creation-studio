@@ -8,6 +8,12 @@
 
 generator client {
   provider = "prisma-client-js"
+  // P4-hotfix: স্পষ্ট binaryTargets — Railway বিল্ডারের native-ডিটেকশন যা-ই
+  // হোক, রানটাইম (node:22-slim = Debian bookworm = debian-openssl-3.0.x)
+  // নিজের ইঞ্জিন-ফাইল .prisma/client-এ পায়। আগে বিল্ডার ভুল native embed
+  // করায় "could not locate the Query Engine" হয়েছিল (দুই ইঞ্জিন ≈ ৩০MB —
+  // ইমেজ-সাইজ ব্যয় সচেতনভাবে গৃহীত)।
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
 }
 
 datasource db {
