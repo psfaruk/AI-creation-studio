@@ -828,22 +828,25 @@ async function generateVideoClipUncached(
   const prodId = cacheOpts.prodId ?? null;
   let tStage = Date.now();
   const task = await submitVideoTask(req, { onStatus: opts?.onStatus, isCancelled: opts?.isCancelled });
-  noteVideoStage(prodId, 'submit', Date.now() - tStage);
-  opts?.onStatus?.(`টাস্ক জমা হয়েছে (${task.model}, আইডি ${task.taskId.slice(0, 10)}…) — জেনারেশন চলছে…`);
+  const submitMs = Date.now() - tStage;
 
-  // ইন-ফ্লাইট-নথিভুক্ত পোল — ফল যা-ই হোক, গেট কুলডাউন-সচেতন
+  // Register polling immediately after submit resolves, before invoking any
+  // status callback. A throwing UI/event callback must not strand the gate.
   tStage = Date.now();
   const pollPromise = pollVideoTask(task, opts);
   const s = gate();
   if (!s.inflight) {
     s.inflight = { taskId: task.taskId, startedAt: t0, poll: pollPromise };
-    // Release only after the poll is visible to every subsequent submitter.
-    s.submitting = false;
     pollPromise.catch(() => gate().failures++);
   } else {
-    // (তাত্ত্বিকভাবে হয় না — সাবমিট ইতিমধ্যে অপেক্ষা করেছে) নিরাপত্তা-জাল
+    // Defensive fallback: another inflight task is already registered.
     pollPromise.catch(() => undefined);
   }
+  // The task is now visible to all callers; release the submit reservation.
+  s.submitting = false;
+
+  noteVideoStage(prodId, 'submit', submitMs);
+  opts?.onStatus?.(`টাস্ক জমা হয়েছে (${task.model}, আইডি ${task.taskId.slice(0, 10)}…) — জেনারেশন চলছে…`);
 
   const outcome = await pollPromise;
   noteVideoStage(prodId, 'poll', Date.now() - tStage);
