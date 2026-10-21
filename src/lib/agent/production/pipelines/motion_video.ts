@@ -179,7 +179,7 @@ export async function generateAiShot(req: AiShotRequest): Promise<AiShotResult> 
   const clipPath = path.join(req.workingDir, `aishot-${req.index}.mp4`);
   const duration = aiClipDurationSec(req.neededSec);
   let lastErr = '';
-  // ২০২৬-১৩-১০: নতুন শিডিউলার নিজেই ধৈর্যশীল (৪২৯-ল্যাডার ~৮ মিনিট) —
+  // ২০২৬-১০-১৩: নতুন শিডিউলার নিজেই ধৈর্যশীল (৪২৯-ল্যাডার ~৮ মিনিট) —
   // আর দুই পূর্ণ-চক্র নয়; এক চক্র + সৎ-ফলব্যাক। প্রি-ওয়ার্ম থাকলে সেটিই।
   for (let attempt = 0; attempt < 1; attempt++) {
     try {
