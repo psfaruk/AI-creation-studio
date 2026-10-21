@@ -216,6 +216,8 @@ interface InflightTask {
 interface VideoGate {
   /** সাবমিট-সিরিয়ালাইজেশন চেইন */
   tail: Promise<unknown>;
+  /** Provider submit থেকে poll registration পর্যন্ত atomic reservation */
+  submitting: boolean;
   inflight: InflightTask | null;
   /** সাম্প্রতিক সমাপ্তির সময় */
   lastCompletionAt: number;
@@ -238,6 +240,7 @@ function gate(): VideoGate {
   if (!g.__aiVideoGate) {
     g.__aiVideoGate = {
       tail: Promise.resolve(),
+      submitting: false,
       inflight: null,
       lastCompletionAt: 0,
       nextAllowedAt: 0,
@@ -307,7 +310,22 @@ export async function submitVideoTask(
   req: AiVideoRequest,
   opts?: { onStatus?: (note: string) => void; isCancelled?: () => boolean | Promise<boolean> }
 ): Promise<AiVideoTask> {
-  const zai = await getZAI();
+  const s = gate();
+  // Reserve synchronously before the first provider await. Otherwise two callers
+  // can both observe "no inflight" and submit before either registers its poll.
+  while (s.submitting) {
+    if (opts?.isCancelled && (await opts.isCancelled())) throw new VideoAbortedError();
+    await sleepCancellable(100, opts?.isCancelled);
+  }
+  s.submitting = true;
+
+  let zai: Awaited<ReturnType<typeof getZAI>>;
+  try {
+    zai = await getZAI();
+  } catch (err) {
+    s.submitting = false;
+    throw err;
+  }
   const duration = clampDuration(req.durationSec);
   // §১০: requestKey থাকলে নির্ধারক request_id — চক্রের বাইরে একবারই তৈরি
   const requestId = req.requestKey ? deriveRequestId(req.requestKey, req.prompt) : undefined;
@@ -317,7 +335,10 @@ export async function submitVideoTask(
   let lastErr: unknown = null;
 
   while (Date.now() < deadline) {
-    if (opts?.isCancelled && (await opts.isCancelled())) throw new VideoAbortedError();
+    if (opts?.isCancelled && (await opts.isCancelled())) {
+      gate().submitting = false;
+      throw new VideoAbortedError();
+    }
 
     // --- ধাপ ১: ইন-ফ্লাইট টাস্ক থাকলে তার সমাপ্তির অপেক্ষা ---
     const running = inflightPoll();
@@ -337,7 +358,12 @@ export async function submitVideoTask(
     const wait = gate().nextAllowedAt - Date.now();
     if (wait > 0) {
       opts?.onStatus?.(`কুলডাউন চলছে (~${Math.ceil(wait / 1000)} সে.) — জানালা খোলার অপেক্ষা`);
-      await sleepCancellable(Math.min(wait, 60_000), opts?.isCancelled);
+      try {
+        await sleepCancellable(Math.min(wait, 60_000), opts?.isCancelled);
+      } catch (err) {
+        gate().submitting = false;
+        throw err;
+      }
     }
 
     // --- ধাপ ৩: সাবমিট চেষ্টা ---
@@ -366,7 +392,10 @@ export async function submitVideoTask(
     } catch (err: any) {
       lastErr = err;
       const msg = String(err?.message ?? err);
-      if (!isRateLimitErrorText(msg) && !/429|too many/i.test(msg)) throw err;
+      if (!isRateLimitErrorText(msg) && !/429|too many/i.test(msg)) {
+        gate().submitting = false;
+        throw err;
+      }
       // ৪২৯ — জানালা বন্ধ। Retry-After থাকলে সেটিই (যুক্তিসঙ্গত সীমায়),
       // নয়তো ল্যাডারের ধাপ।
       const ra = parseRetryAfterMs(err);
@@ -375,10 +404,16 @@ export async function submitVideoTask(
       ladderIdx++;
       gate().lastError = `৪২৯ রেট-সীমা — ${Math.round(delayMs / 1000)} সে. পরে পুনঃচেষ্টা (${msg.slice(0, 80)})`;
       opts?.onStatus?.(`৪২৯ (জানালা বন্ধ) — ${Math.round(delayMs / 1000)} সেকেন্ড অপেক্ষা`);
-      await sleepCancellable(delayMs, opts?.isCancelled);
+      try {
+        await sleepCancellable(delayMs, opts?.isCancelled);
+      } catch (sleepErr) {
+        gate().submitting = false;
+        throw sleepErr;
+      }
     }
   }
   const detail = String((lastErr as any)?.message ?? lastErr ?? 'অজানা').slice(0, 200);
+  gate().submitting = false;
   gate().lastError = `সাবমিট-জানালা ${Math.round(AI_VIDEO_LIMITS.submitBudgetMs / 60000)} মিনিটেও খোলেনি: ${detail}`;
   throw new TemporarilyUnavailableError(
     `ভিডিও-সাবমিট জানালা ${Math.round(AI_VIDEO_LIMITS.submitBudgetMs / 60000)} মিনিটেও খুলেনি (৪২৯): ${detail}`
@@ -802,6 +837,8 @@ async function generateVideoClipUncached(
   const s = gate();
   if (!s.inflight) {
     s.inflight = { taskId: task.taskId, startedAt: t0, poll: pollPromise };
+    // Release only after the poll is visible to every subsequent submitter.
+    s.submitting = false;
     pollPromise.catch(() => gate().failures++);
   } else {
     // (তাত্ত্বিকভাবে হয় না — সাবমিট ইতিমধ্যে অপেক্ষা করেছে) নিরাপত্তা-জাল
